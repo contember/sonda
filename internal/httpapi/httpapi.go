@@ -34,6 +34,10 @@ func New(q *query.Service, authorizer *authz.Authorizer, log *slog.Logger) http.
 	mux.Handle("GET /v1/services/{service}/metrics", s.handle(s.metricNames))
 	mux.Handle("GET /v1/services/{service}/signals/{signal}", s.handle(s.signal))
 	mux.Handle("POST /v1/services/{service}/metrics/query", s.handle(s.queryMetrics))
+	mux.Handle("POST /v1/services/{service}/logs/search", s.handle(s.searchLogs))
+	mux.Handle("POST /v1/services/{service}/logs/query", s.handle(s.queryLogs))
+	mux.Handle("GET /v1/services/{service}/logs/fields", s.handle(s.logFields))
+	mux.Handle("GET /v1/results/{id}", s.handle(s.result))
 	return mux
 }
 

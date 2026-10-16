@@ -127,3 +127,78 @@ func sparkline(points []api.Point) string {
 	}
 	return b.String()
 }
+
+func renderLogSearch(w io.Writer, resp api.Response[api.LogSearchResult]) {
+	renderMeta(w, resp.Meta)
+	d := resp.Data
+	fmt.Fprintf(w, "# %s\n# %d matching lines, %d sampled", d.Query, d.Total, d.SampleSize)
+	if d.SampleRange != nil {
+		fmt.Fprintf(w, " (%s → %s)", d.SampleRange.From.Format(time.RFC3339), d.SampleRange.To.Format(time.RFC3339))
+	}
+	fmt.Fprintf(w, ", result %s\n", resp.Meta.ResultID)
+	t := table(w)
+	fmt.Fprintln(t, "GROUP\t~COUNT\tSAMPLED\tPATTERN")
+	for _, g := range d.Groups {
+		fmt.Fprintf(t, "%d\t%d\t%d\t%s\n", g.Index, g.EstimatedCount, g.SampleCount, g.Pattern)
+	}
+	t.Flush()
+	if d.Ungrouped > 0 {
+		fmt.Fprintf(w, "# %d sampled lines could not be grouped\n", d.Ungrouped)
+	}
+}
+
+func renderLogQuery(w io.Writer, resp api.Response[api.LogQueryResult]) {
+	renderMeta(w, resp.Meta)
+	fmt.Fprintf(w, "# %s\n", resp.Data.Query)
+	renderLines(w, resp.Data.Streams, resp.Data.Lines)
+	for _, s := range resp.Data.Series {
+		fmt.Fprintf(w, "%s\n  %s %s\n", formatLabels(s.Labels), formatSummary(s.Summary), sparkline(s.Points))
+	}
+	if resp.Meta.ResultID != "" {
+		fmt.Fprintf(w, "# more lines: sonda result %s --offset %d\n", resp.Meta.ResultID, len(resp.Data.Lines))
+	}
+}
+
+func renderLines(w io.Writer, streams []map[string]string, lines []api.LogLine) {
+	for i, s := range streams {
+		fmt.Fprintf(w, "# stream %d: %s\n", i, formatLabels(s))
+	}
+	for _, line := range lines {
+		fmt.Fprintf(w, "%s [%d] %s\n", line.Time.Format(time.RFC3339Nano), line.Stream, line.Line)
+	}
+}
+
+func renderLogFields(w io.Writer, resp api.Response[api.LogFields]) {
+	renderMeta(w, resp.Meta)
+	t := table(w)
+	fmt.Fprintln(t, "LABEL\tVALUES")
+	for _, l := range resp.Data.Labels {
+		values := strings.Join(l.Values, ", ")
+		if l.MoreValues {
+			values += ", …"
+		}
+		fmt.Fprintf(t, "%s\t%s\n", l.Name, values)
+	}
+	t.Flush()
+	if len(resp.Data.Fields) > 0 {
+		t = table(w)
+		fmt.Fprintln(t, "FIELD\tTYPE\tCARDINALITY\tPARSERS")
+		for _, f := range resp.Data.Fields {
+			fmt.Fprintf(t, "%s\t%s\t%d\t%s\n", f.Name, f.Type, f.Cardinality, strings.Join(f.Parsers, ","))
+		}
+		t.Flush()
+	}
+}
+
+func renderResultPage(w io.Writer, resp api.Response[api.ResultPage]) {
+	p := resp.Data
+	fmt.Fprintf(w, "# %d lines", p.Total)
+	if p.Group != nil {
+		fmt.Fprintf(w, " in group %d", *p.Group)
+	}
+	fmt.Fprintf(w, ", showing from offset %d\n", p.Offset)
+	renderLines(w, p.Streams, p.Lines)
+	if p.NextOffset != nil {
+		fmt.Fprintf(w, "# next page: --offset %d\n", *p.NextOffset)
+	}
+}

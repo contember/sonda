@@ -56,7 +56,7 @@ func TestScopePromQL(t *testing.T) {
 		{`up{job=~".*"}`, `up{job="api",job=~".*"}`},
 		{
 			`sum(rate(x{job="api"}[5m])) or on() sum(rate(x{job="billing"}[5m]))`,
-			`sum(rate(x{job="api",job="api"}[5m])) or on () sum(rate(x{job="api",job="billing"}[5m]))`,
+			`sum(rate(x{job="api"}[5m])) or on () sum(rate(x{job="api",job="billing"}[5m]))`,
 		},
 		{`max_over_time(rate(x[5m])[1h:1m])`, `max_over_time(rate(x{job="api"}[5m])[1h:1m])`},
 		{`absent(x offset 1h)`, `absent(x{job="api"} offset 1h)`},
@@ -85,7 +85,7 @@ func TestScopeLogQL(t *testing.T) {
 		{`{app=~".+"} | json | level="error"`, `{app=~".+", app="api"} | json | level="error"`, false},
 		{
 			`sum(count_over_time({app="api"}[5m])) / sum(count_over_time({app="billing"} |= "password" [5m]))`,
-			`(sum(count_over_time({app="api", app="api"}[5m])) / sum(count_over_time({app="billing", app="api"} |= "password"[5m])))`,
+			`(sum(count_over_time({app="api"}[5m])) / sum(count_over_time({app="billing", app="api"} |= "password"[5m])))`,
 			true,
 		},
 		{`sum by (level) (rate({ns="x"} |= "timeout" [1m]))`, `sum by (level)(rate({ns="x", app="api"} |= "timeout"[1m]))`, true},
@@ -118,7 +118,7 @@ func TestLogSearchQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{app="api", app="api"} |= "timeout \"db\"" | json | level="error"`; q.String() != want {
+	if want := `{app="api"} |= "timeout \"db\"" | json | level="error"`; q.String() != want {
 		t.Errorf("got %s", q)
 	}
 
@@ -132,7 +132,7 @@ func TestLogSearchQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `sum(count_over_time({level="error", app="api", app="api"}[1h]))`; count.String() != want {
+	if want := `sum(count_over_time({level="error", app="api"}[1h]))`; count.String() != want {
 		t.Errorf("count query = %s", count)
 	}
 }

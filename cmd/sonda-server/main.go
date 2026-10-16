@@ -21,6 +21,7 @@ import (
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/httpapi"
 	"github.com/contember/sonda/internal/query"
+	"github.com/contember/sonda/internal/store"
 )
 
 func main() {
@@ -85,7 +86,16 @@ func serve(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	handler := httpapi.New(query.New(cfg, authorizer, connectors), authorizer, log)
+	st, err := store.Open(cfg.Server.Database)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	q, err := query.New(cfg, authorizer, connectors, st)
+	if err != nil {
+		return err
+	}
+	handler := httpapi.New(q, authorizer, log)
 
 	server := &http.Server{
 		Addr:              cfg.Server.Listen,

@@ -45,3 +45,47 @@ func (s *Server) queryMetrics(r *http.Request) (any, error) {
 	}
 	return s.query.QueryMetrics(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req, points)
 }
+
+func (s *Server) searchLogs(r *http.Request) (any, error) {
+	var req api.LogSearchRequest
+	if err := decodeBody(r, &req); err != nil {
+		return nil, err
+	}
+	return s.query.SearchLogs(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req)
+}
+
+func (s *Server) queryLogs(r *http.Request) (any, error) {
+	var req api.LogQueryRequest
+	if err := decodeBody(r, &req); err != nil {
+		return nil, err
+	}
+	return s.query.QueryLogs(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req)
+}
+
+func (s *Server) logFields(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.LogFields(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
+}
+
+func (s *Server) result(r *http.Request) (any, error) {
+	var group *int
+	if r.URL.Query().Has("group") {
+		g, err := intParam(r, "group", 0)
+		if err != nil {
+			return nil, err
+		}
+		group = &g
+	}
+	offset, err := intParam(r, "offset", 0)
+	if err != nil {
+		return nil, err
+	}
+	limit, err := intParam(r, "limit", 0)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.Result(r.Context(), identityFrom(r.Context()), r.PathValue("id"), group, offset, limit)
+}

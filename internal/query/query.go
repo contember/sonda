@@ -12,17 +12,25 @@ import (
 	"github.com/contember/sonda/internal/audit"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/shape"
+	"github.com/contember/sonda/internal/store"
 )
 
 type Service struct {
 	cfg        *config.Config
 	authz      *authz.Authorizer
 	connectors Connectors
+	store      *store.Store
+	redactor   *shape.Redactor
 	now        func() time.Time
 }
 
-func New(cfg *config.Config, authorizer *authz.Authorizer, connectors Connectors) *Service {
-	return &Service{cfg: cfg, authz: authorizer, connectors: connectors, now: time.Now}
+func New(cfg *config.Config, authorizer *authz.Authorizer, connectors Connectors, st *store.Store) (*Service, error) {
+	redactor, err := shape.NewRedactor(cfg.Redact)
+	if err != nil {
+		return nil, err
+	}
+	return &Service{cfg: cfg, authz: authorizer, connectors: connectors, store: st, redactor: redactor, now: time.Now}, nil
 }
 
 func recordQuery(ctx context.Context, target authz.Target, query string) {

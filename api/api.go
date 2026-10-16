@@ -174,9 +174,11 @@ type LogSearchRequest struct {
 type LogSearchResult struct {
 	Query string `json:"query"`
 	// Total is the exact number of matching lines in the range.
-	Total      int64      `json:"total"`
-	SampleSize int        `json:"sampleSize"`
-	Groups     []LogGroup `json:"groups"`
+	Total      int64 `json:"total"`
+	SampleSize int   `json:"sampleSize"`
+	// SampleRange is the time span of the sampled lines, which are the newest matches.
+	SampleRange *TimeRange `json:"sampleRange,omitempty"`
+	Groups      []LogGroup `json:"groups"`
 	// Ungrouped counts sampled lines too short or too long to cluster.
 	Ungrouped int `json:"ungrouped"`
 }
@@ -216,8 +218,15 @@ type LogLine struct {
 }
 
 type LogFields struct {
-	Labels []string   `json:"labels"`
+	Labels []LogLabel `json:"labels"`
 	Fields []LogField `json:"fields,omitempty"`
+}
+
+type LogLabel struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
+	// MoreValues is true when Values was cut.
+	MoreValues bool `json:"moreValues,omitempty"`
 }
 
 type LogField struct {

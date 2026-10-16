@@ -50,7 +50,7 @@ func ScopePromQL(scope authz.SelectorScope, query string) (PromQL, error) {
 	}
 	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
 		if vs, ok := node.(*parser.VectorSelector); ok {
-			vs.LabelMatchers = append(vs.LabelMatchers, matchers...)
+			vs.LabelMatchers = withScope(vs.LabelMatchers, matchers)
 		}
 		return nil
 	})
@@ -90,7 +90,7 @@ func ScopeLogQL(scope authz.SelectorScope, query string) (LogQL, error) {
 	}
 	expr.Walk(func(e syntax.Expr) bool {
 		if me, ok := e.(*syntax.MatchersExpr); ok {
-			me.Mts = append(me.Mts, matchers...)
+			me.Mts = withScope(me.Mts, matchers)
 		}
 		return true
 	})
@@ -151,16 +151,29 @@ func LogCountQuery(scope authz.SelectorScope, q LogQL, rangeLength time.Duration
 	return ScopeLogQL(scope, fmt.Sprintf("sum(count_over_time(%s [%ds]))", q.expr, seconds))
 }
 
+// withScope appends the scope matchers the selector does not already contain.
+func withScope(selector, scope []*labels.Matcher) []*labels.Matcher {
+	for _, m := range scope {
+		if !slices.ContainsFunc(selector, sameMatcher(m)) {
+			selector = append(selector, m)
+		}
+	}
+	return selector
+}
+
 func containsAll(have, want []*labels.Matcher) bool {
 	for _, w := range want {
-		found := slices.ContainsFunc(have, func(h *labels.Matcher) bool {
-			return h.Type == w.Type && h.Name == w.Name && h.Value == w.Value
-		})
-		if !found {
+		if !slices.ContainsFunc(have, sameMatcher(w)) {
 			return false
 		}
 	}
 	return true
+}
+
+func sameMatcher(m *labels.Matcher) func(*labels.Matcher) bool {
+	return func(other *labels.Matcher) bool {
+		return other.Type == m.Type && other.Name == m.Name && other.Value == m.Value
+	}
 }
 
 // Range resolves a window into an absolute range. It never reaches into the future and

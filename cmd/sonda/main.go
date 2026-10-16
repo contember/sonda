@@ -43,7 +43,7 @@ func main() {
 	root.PersistentFlags().StringVar(&a.url, "url", "", "Sonda server URL (default $SONDA_URL)")
 	root.PersistentFlags().StringVar(&a.format, "format", "", "output format: json or text (default: json unless stdout is a terminal)")
 
-	root.AddCommand(a.servicesCmd(), a.describeCmd(), a.metricsCmd(), a.signalCmd())
+	root.AddCommand(a.servicesCmd(), a.describeCmd(), a.metricsCmd(), a.signalCmd(), a.logsCmd(), a.resultCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
