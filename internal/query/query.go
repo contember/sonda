@@ -3,23 +3,32 @@
 package query
 
 import (
+	"context"
 	"slices"
 	"sort"
 	"time"
 
 	"github.com/contember/sonda/api"
+	"github.com/contember/sonda/internal/audit"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 )
 
 type Service struct {
-	cfg   *config.Config
-	authz *authz.Authorizer
-	now   func() time.Time
+	cfg        *config.Config
+	authz      *authz.Authorizer
+	connectors Connectors
+	now        func() time.Time
 }
 
-func New(cfg *config.Config, authorizer *authz.Authorizer) *Service {
-	return &Service{cfg: cfg, authz: authorizer, now: time.Now}
+func New(cfg *config.Config, authorizer *authz.Authorizer, connectors Connectors) *Service {
+	return &Service{cfg: cfg, authz: authorizer, connectors: connectors, now: time.Now}
+}
+
+func recordQuery(ctx context.Context, target authz.Target, query string) {
+	if record := audit.FromContext(ctx); record != nil {
+		record.AddQuery(target.Service(), target.Environment(), query)
+	}
 }
 
 func (s *Service) ListServices(identity *config.Identity) api.Response[[]api.ServiceSummary] {

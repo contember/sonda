@@ -31,6 +31,9 @@ func New(q *query.Service, authorizer *authz.Authorizer, log *slog.Logger) http.
 	})
 	mux.Handle("GET /v1/services", s.handle(s.listServices))
 	mux.Handle("GET /v1/services/{service}", s.handle(s.describeService))
+	mux.Handle("GET /v1/services/{service}/metrics", s.handle(s.metricNames))
+	mux.Handle("GET /v1/services/{service}/signals/{signal}", s.handle(s.signal))
+	mux.Handle("POST /v1/services/{service}/metrics/query", s.handle(s.queryMetrics))
 	return mux
 }
 
@@ -51,7 +54,9 @@ func (s *Server) handle(h handlerFunc) http.Handler {
 			s.writeError(w, apierr.New(api.CodeUnauthenticated, "missing or invalid bearer token"))
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), identityKey{}, identity))
+		ctx, cancel := context.WithTimeout(r.Context(), identity.Limits.QueryTimeout)
+		defer cancel()
+		r = r.WithContext(context.WithValue(ctx, identityKey{}, identity))
 
 		result, err := h(r)
 		if err != nil {
@@ -109,12 +114,4 @@ func statusOf(code api.ErrorCode) int {
 	default:
 		return http.StatusInternalServerError
 	}
-}
-
-func (s *Server) listServices(r *http.Request) (any, error) {
-	return s.query.ListServices(identityFrom(r.Context())), nil
-}
-
-func (s *Server) describeService(r *http.Request) (any, error) {
-	return s.query.DescribeService(identityFrom(r.Context()), r.PathValue("service"))
 }

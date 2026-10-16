@@ -81,7 +81,11 @@ func serve(ctx context.Context, configPath string) error {
 		return err
 	}
 	authorizer := authz.New(cfg)
-	handler := httpapi.New(query.New(cfg, authorizer), authorizer, log)
+	connectors, err := query.NewConnectors(cfg)
+	if err != nil {
+		return err
+	}
+	handler := httpapi.New(query.New(cfg, authorizer, connectors), authorizer, log)
 
 	server := &http.Server{
 		Addr:              cfg.Server.Listen,
