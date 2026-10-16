@@ -95,7 +95,7 @@ func serve(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	handler := httpapi.New(q, authorizer, log)
+	handler := httpapi.New(q, authorizer, st, log)
 
 	server := &http.Server{
 		Addr:              cfg.Server.Listen,

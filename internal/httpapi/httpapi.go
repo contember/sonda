@@ -2,29 +2,33 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
+	"github.com/contember/sonda/internal/audit"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/query"
+	"github.com/contember/sonda/internal/store"
 )
 
 type Server struct {
-	query *query.Service
-	authz *authz.Authorizer
-	log   *slog.Logger
+	query    *query.Service
+	authz    *authz.Authorizer
+	store    *store.Store
+	limiters *limiters
+	log      *slog.Logger
 }
 
-func New(q *query.Service, authorizer *authz.Authorizer, log *slog.Logger) http.Handler {
-	s := &Server{query: q, authz: authorizer, log: log}
+func New(q *query.Service, authorizer *authz.Authorizer, st *store.Store, log *slog.Logger) http.Handler {
+	s := &Server{query: q, authz: authorizer, store: st, limiters: newLimiters(), log: log}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -53,54 +57,90 @@ func identityFrom(ctx context.Context) *config.Identity {
 
 type handlerFunc func(r *http.Request) (any, error)
 
-// handle authenticates the request, runs the handler and encodes the result or error.
+// handle runs the handler, writes the result or error and records one audit entry,
+// also for rejected requests.
 func (s *Server) handle(h handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		identity, authenticated := s.authz.Authenticate(token)
-		if !ok || !authenticated {
-			s.writeError(w, apierr.New(api.CodeUnauthenticated, "missing or invalid bearer token"))
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), identity.Limits.QueryTimeout)
-		defer cancel()
-		r = r.WithContext(context.WithValue(ctx, identityKey{}, identity))
-
-		result, err := h(r)
+		start := time.Now()
+		ctx, record := audit.WithRecord(r.Context())
+		identity, body, err := s.run(r.WithContext(ctx), h)
+		status, code := http.StatusOK, api.ErrorCode("")
 		if err != nil {
-			s.writeError(w, err)
-			return
-		}
-		var body bytes.Buffer
-		if err := json.NewEncoder(&body).Encode(result); err != nil {
-			s.writeError(w, err)
-			return
-		}
-		if body.Len() > identity.Limits.MaxResponseBytes {
-			s.writeError(w, apierr.New(api.CodeLimitExceeded,
-				"response has %d bytes, the limit is %d; narrow the time range or lower the limit",
-				body.Len(), identity.Limits.MaxResponseBytes))
-			return
+			e := s.clientError(err)
+			status, code = statusOf(e.Code), e.Code
+			body, _ = json.Marshal(api.ErrorResponse{Error: api.ErrorBody{Code: e.Code, Message: e.Message}})
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body.Bytes())
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		s.writeAudit(r, identity, record, status, code, time.Since(start), len(body))
 	})
 }
 
-func (s *Server) writeError(w http.ResponseWriter, err error) {
-	e, ok := apierr.As(err)
-	if !ok {
-		switch {
-		case errors.Is(err, context.DeadlineExceeded):
-			e = apierr.New(api.CodeTimeout, "query timed out")
-		default:
-			s.log.Error("request failed", "error", err)
-			e = apierr.New(api.CodeInternal, "internal error")
-		}
+// run authenticates, applies the identity's limits and encodes the handler's result.
+func (s *Server) run(r *http.Request, h handlerFunc) (*config.Identity, []byte, error) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	identity, authenticated := s.authz.Authenticate(token)
+	if !ok || !authenticated {
+		return nil, nil, apierr.New(api.CodeUnauthenticated, "missing or invalid bearer token")
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusOf(e.Code))
-	_ = json.NewEncoder(w).Encode(api.ErrorResponse{Error: api.ErrorBody{Code: e.Code, Message: e.Message}})
+	release, err := s.limiters.acquire(identity)
+	if err != nil {
+		return identity, nil, err
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(r.Context(), identity.Limits.QueryTimeout)
+	defer cancel()
+	result, err := h(r.WithContext(context.WithValue(ctx, identityKey{}, identity)))
+	if err != nil {
+		return identity, nil, err
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		return identity, nil, err
+	}
+	if len(body) > identity.Limits.MaxResponseBytes {
+		return identity, nil, apierr.New(api.CodeLimitExceeded,
+			"response has %d bytes, the limit is %d; narrow the time range or lower the limit",
+			len(body), identity.Limits.MaxResponseBytes)
+	}
+	return identity, body, nil
+}
+
+// clientError converts any error into one that is safe to return. Unexpected errors are
+// logged and reported without details.
+func (s *Server) clientError(err error) *apierr.Error {
+	if e, ok := apierr.As(err); ok {
+		return e
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return apierr.New(api.CodeTimeout, "query timed out")
+	}
+	s.log.Error("request failed", "error", err)
+	return apierr.New(api.CodeInternal, "internal error")
+}
+
+func (s *Server) writeAudit(r *http.Request, identity *config.Identity, record *audit.Record, status int, code api.ErrorCode, duration time.Duration, size int) {
+	service, environment, queries := record.Snapshot()
+	entry := store.AuditEntry{
+		Time:          time.Now(),
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Service:       service,
+		Environment:   environment,
+		Queries:       strings.Join(queries, "\n"),
+		Status:        status,
+		ErrorCode:     string(code),
+		Duration:      duration,
+		ResponseBytes: size,
+	}
+	if identity != nil {
+		entry.Identity = identity.Name
+	}
+	if err := s.store.WriteAudit(context.WithoutCancel(r.Context()), entry); err != nil {
+		s.log.Error("audit write failed", "error", err)
+	}
 }
 
 func statusOf(code api.ErrorCode) int {
