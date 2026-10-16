@@ -43,7 +43,12 @@ func main() {
 	root.PersistentFlags().StringVar(&a.url, "url", "", "Sonda server URL (default $SONDA_URL)")
 	root.PersistentFlags().StringVar(&a.format, "format", "", "output format: json or text (default: json unless stdout is a terminal)")
 
-	root.AddCommand(a.servicesCmd(), a.describeCmd(), a.metricsCmd(), a.signalCmd(), a.logsCmd(), a.resultCmd())
+	root.AddCommand(
+		a.servicesCmd(), a.describeCmd(), a.overviewCmd(),
+		a.errorsCmd(), a.errorCmd(), a.releasesCmd(),
+		a.logsCmd(), a.resultCmd(),
+		a.metricsCmd(), a.signalCmd(),
+	)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -131,21 +136,39 @@ func output[T any](a *app, w io.Writer, body []byte, render func(io.Writer, api.
 	return nil
 }
 
+// fetch runs a GET request and writes the response.
+func fetch[T any](a *app, cmd *cobra.Command, path string, params url.Values, render func(io.Writer, api.Response[T])) error {
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+	body, err := c.Get(path, params)
+	if err != nil {
+		return err
+	}
+	return output(a, cmd.OutOrStdout(), body, render)
+}
+
+// send runs a POST request and writes the response.
+func send[T any](a *app, cmd *cobra.Command, path string, request any, render func(io.Writer, api.Response[T])) error {
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+	body, err := c.Post(path, request)
+	if err != nil {
+		return err
+	}
+	return output(a, cmd.OutOrStdout(), body, render)
+}
+
 func (a *app) servicesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "services",
 		Short: "List services you can access",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Get("/v1/services", nil)
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderServices)
+			return fetch(a, cmd, "/v1/services", nil, renderServices)
 		},
 	}
 }
@@ -156,15 +179,7 @@ func (a *app) describeCmd() *cobra.Command {
 		Short: "Show environments, capabilities and signals of a service",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Get("/v1/services/"+url.PathEscape(args[0]), nil)
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderService)
+			return fetch(a, cmd, "/v1/services/"+url.PathEscape(args[0]), nil, renderService)
 		},
 	}
 }

@@ -137,8 +137,9 @@ type Event struct {
 }
 
 type Exception struct {
-	Type   string  `json:"type"`
-	Value  string  `json:"value,omitempty"`
+	Type  string `json:"type"`
+	Value string `json:"value,omitempty"`
+	// Frames are newest first. Library frames are omitted when in-app frames exist.
 	Frames []Frame `json:"frames,omitempty"`
 }
 

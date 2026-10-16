@@ -89,3 +89,35 @@ func (s *Server) result(r *http.Request) (any, error) {
 	}
 	return s.query.Result(r.Context(), identityFrom(r.Context()), r.PathValue("id"), group, offset, limit)
 }
+
+func (s *Server) overview(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.Overview(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
+}
+
+func (s *Server) listErrors(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	limit, err := intParam(r, "limit", 0)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.ListErrors(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w, r.URL.Query().Get("query"), limit)
+}
+
+func (s *Server) getError(r *http.Request) (any, error) {
+	return s.query.GetError(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"), r.PathValue("id"))
+}
+
+func (s *Server) releases(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.Releases(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
+}

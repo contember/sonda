@@ -34,17 +34,9 @@ func (a *app) logsSearchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Post("/v1/services/"+url.PathEscape(args[0])+"/logs/search", api.LogSearchRequest{
+			return send(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/logs/search", api.LogSearchRequest{
 				Window: w, Contains: contains, Pipeline: pipeline, Limit: limit,
-			})
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderLogSearch)
+			}, renderLogSearch)
 		},
 	}
 	window.register(cmd, "1h")
@@ -67,17 +59,9 @@ func (a *app) logsQueryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Post("/v1/services/"+url.PathEscape(args[0])+"/logs/query", api.LogQueryRequest{
+			return send(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/logs/query", api.LogQueryRequest{
 				Window: w, Query: args[1], Limit: limit, Step: step,
-			})
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderLogQuery)
+			}, renderLogQuery)
 		},
 	}
 	window.register(cmd, "1h")
@@ -97,15 +81,7 @@ func (a *app) logsFieldsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Get("/v1/services/"+url.PathEscape(args[0])+"/logs/fields", params)
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderLogFields)
+			return fetch(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/logs/fields", params, renderLogFields)
 		},
 	}
 	window.register(cmd, "1h")
@@ -129,15 +105,7 @@ func (a *app) resultCmd() *cobra.Command {
 			if limit > 0 {
 				params.Set("limit", strconv.Itoa(limit))
 			}
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Get("/v1/results/"+url.PathEscape(args[0]), params)
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderResultPage)
+			return fetch(a, cmd, "/v1/results/"+url.PathEscape(args[0]), params, renderResultPage)
 		},
 	}
 	cmd.Flags().IntVar(&group, "group", 0, "only lines of this group index")

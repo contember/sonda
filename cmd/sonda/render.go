@@ -202,3 +202,105 @@ func renderResultPage(w io.Writer, resp api.Response[api.ResultPage]) {
 		fmt.Fprintf(w, "# next page: --offset %d\n", *p.NextOffset)
 	}
 }
+
+func renderIssues(w io.Writer, resp api.Response[[]api.Issue]) {
+	renderMeta(w, resp.Meta)
+	writeIssues(w, resp.Data)
+}
+
+func writeIssues(w io.Writer, issues []api.Issue) {
+	t := table(w)
+	fmt.Fprintln(t, "ID\tSHORT ID\tCOUNT\tUSERS\tLAST SEEN\tNEW\tTITLE")
+	for _, i := range issues {
+		isNew := ""
+		if i.New {
+			isNew = "new"
+		}
+		fmt.Fprintf(t, "%s\t%s\t%d\t%d\t%s\t%s\t%s\n", i.ID, i.ShortID, i.Count, i.Users, i.LastSeen.Format(time.RFC3339), isNew, i.Title)
+	}
+	t.Flush()
+}
+
+func renderIssueDetail(w io.Writer, resp api.Response[api.IssueDetail]) {
+	i := resp.Data.Issue
+	fmt.Fprintf(w, "%s %s\n  %s\n  culprit: %s\n  %d events, %d users, first %s, last %s\n  %s\n",
+		i.ShortID, i.Level, i.Title, i.Culprit, i.Count, i.Users,
+		i.FirstSeen.Format(time.RFC3339), i.LastSeen.Format(time.RFC3339), i.Link)
+	e := resp.Data.LatestEvent
+	if e == nil {
+		return
+	}
+	fmt.Fprintf(w, "\nlatest event %s at %s", e.ID, e.Timestamp.Format(time.RFC3339))
+	if e.Release != "" {
+		fmt.Fprintf(w, ", release %s", e.Release)
+	}
+	if e.TraceID != "" {
+		fmt.Fprintf(w, ", trace %s", e.TraceID)
+	}
+	fmt.Fprintln(w)
+	for _, ex := range e.Exceptions {
+		fmt.Fprintf(w, "  %s: %s\n", ex.Type, ex.Value)
+		for _, f := range ex.Frames {
+			fmt.Fprintf(w, "    at %s (%s:%d:%d)\n", f.Function, f.File, f.Line, f.Column)
+		}
+	}
+	if len(e.Tags) > 0 {
+		fmt.Fprintf(w, "  tags: %s\n", formatLabels(e.Tags))
+	}
+}
+
+func renderReleases(w io.Writer, resp api.Response[[]api.Release]) {
+	renderMeta(w, resp.Meta)
+	writeReleases(w, resp.Data)
+}
+
+func writeReleases(w io.Writer, releases []api.Release) {
+	t := table(w)
+	fmt.Fprintln(t, "VERSION\tCREATED\tLAST DEPLOY")
+	for _, r := range releases {
+		deploy := ""
+		if r.LastDeploy != nil {
+			deploy = r.LastDeploy.Environment + " " + r.LastDeploy.Finished.Format(time.RFC3339)
+		}
+		fmt.Fprintf(t, "%s\t%s\t%s\n", r.Version, r.Created.Format(time.RFC3339), deploy)
+	}
+	t.Flush()
+}
+
+func renderOverview(w io.Writer, resp api.Response[api.Overview]) {
+	renderMeta(w, resp.Meta)
+	o := resp.Data
+	if o.Releases != nil {
+		fmt.Fprintln(w, "\nRELEASES")
+		if o.Releases.Error != "" {
+			fmt.Fprintln(w, "  error: "+o.Releases.Error)
+		} else if len(o.Releases.Items) == 0 {
+			fmt.Fprintln(w, "  none in range")
+		} else {
+			writeReleases(w, o.Releases.Items)
+		}
+	}
+	if o.Issues != nil {
+		fmt.Fprintln(w, "\nTOP ERRORS")
+		if o.Issues.Error != "" {
+			fmt.Fprintln(w, "  error: "+o.Issues.Error)
+		} else {
+			writeIssues(w, o.Issues.Items)
+		}
+	}
+	if len(o.Signals) > 0 {
+		fmt.Fprintln(w, "\nSIGNALS")
+		for _, s := range o.Signals {
+			if s.Error != "" {
+				fmt.Fprintf(w, "  %s: error: %s\n", s.Name, s.Error)
+				continue
+			}
+			if len(s.Series) == 0 {
+				fmt.Fprintf(w, "  %s: no data\n", s.Name)
+			}
+			for _, series := range s.Series {
+				fmt.Fprintf(w, "  %s %s: %s\n", s.Name, formatLabels(series.Labels), formatSummary(series.Summary))
+			}
+		}
+	}
+}

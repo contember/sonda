@@ -33,15 +33,7 @@ func (a *app) metricsListCmd() *cobra.Command {
 			if filter != "" {
 				params.Set("filter", filter)
 			}
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Get("/v1/services/"+url.PathEscape(args[0])+"/metrics", params)
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderMetricNames)
+			return fetch(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/metrics", params, renderMetricNames)
 		},
 	}
 	window.register(cmd, "1h")
@@ -62,16 +54,8 @@ func (a *app) metricsQueryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
 			path := "/v1/services/" + url.PathEscape(args[0]) + "/metrics/query?points=" + strconv.FormatBool(!noPoints)
-			body, err := c.Post(path, api.MetricQueryRequest{Window: w, Query: args[1], Step: step})
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderMetricResult)
+			return send(a, cmd, path, api.MetricQueryRequest{Window: w, Query: args[1], Step: step}, renderMetricResult)
 		},
 	}
 	window.register(cmd, "1h")
@@ -97,15 +81,7 @@ func (a *app) signalCmd() *cobra.Command {
 				params.Set("step", step)
 			}
 			params.Set("points", strconv.FormatBool(!noPoints))
-			c, err := a.client()
-			if err != nil {
-				return err
-			}
-			body, err := c.Get("/v1/services/"+url.PathEscape(args[0])+"/signals/"+url.PathEscape(args[1]), params)
-			if err != nil {
-				return err
-			}
-			return output(a, cmd.OutOrStdout(), body, renderMetricResult)
+			return fetch(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/signals/"+url.PathEscape(args[1]), params, renderMetricResult)
 		},
 	}
 	window.register(cmd, "1h")
