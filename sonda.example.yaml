@@ -1,0 +1,74 @@
+# Sonda server configuration. Copy to sonda.yaml and adjust.
+# ${NAME} references environment variables; they are allowed only in source URLs,
+# credentials and headers. Validate with: sonda-server check -c sonda.yaml
+
+server:
+  listen: ":8080"
+  database: sonda.db # audit log and result handles
+
+# Optional. Used only to build Explore links in responses; Sonda never queries Grafana.
+grafana:
+  url: https://grafana.example.com
+
+sources:
+  sentry:
+    type: sentry
+    url: https://sentry.io # EU organizations: https://de.sentry.io
+    org: acme
+    # Use an internal integration token with org:read, project:read, event:read, project:releases.
+    auth: { type: bearer, token: "${SENTRY_TOKEN}" }
+
+  loki-prod:
+    type: loki
+    url: http://loki-gateway.monitoring.svc:3100
+    headers: { X-Scope-OrgID: prod } # multi-tenant Loki only
+    grafana_datasource_uid: loki-prod
+
+  prom-prod:
+    type: prometheus # also Mimir, Thanos, VictoriaMetrics, Grafana Cloud
+    url: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom
+    auth: { type: basic, username: "123456", password: "${GRAFANA_CLOUD_METRICS_TOKEN}" }
+    grafana_datasource_uid: prom-prod
+
+services:
+  engine-api:
+    description: GraphQL API of the content engine
+    repository: github.com/acme/engine
+    environments:
+      production:
+        errors: { source: sentry, project: engine, environment: production }
+        # The selector is a security boundary: every log and metric query of this
+        # service gets these matchers. It must contain an = or =~ matcher that rejects
+        # the empty value.
+        logs: { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
+        metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
+    # Named PromQL expressions without service matchers; Sonda adds the selector.
+    signals:
+      rps: sum(rate(http_requests_total[5m]))
+      error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+      p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+
+identities:
+  coding-agent:
+    # Generate with: sonda-server token
+    token_sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    grants:
+      - services: [engine-api]
+        environments: [production]
+        capabilities: [errors, logs, metrics]
+    limits:
+      requests_per_minute: 30
+
+# Server defaults; identities can override each value.
+limits:
+  max_range: 7d
+  max_log_lines: 500
+  max_response_bytes: 65536
+  query_timeout: 30s
+  concurrent_queries: 4
+  requests_per_minute: 60
+
+# Extra regular expressions to redact from log lines and error messages, on top of the
+# built-in rules for bearer tokens, URL credentials, AWS keys, JWTs and password fields.
+redact:
+  - 'cust_[0-9a-f]{24}'

@@ -1,0 +1,7 @@
+.git
+dev
+docs
+*.db
+sonda.yaml
+/sonda
+/sonda-server

@@ -1,6 +1,6 @@
 # Sonda — Technical Design (v1)
 
-Status: draft, before implementation.
+Status: implemented (v1). Deviations found during implementation are folded into this text.
 
 Sonda is a self-hostable, read-only gateway that gives AI agents one credential and one
 service-centric interface to production telemetry in Sentry, Loki and Prometheus.
@@ -17,8 +17,10 @@ returns compact, evidence-carrying responses.
 | Native queries | Allowed in v1, scoped to one service, with matcher injection | Plain passthrough; string concatenation | Passthrough leaks other services. String concatenation protects only one selector. |
 | Configuration | One YAML file, loaded at startup | Configuration in a database | Reviewable in git, no admin UI needed. |
 | Provider secrets | Environment variable references in YAML | Encrypted in the database | No key management in v1. |
-| Internal storage | SQLite (`modernc.org/sqlite`, pure Go) | Postgres | No extra service to run. Holds only audit, result handles and metadata cache. |
-| Loki/Prometheus access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `patterns`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
+| Internal storage | SQLite (`modernc.org/sqlite`, pure Go) | Postgres | No extra service to run. Holds only the audit log and result handles. Metadata caches live in memory. |
+| Loki/Prometheus access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `detected_fields`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
+| Range limit | Reject ranges over `max_range` with `limit_exceeded` | Silently shorten the range | A shortened range would make counts look complete when they are not. |
+| Native query capability | Same capability as the structured tools (`logs`, `metrics`) | Separate `logs:native` / `metrics:native` | Native queries are scoped the same way; cost is bounded by limits. |
 | Workspaces | One server = one workspace | Multi-workspace in v1 | No current need. Nothing in the model prevents adding it later. |
 
 ## 2. Domain model
@@ -29,9 +31,9 @@ Source ──< Binding >── Environment ──< Service
 Identity ──< Grant (services × environments × capabilities)
 ```
 
-- **Source**: a connection to a backend. Types: `sentry`, `loki`, `prometheus`. Each `loki` and
-  `prometheus` source has its own URL and auth (`none`, `bearer` or `basic`) and optional extra
-  headers, e.g. `X-Scope-OrgID` for multi-tenant Loki or Mimir. Prometheus-compatible backends
+- **Source**: a connection to a backend. Types: `sentry`, `loki`, `prometheus`. Each source has
+  its own URL and auth (`none`, `bearer` or `basic`) and optional extra headers, e.g.
+  `X-Scope-OrgID` for multi-tenant Loki or Mimir. Prometheus-compatible backends
   (Mimir, Thanos, VictoriaMetrics, Grafana Cloud) use the `prometheus` type.
 - **Grafana** (optional): base URL and a datasource UID per source. Used only to build Explore
   links in responses. Sonda does not query Grafana.
@@ -58,7 +60,7 @@ sources:
     type: sentry
     url: https://sentry.io
     org: acme
-    token: ${SENTRY_TOKEN}
+    auth: { type: bearer, token: "${SENTRY_TOKEN}" }
   loki-prod:
     type: loki
     url: http://loki-gateway.monitoring.svc:3100
@@ -68,7 +70,7 @@ sources:
   prom-prod:
     type: prometheus
     url: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom
-    auth: { type: basic, username: "123456", password: ${GRAFANA_CLOUD_METRICS_TOKEN} }
+    auth: { type: basic, username: "123456", password: "${GRAFANA_CLOUD_METRICS_TOKEN}" }
     grafana_datasource_uid: prom-prod
 
 grafana:
@@ -106,8 +108,10 @@ limits:
   requests_per_minute: 60
 ```
 
-Config validation at startup fails on: unknown source references, unparsable selectors or
-signals, empty selectors, and grants that reference unknown services or environments.
+Config validation at startup fails on: unknown fields, unknown source references, unset
+environment variables, unparsable selectors or signals, selectors without an `=` or `=~` matcher
+that rejects the empty value (e.g. `{job!=""}` selects nearly everything), and grants that
+reference unknown services or environments. The full example is `sonda.example.yaml`.
 
 ## 3. Components
 
@@ -116,26 +120,30 @@ cmd/sonda-server   main: load config, open SQLite, start HTTP server
 cmd/sonda          CLI: thin HTTP client over the api package
 
 api/               request/response types shared by server and CLI (public package)
+internal/client    HTTP client used by the CLI
 internal/config    YAML loading, env expansion, validation → typed Config
 internal/authz     token → Identity; (Identity, service, env, capability) → Scope or error
-internal/policy    PromQL/LogQL matcher injection; time-range and limit clamping
+internal/policy    PromQL/LogQL matcher injection and verification; time range and step
 internal/connector
+  upstream/        HTTP client per source: auth, headers, error mapping
   sentry/          Sentry REST client
   loki/            Loki HTTP API client
-  prometheus/      Prometheus HTTP API client
+  prometheus/      Prometheus HTTP API client (prometheus/client_golang)
 internal/query     use cases: overview, errors, logs search, metrics, results
-internal/shape     grouping, sampling, truncation, source links
-internal/store     SQLite: audit log, result handles, metadata cache
-internal/httpapi   routing, auth middleware, rate limits, JSON encoding
+internal/shape     grouping (Drain), redaction, truncation, series summaries, source links
+internal/audit     per-request record of service, environment and upstream queries
+internal/store     SQLite: audit log, result handles
+internal/httpapi   routing, authentication, rate and concurrency limits, audit, JSON encoding
 ```
 
 Boundaries:
 
 - `httpapi` parses requests into `api` types and calls `authz` first. Nothing reaches `query`
   without a `Scope`.
-- `authz.Scope` is the only way to get a source, a Sentry project or a label selector. Connector
-  methods take a `Scope`, never a service name from the request. A scope cannot be built outside
-  `authz`.
+- `authz.ErrorScope` and `authz.SelectorScope` are the only way to get a source, a Sentry project
+  or a label selector. Connector methods take a scope, never a service name from the request. A
+  usable scope cannot be built outside `authz` (fields are unexported; `Matchers()` returns a deep
+  copy).
 - `policy` is the only code that turns user query text into upstream query text.
 - Connectors know nothing about identities or services. They execute scoped queries and return
   typed results.
@@ -143,41 +151,44 @@ Boundaries:
 
 ## 4. Connector contracts
 
+Connectors are concrete clients, one per source. There are no connector interfaces in v1;
+they would have one implementation each.
+
 ```go
-type ErrorSource interface {
-    ListIssues(ctx context.Context, s ErrorScope, q IssueQuery) (IssuePage, error)
-    GetIssue(ctx context.Context, s ErrorScope, issueID string) (Issue, error)
-    LatestEvent(ctx context.Context, s ErrorScope, issueID string) (Event, error)
-    ListReleases(ctx context.Context, s ErrorScope, r TimeRange) ([]Release, error)
-}
+// sentry.Client
+ListIssues(ctx, scope authz.ErrorScope, r api.TimeRange, query, sort string, limit int) ([]Issue, error)
+GetIssue(ctx, scope authz.ErrorScope, id string) (Issue, error)
+LatestEvent(ctx, scope authz.ErrorScope, id string) (Event, error)
+Releases(ctx, scope authz.ErrorScope, limit int) ([]Release, error)
 
-type LogSource interface {
-    QueryRange(ctx context.Context, s LogScope, q InjectedLogQL, r TimeRange, limit int) (LogResult, error)
-    Count(ctx context.Context, s LogScope, q InjectedLogQL, r TimeRange) (int64, error)
-    Labels(ctx context.Context, s LogScope, r TimeRange) ([]string, error)
-    LabelValues(ctx context.Context, s LogScope, label string, r TimeRange) ([]string, error)
-}
+// loki.Client
+Lines(ctx, q policy.LogQL, r api.TimeRange, limit int) ([]Stream, error)
+Matrix(ctx, q policy.LogQL, r api.TimeRange, step time.Duration) (model.Matrix, error)
+Instant(ctx, q policy.LogQL, at time.Time) (model.Vector, error)
+Series(ctx, scope authz.SelectorScope, r api.TimeRange) ([]map[string]string, error)
+DetectedFields(ctx, scope authz.SelectorScope, r api.TimeRange) ([]Field, error)
 
-type MetricSource interface {
-    QueryRange(ctx context.Context, s MetricScope, q InjectedPromQL, r TimeRange, step time.Duration) (Matrix, error)
-    MetricNames(ctx context.Context, s MetricScope, r TimeRange) ([]MetricInfo, error)
-    LabelValues(ctx context.Context, s MetricScope, label string, r TimeRange) ([]string, error)
-}
+// prometheus.Client
+QueryRange(ctx, q policy.PromQL, r api.TimeRange, step time.Duration) (model.Matrix, error)
+MetricNames(ctx, scope authz.SelectorScope, r api.TimeRange) ([]string, error)
+Metadata(ctx) (map[string][]v1.Metadata, error)
 ```
 
-- `InjectedLogQL` and `InjectedPromQL` are types that only `policy` can construct. A connector
-  cannot receive raw user text.
-- Metadata calls (`Labels`, `MetricNames`, `LabelValues`) pass the scope selector as `match[]` /
-  `query`. Without it, an agent would see names of other services.
-- New backends (Tempo, CloudWatch, Datadog) add a new interface or implement an existing one.
-  No generic plugin system in v1.
+- `policy.LogQL` and `policy.PromQL` can only be constructed by `policy`. A connector cannot
+  receive raw user text.
+- Metadata calls pass the scope selector as `match[]` / `query`. Without it, an agent would see
+  names of other services. Loki labels come from the `series` endpoint, which is scoped by
+  design; the `labels` endpoint is not used. Prometheus `metadata` is not scoped, so it is only
+  used to look up names returned by the scoped `label/__name__/values` call.
+- New backends (Tempo, CloudWatch, Datadog) add a new client and use cases. No generic plugin
+  system in v1.
 
 ### Loki and Prometheus specifics
 
 - One shared HTTP client per source applies auth and extra headers. Connectors do not know how a
   source authenticates.
-- Endpoints used: Prometheus `query_range`, `label/{name}/values`, `series`, `metadata`; Loki
-  `query_range`, `labels`, `label/{name}/values`, `patterns`.
+- Endpoints used: Prometheus `query_range`, `label/__name__/values`, `metadata`; Loki
+  `query_range`, `query`, `series`, `detected_fields` (skipped on Loki versions without it).
 - Read-only credentials: Grafana Cloud access policy tokens with `logs:read` / `metrics:read`.
   Self-hosted backends without auth must be reachable only from Sonda's network.
 
@@ -186,7 +197,12 @@ type MetricSource interface {
 - Use project-scoped endpoints (`/api/0/projects/{org}/{project}/issues/`). The agent's free-text
   query cannot escape the project. An org-level endpoint with a `project:` filter could.
 - Lookups by ID (`GetIssue`) fetch first, then check that the issue's project equals the scope's
-  project. Otherwise return `not_found`, not `forbidden`.
+  project. Otherwise return `not_found`, not `forbidden`. IDs must be numeric.
+- The environment grant also holds for single issues: the latest event is fetched with the
+  scope's environment, and an issue without events there is `not_found`.
+- List results are filtered by project slug again, as defense in depth.
+- Verified against sentry.io: a `project:` or `environment:` term in the agent's query combines
+  with the endpoint's project and the `environment` parameter by AND; it cannot widen them.
 - Required token scopes: `org:read`, `project:read`, `event:read`, `project:releases`.
 
 ## 5. Authorization
@@ -195,7 +211,8 @@ Request flow:
 
 1. Authenticate: bearer token → SHA-256 → Identity. Constant-time compare.
 2. Authorize: `(identity, service, environment, capability)` against the grants → `Scope`.
-3. Clamp: time range to `max_range`, limit to `max_log_lines`, timeout to `query_timeout`.
+3. Limit: reject ranges over `max_range`, cap lines at `max_log_lines`, apply `query_timeout`,
+   rate and concurrency limits.
 4. For native queries and signals: inject the scope selector (section 6).
 5. Execute through the connector with the scope.
 6. Post-check results fetched by ID.
@@ -207,12 +224,15 @@ Rules:
 - Deny by default. An unknown service and a forbidden service return the same error.
 - Discovery (`services`, `describe`) lists only services the identity has a grant for.
 - Result handles belong to the identity that created them. Another identity gets `not_found`.
-- Rate limit (token bucket) and concurrency limit are per identity, in memory.
+- Rate limit (token bucket, burst of ten seconds' worth) and concurrency limit are per identity,
+  in memory. Requests over either limit fail with `rate_limited` instead of queueing.
 
 ## 6. Native query enforcement
 
-Sonda parses the query, appends the scope matchers to every selector in the AST, and serializes
-it back. Matchers combine with AND, so:
+Sonda parses the query, appends the scope matchers to every selector in the AST (skipping
+matchers the selector already has), and serializes it back. It then re-parses the result and
+checks that every selector carries all scope matchers, so a serialization bug cannot silently
+drop the scope. Matchers combine with AND, so:
 
 - `app=~".*"` from the agent is narrowed by the injected `app="engine"`.
 - `app="other"` from the agent yields an empty result. No data leaks.
@@ -245,9 +265,9 @@ Costs:
 | Extra requirements | none | Go ≥ 1.26.5; copy Loki's `replace` directives for `hashicorp/memberlist` and `grafana/regexp` |
 
 Loki pulls gRPC, OpenTelemetry, etcd and k8s client packages. This affects only `sonda-server`.
-Mitigation: isolate the LogQL code in `internal/policy/logql`, pin the Loki version, and treat
-each Loki upgrade as a deliberate change. If the cost becomes a problem, vendor the `syntax`
-package alone.
+Mitigation: pin the Loki version, keep the replace directives (commented in `go.mod`), and
+treat each Loki upgrade as a deliberate change. If the cost becomes a problem, vendor the
+`syntax` and `pattern/drain` packages alone. Final sizes: `sonda-server` 45 MB, `sonda` 10 MB.
 
 The PromQL API changed between Prometheus versions (`parser.ParseExpr` →
 `parser.NewParser(opts).ParseExpr`). Pin the version.
@@ -267,7 +287,7 @@ Every response uses one envelope:
     "truncated": true,
     "sampled": true,
     "resultId": "res_8KcW…",
-    "untrusted": ["data.groups[].pattern", "data.samples[].line"]
+    "untrusted": ["data.groups[].pattern", "data.groups[].example"]
   }
 }
 ```
@@ -277,30 +297,38 @@ Every response uses one envelope:
   range instead of a URL.
 - `untrusted` lists the fields that contain raw telemetry. Agents treat them as data, never as
   instructions.
-- Responses above `max_response_bytes` are cut and marked `truncated`.
+- Log lines are cut to 1000 characters. Line lists stop at 3/4 of `max_response_bytes`; the
+  rest stays behind a result handle and the response is marked `truncated`. Series are capped at
+  30 and about 60 points each. A response still above `max_response_bytes` fails with
+  `limit_exceeded`.
 
 ### Log search
 
-1. Exact total: `sum(count_over_time(<selector + filter>[range]))`.
-2. Sample: fetch up to `max_log_lines` lines.
-3. Group the sample into patterns with Drain (`loki/pkg/pattern/drain`, already a dependency).
-4. Return the total, the groups with sample-based counts (`sampled: true`), and a `resultId`.
+1. Exact total: `sum(count_over_time(<selector + filter>[range]))` as one instant query.
+2. Sample: fetch up to `max_log_lines` of the newest matching lines. `sampleRange` reports the
+   time span they cover.
+3. Redact the lines, then group them into patterns with Drain (`loki/pkg/pattern/drain`, already
+   a dependency). Lines Drain cannot tokenize (fewer than 4 or more than 80 tokens) are counted
+   as `ungrouped`.
+4. Return the total, the groups with sample-based counts and estimates (`sampled: true`), and a
+   `resultId`.
 5. The agent drills down with `resultId` + group index, or pages through raw lines.
 
-Alternative: Loki's patterns API (`/loki/api/v1/patterns`). It gives counts over the full range
-but needs the pattern ingester enabled. Use it when available, fall back to step 3.
+Not used: Loki's patterns API (`/loki/api/v1/patterns`). It accepts only a stream selector, so
+it ignores line filters, and it needs the pattern ingester enabled.
 
 ### Result handles
 
-- Stored in SQLite: `id`, `identity`, `scope`, `created_at`, `expires_at`, payload.
+- Stored in SQLite: `id`, `identity`, `kind`, `created_at`, `expires_at`, payload (redacted lines
+  and their group indexes). Expired rows are deleted on the next save.
 - TTL: 30 minutes by default.
 - They replace a general query cache in v1. An investigation reuses its own results; nothing is
   shared across identities.
 
 ### Metadata cache
 
-Metric names, label names and log fields per scope. TTL: 10 minutes. The cache key includes the
-scope, so entries never cross services.
+Only Prometheus metric metadata (type and help of all metrics) is cached, in memory per source,
+for 10 minutes. It holds no per-service data: names come from the scoped call on every request.
 
 ## 8. HTTP API
 
@@ -313,19 +341,20 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `/v1/services/{s}` | any grant | Environments, capabilities, signals, repository |
 | `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values. The usual first call. |
 | `/v1/services/{s}/errors` | `errors` | Issues: title, count, users, first/last seen, link |
-| `/v1/services/{s}/errors/{id}` | `errors` | Issue + latest event with stack trace (compacted) |
+| `/v1/services/{s}/errors/{id}` | `errors` | Issue + latest event in `env` with stack trace (in-app frames, newest first) |
 | `/v1/services/{s}/releases` | `errors` | Releases and deploys in range |
 | `POST /v1/services/{s}/logs/search` | `logs` | Filter text and/or LogQL pipeline → total + groups |
 | `POST /v1/services/{s}/logs/query` | `logs` | Native LogQL (injected) → lines or series |
 | `/v1/services/{s}/logs/fields` | `logs` | Labels and detected fields |
 | `/v1/services/{s}/metrics` | `metrics` | Metric names with type and help |
-| `/v1/services/{s}/signals/{name}` | `metrics` | Signal series + summary (min/max/last/change) |
+| `/v1/services/{s}/signals/{name}` | `metrics` | Signal series + summary (count, min, max, avg, first, last) |
 | `POST /v1/services/{s}/metrics/query` | `metrics` | Native PromQL (injected) → series + summary |
 | `/v1/results/{id}` | owner | Page through or drill into a stored result |
 
 Errors use one shape: `{ "error": { "code": "not_found", "message": "…" } }`. Codes:
-`unauthenticated`, `not_found`, `invalid_query`, `limit_exceeded`, `rate_limited`,
-`upstream_error`, `timeout`.
+`unauthenticated`, `not_found`, `invalid_request`, `invalid_query`, `limit_exceeded`,
+`rate_limited`, `upstream_error`, `timeout`, `internal`. The environment may be omitted when the
+identity has exactly one environment with the needed capability.
 
 ## 9. CLI
 
@@ -348,8 +377,8 @@ sonda result res_8KcW --group 2
 - Output: JSON when stdout is not a TTY, compact text on a TTY. `--format json|text` overrides.
 - Exit codes: `0` success, `1` usage error, `2` not found / forbidden, `3` limit or rate limit,
   `4` upstream error.
-- Ships with a `SKILL.md` that teaches agents the investigation flow: `overview` → `errors` →
-  `logs search` → drill-down.
+- Ships with `skills/sonda/SKILL.md` that teaches agents the investigation flow: `overview` →
+  `errors` → `logs search` → drill-down.
 
 ## 10. Security
 
@@ -358,9 +387,10 @@ sonda result res_8KcW --group 2
 - Provider credentials never appear in responses, errors or audit records.
 - Limits: time range, lines, response bytes, timeout, concurrency, rate.
 - Audit log in SQLite records every request, including denied ones.
-- Telemetry is untrusted: marked in `meta.untrusted`. A configurable list of regexes redacts
-  known secret patterns (bearer tokens, AWS keys, passwords in URLs). Redaction reduces risk; it
-  is not a guarantee.
+- Telemetry is untrusted: marked in `meta.untrusted`. Built-in rules redact bearer and basic
+  tokens, URL credentials, AWS keys, JWTs, private keys and `password=`-style fields in log lines
+  and Sentry titles, messages and tags; `redact` in the config adds patterns. Redaction reduces
+  risk; it is not a guarantee. Stack frames and metric labels are not redacted.
 - Expensive expressions inside a query (e.g. `rate(x[90d])`) are not detected by Sonda. Upstream
   limits in Prometheus and Loki remain necessary.
 
@@ -376,8 +406,11 @@ sonda result res_8KcW --group 2
 ## 12. Open questions
 
 1. If a deployment can reach only Grafana, does its datasource proxy pass all needed Loki
-   endpoints (`query_range`, `labels`, `patterns`)? This affects only that fallback, not the
-   default direct connection.
-2. Should native queries require a separate capability (e.g. `logs:native`) for tighter control,
-   or is the same capability enough? This design uses the same capability.
-3. How should `overview` choose "top" issues: by event count in range, or by new-in-range first?
+   endpoints (`query_range`, `query`, `series`, `detected_fields`)? This affects only that
+   fallback, not the default direct connection.
+2. The log sample is the newest lines. For long ranges, a sample spread over the range would
+   describe older patterns better, at the cost of more upstream requests.
+
+Resolved: native queries use the same capability as the structured tools (section 1).
+`overview` ranks issues by event count in the range and marks issues first seen in the range
+with `new: true`.
