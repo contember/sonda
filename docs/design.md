@@ -3,7 +3,7 @@
 Status: draft, before implementation.
 
 Sonda is a self-hostable, read-only gateway that gives AI agents one credential and one
-service-centric interface to production telemetry in Sentry and Grafana (Loki, Prometheus).
+service-centric interface to production telemetry in Sentry, Loki and Prometheus.
 It stores no telemetry. It queries sources on demand, enforces per-service authorization, and
 returns compact, evidence-carrying responses.
 
@@ -18,7 +18,7 @@ returns compact, evidence-carrying responses.
 | Configuration | One YAML file, loaded at startup | Configuration in a database | Reviewable in git, no admin UI needed. |
 | Provider secrets | Environment variable references in YAML | Encrypted in the database | No key management in v1. |
 | Internal storage | SQLite (`modernc.org/sqlite`, pure Go) | Postgres | No extra service to run. Holds only audit, result handles and metadata cache. |
-| Grafana access | Native Loki/Prometheus HTTP API, through the Grafana datasource proxy or directly | Grafana `/api/ds/query` | Same request and response format for both paths, so one connector per backend. |
+| Loki/Prometheus access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `patterns`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
 | Workspaces | One server = one workspace | Multi-workspace in v1 | No current need. Nothing in the model prevents adding it later. |
 
 ## 2. Domain model
@@ -29,8 +29,12 @@ Source ──< Binding >── Environment ──< Service
 Identity ──< Grant (services × environments × capabilities)
 ```
 
-- **Source**: a connection to a backend. Types: `sentry`, `loki`, `prometheus`. A Grafana instance
-  contributes one `loki` and one `prometheus` source per datasource UID.
+- **Source**: a connection to a backend. Types: `sentry`, `loki`, `prometheus`. Each `loki` and
+  `prometheus` source has its own URL and auth (`none`, `bearer` or `basic`) and optional extra
+  headers, e.g. `X-Scope-OrgID` for multi-tenant Loki or Mimir. Prometheus-compatible backends
+  (Mimir, Thanos, VictoriaMetrics, Grafana Cloud) use the `prometheus` type.
+- **Grafana** (optional): base URL and a datasource UID per source. Used only to build Explore
+  links in responses. Sonda does not query Grafana.
 - **Service**: a logical application. Has a description, an optional repository, environments and
   signals.
 - **Environment**: per service, maps each capability to a source and a scope:
@@ -57,12 +61,18 @@ sources:
     token: ${SENTRY_TOKEN}
   loki-prod:
     type: loki
-    url: https://grafana.example.com/api/datasources/proxy/uid/loki-prod
-    token: ${GRAFANA_TOKEN}
+    url: http://loki-gateway.monitoring.svc:3100
+    auth: { type: none }
+    headers: { X-Scope-OrgID: prod }
+    grafana_datasource_uid: loki-prod
   prom-prod:
     type: prometheus
-    url: https://grafana.example.com/api/datasources/proxy/uid/prom-prod
-    token: ${GRAFANA_TOKEN}
+    url: https://prometheus-prod-01-eu-west-0.grafana.net/api/prom
+    auth: { type: basic, username: "123456", password: ${GRAFANA_CLOUD_METRICS_TOKEN} }
+    grafana_datasource_uid: prom-prod
+
+grafana:
+  url: https://grafana.example.com
 
 services:
   engine-api:
@@ -162,6 +172,15 @@ type MetricSource interface {
 - New backends (Tempo, CloudWatch, Datadog) add a new interface or implement an existing one.
   No generic plugin system in v1.
 
+### Loki and Prometheus specifics
+
+- One shared HTTP client per source applies auth and extra headers. Connectors do not know how a
+  source authenticates.
+- Endpoints used: Prometheus `query_range`, `label/{name}/values`, `series`, `metadata`; Loki
+  `query_range`, `labels`, `label/{name}/values`, `patterns`.
+- Read-only credentials: Grafana Cloud access policy tokens with `logs:read` / `metrics:read`.
+  Self-hosted backends without auth must be reachable only from Sonda's network.
+
 ### Sentry specifics
 
 - Use project-scoped endpoints (`/api/0/projects/{org}/{project}/issues/`). The agent's free-text
@@ -253,7 +272,9 @@ Every response uses one envelope:
 }
 ```
 
-- `sources` are deep links to Grafana Explore or Sentry, so a human can verify the finding.
+- `sources` are deep links to Sentry, and to Grafana Explore when `grafana` is configured, so a
+  human can verify the finding. Without Grafana, the source entry carries the upstream query and
+  range instead of a URL.
 - `untrusted` lists the fields that contain raw telemetry. Agents treat them as data, never as
   instructions.
 - Responses above `max_response_bytes` are cut and marked `truncated`.
@@ -354,9 +375,9 @@ sonda result res_8KcW --group 2
 
 ## 12. Open questions
 
-1. Does the Grafana datasource proxy pass all needed Loki endpoints (`query_range`, `labels`,
-   `patterns`) in current Grafana and Grafana Cloud? If not, the Loki connector uses
-   `/api/datasources/uid/{uid}/resources/…` or a direct Loki URL.
+1. If a deployment can reach only Grafana, does its datasource proxy pass all needed Loki
+   endpoints (`query_range`, `labels`, `patterns`)? This affects only that fallback, not the
+   default direct connection.
 2. Should native queries require a separate capability (e.g. `logs:native`) for tighter control,
    or is the same capability enough? This design uses the same capability.
 3. How should `overview` choose "top" issues: by event count in range, or by new-in-range first?
