@@ -1,0 +1,6 @@
+/sonda
+/sonda-server
+/dist/
+*.db
+*.db-*
+sonda.yaml
