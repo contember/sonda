@@ -83,10 +83,10 @@ func TestScopeLogQL(t *testing.T) {
 		{`{app=~".+"} | json | level="error"`, `{app=~".+", app="api"} | json | level="error"`, false},
 		{
 			`sum(count_over_time({app="api"}[5m])) / sum(count_over_time({app="billing"} |= "password" [5m]))`,
-			`(sum(count_over_time({app="api"}[5m])) / sum(count_over_time({app="billing", app="api"} |= "password"[5m])))`,
+			`sum(count_over_time({app="api"}[5m])) / sum(count_over_time({app="billing", app="api"} |= "password" [5m]))`,
 			true,
 		},
-		{`sum by (level) (rate({ns="x"} |= "timeout" [1m]))`, `sum by (level)(rate({ns="x", app="api"} |= "timeout"[1m]))`, true},
+		{`sum by (level) (rate({ns="x"} |= "timeout" [1m]))`, `sum by (level) (rate({ns="x", app="api"} |= "timeout" [1m]))`, true},
 	}
 	for _, tt := range tests {
 		got, err := ScopeLogQL(scope, tt.in)
@@ -130,7 +130,7 @@ func TestLogSearchQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `sum(count_over_time({level="error", app="api"}[1h]))`; count.String() != want {
+	if want := `sum(count_over_time({level="error", app="api"} [3600s]))`; count.String() != want {
 		t.Errorf("count query = %s", count)
 	}
 }

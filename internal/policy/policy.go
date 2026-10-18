@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
@@ -18,6 +17,7 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
+	"github.com/contember/sonda/internal/logql"
 )
 
 // PromQL is a PromQL expression in which every selector carries the scope matchers.
@@ -84,38 +84,28 @@ func verifyPromQL(query string, matchers []*labels.Matcher) error {
 // ScopeLogQL appends the scope matchers to every stream selector of the query.
 func ScopeLogQL(scope authz.SelectorScope, query string) (LogQL, error) {
 	matchers := scope.Matchers()
-	expr, err := syntax.ParseExpr(query)
+	parsed, err := logql.Parse(query)
 	if err != nil {
 		return LogQL{}, apierr.InvalidQuery("invalid LogQL: %v", err)
 	}
-	expr.Walk(func(e syntax.Expr) bool {
-		if me, ok := e.(*syntax.MatchersExpr); ok {
-			me.Mts = withScope(me.Mts, matchers)
-		}
-		return true
+	scoped := parsed.Rewrite(func(selector []*labels.Matcher) []*labels.Matcher {
+		return withScope(selector, matchers)
 	})
-	scoped := expr.String()
 	if err := verifyLogQL(scoped, matchers); err != nil {
 		return LogQL{}, err
 	}
-	_, isLogQuery := expr.(syntax.LogSelectorExpr)
-	return LogQL{expr: scoped, metric: !isLogQuery}, nil
+	return LogQL{expr: scoped, metric: !parsed.IsLogQuery()}, nil
 }
 
 func verifyLogQL(query string, matchers []*labels.Matcher) error {
-	expr, err := syntax.ParseExpr(query)
+	parsed, err := logql.Parse(query)
 	if err != nil {
 		return fmt.Errorf("scoped LogQL does not parse: %w", err)
 	}
-	var unscoped bool
-	expr.Walk(func(e syntax.Expr) bool {
-		if me, ok := e.(*syntax.MatchersExpr); ok && !containsAll(me.Mts, matchers) {
-			unscoped = true
+	for _, selector := range parsed.Selectors() {
+		if !containsAll(selector, matchers) {
+			return fmt.Errorf("scoped LogQL has a selector without scope matchers: %s", query)
 		}
-		return true
-	})
-	if unscoped {
-		return fmt.Errorf("scoped LogQL has a selector without scope matchers: %s", query)
 	}
 	return nil
 }

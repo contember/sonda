@@ -10,11 +10,12 @@ import (
 	"slices"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/logql/syntax"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/contember/sonda/internal/logql"
 )
 
 type rawConfig struct {
@@ -358,7 +359,7 @@ func (v *validator) expand(path, raw string) string {
 }
 
 func parseLogSelector(selector string) ([]*labels.Matcher, error) {
-	return syntax.ParseMatchers(selector, true)
+	return logql.ParseSelector(selector)
 }
 
 func parseMetricSelector(selector string) ([]*labels.Matcher, error) {

@@ -12,6 +12,12 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # The LogQL scoping tests check the lexer against a real Loki.
+      loki:
+        image: grafana/loki:3.5.5
+        ports:
+          - 3100:3100
     steps:
       - uses: actions/checkout@v4
 
@@ -33,3 +39,5 @@ jobs:
       - run: go build ./cmd/...
 
       - run: go test ./...
+        env:
+          SONDA_TEST_LOKI_URL: http://localhost:3100
