@@ -9,7 +9,6 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
-	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/prometheus"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/shape"
@@ -24,7 +23,7 @@ const (
 
 var seriesUntrusted = []string{"data.series[].labels"}
 
-func (s *Service) metricScope(identity *config.Identity, service, env string) (authz.SelectorScope, *prometheus.Client, error) {
+func (s *Service) metricScope(identity *authz.Identity, service, env string) (authz.SelectorScope, *prometheus.Client, error) {
 	scope, err := s.authz.MetricScope(identity, service, env)
 	if err != nil {
 		return authz.SelectorScope{}, nil, err
@@ -32,7 +31,7 @@ func (s *Service) metricScope(identity *config.Identity, service, env string) (a
 	return scope, s.connectors.Prometheus[scope.Source().Name], nil
 }
 
-func (s *Service) MetricNames(ctx context.Context, identity *config.Identity, service string, w api.Window, filter string) (api.Response[[]api.MetricInfo], error) {
+func (s *Service) MetricNames(ctx context.Context, identity *authz.Identity, service string, w api.Window, filter string) (api.Response[[]api.MetricInfo], error) {
 	scope, client, err := s.metricScope(identity, service, w.Environment)
 	if err != nil {
 		return api.Response[[]api.MetricInfo]{}, err
@@ -69,7 +68,7 @@ func (s *Service) MetricNames(ctx context.Context, identity *config.Identity, se
 	return api.Response[[]api.MetricInfo]{Data: infos, Meta: meta}, nil
 }
 
-func (s *Service) Signal(ctx context.Context, identity *config.Identity, service, signal string, w api.Window, step string, withPoints bool) (api.Response[api.MetricResult], error) {
+func (s *Service) Signal(ctx context.Context, identity *authz.Identity, service, signal string, w api.Window, step string, withPoints bool) (api.Response[api.MetricResult], error) {
 	svc, err := s.authz.Service(identity, service)
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
@@ -81,7 +80,7 @@ func (s *Service) Signal(ctx context.Context, identity *config.Identity, service
 	return s.QueryMetrics(ctx, identity, service, api.MetricQueryRequest{Window: w, Query: expr, Step: step}, withPoints)
 }
 
-func (s *Service) QueryMetrics(ctx context.Context, identity *config.Identity, service string, req api.MetricQueryRequest, withPoints bool) (api.Response[api.MetricResult], error) {
+func (s *Service) QueryMetrics(ctx context.Context, identity *authz.Identity, service string, req api.MetricQueryRequest, withPoints bool) (api.Response[api.MetricResult], error) {
 	scope, client, err := s.metricScope(identity, service, req.Environment)
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err

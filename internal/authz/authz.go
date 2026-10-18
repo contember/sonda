@@ -3,8 +3,9 @@
 package authz
 
 import (
+	"context"
 	"crypto/sha256"
-	"crypto/subtle"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
@@ -14,30 +15,47 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/identities"
 )
 
 type Authorizer struct {
-	cfg *config.Config
+	cfg        *config.Config
+	identities identities.Store
 }
 
-func New(cfg *config.Config) *Authorizer {
-	return &Authorizer{cfg: cfg}
+func New(cfg *config.Config, store identities.Store) *Authorizer {
+	return &Authorizer{cfg: cfg, identities: store}
 }
 
-func (a *Authorizer) Authenticate(token string) (*config.Identity, bool) {
-	hash := sha256.Sum256([]byte(token))
-	var found *config.Identity
-	// Compare against every identity, so timing does not depend on which one matches.
-	for _, identity := range a.cfg.Identities {
-		if subtle.ConstantTimeCompare(hash[:], identity.TokenSHA256[:]) == 1 {
-			found = identity
-		}
+// Identity is an authenticated identity with its effective limits.
+type Identity struct {
+	Name   string
+	Grants []identities.Grant
+	Limits config.Limits
+}
+
+// Authenticate looks the identity up by the token's SHA-256. The lookup needs no
+// constant-time compare: timing can reveal at most the hash, not the token.
+func (a *Authorizer) Authenticate(ctx context.Context, token string) (*Identity, error) {
+	if token == "" {
+		return nil, unauthenticated()
 	}
-	return found, found != nil
+	stored, err := a.identities.FindByTokenHash(ctx, sha256.Sum256([]byte(token)))
+	if errors.Is(err, identities.ErrNotFound) {
+		return nil, unauthenticated()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Identity{Name: stored.Name, Grants: stored.Grants, Limits: stored.Limits.Apply(a.cfg.Limits)}, nil
+}
+
+func unauthenticated() error {
+	return apierr.New(api.CodeUnauthenticated, "missing or invalid bearer token")
 }
 
 // Services returns the services the identity has at least one grant for, sorted by name.
-func (a *Authorizer) Services(identity *config.Identity) []*config.Service {
+func (a *Authorizer) Services(identity *Identity) []*config.Service {
 	var services []*config.Service
 	for _, svc := range a.cfg.Services {
 		if len(a.environments(identity, svc)) > 0 {
@@ -50,7 +68,7 @@ func (a *Authorizer) Services(identity *config.Identity) []*config.Service {
 
 // Service returns the service if the identity has any grant for it. An unknown service and
 // a service without a grant return the same error.
-func (a *Authorizer) Service(identity *config.Identity, name string) (*config.Service, error) {
+func (a *Authorizer) Service(identity *Identity, name string) (*config.Service, error) {
 	svc, ok := a.cfg.Services[name]
 	if !ok || len(a.environments(identity, svc)) == 0 {
 		return nil, apierr.NotFound("service %q not found", name)
@@ -60,7 +78,7 @@ func (a *Authorizer) Service(identity *config.Identity, name string) (*config.Se
 
 // Environments returns the granted environments of a service with their granted
 // capabilities, sorted by name.
-func (a *Authorizer) Environments(identity *config.Identity, svc *config.Service) []api.EnvironmentDetail {
+func (a *Authorizer) Environments(identity *Identity, svc *config.Service) []api.EnvironmentDetail {
 	granted := a.environments(identity, svc)
 	names := make([]string, 0, len(granted))
 	for name := range granted {
@@ -76,7 +94,7 @@ func (a *Authorizer) Environments(identity *config.Identity, svc *config.Service
 
 // environments maps each granted environment to the capabilities that are both granted
 // and configured.
-func (a *Authorizer) environments(identity *config.Identity, svc *config.Service) map[string][]api.Capability {
+func (a *Authorizer) environments(identity *Identity, svc *config.Service) map[string][]api.Capability {
 	result := map[string][]api.Capability{}
 	for envName, env := range svc.Environments {
 		for _, capability := range env.Capabilities() {
@@ -88,17 +106,13 @@ func (a *Authorizer) environments(identity *config.Identity, svc *config.Service
 	return result
 }
 
-func (a *Authorizer) granted(identity *config.Identity, service, env string, capability api.Capability) bool {
-	return slices.ContainsFunc(identity.Grants, func(g config.Grant) bool {
-		return slices.Contains(g.Services, service) &&
-			slices.Contains(g.Environments, env) &&
-			slices.Contains(g.Capabilities, capability)
-	})
+func (a *Authorizer) granted(identity *Identity, service, env string, capability api.Capability) bool {
+	return slices.Contains(identity.Grants, identities.Grant{Service: service, Environment: env, Capability: capability})
 }
 
 // resolve finds the environment for a capability. An empty environment name is allowed
 // when exactly one granted environment offers the capability.
-func (a *Authorizer) resolve(identity *config.Identity, service, envName string, capability api.Capability) (Target, *config.Environment, error) {
+func (a *Authorizer) resolve(identity *Identity, service, envName string, capability api.Capability) (Target, *config.Environment, error) {
 	svc, err := a.Service(identity, service)
 	if err != nil {
 		return Target{}, nil, err
@@ -126,7 +140,7 @@ func (a *Authorizer) resolve(identity *config.Identity, service, envName string,
 	return Target{service: service, environment: envName}, svc.Environments[envName], nil
 }
 
-func (a *Authorizer) ErrorScope(identity *config.Identity, service, env string) (ErrorScope, error) {
+func (a *Authorizer) ErrorScope(identity *Identity, service, env string) (ErrorScope, error) {
 	target, environment, err := a.resolve(identity, service, env, api.CapabilityErrors)
 	if err != nil {
 		return ErrorScope{}, err
@@ -134,7 +148,7 @@ func (a *Authorizer) ErrorScope(identity *config.Identity, service, env string) 
 	return ErrorScope{Target: target, binding: environment.Errors}, nil
 }
 
-func (a *Authorizer) LogScope(identity *config.Identity, service, env string) (SelectorScope, error) {
+func (a *Authorizer) LogScope(identity *Identity, service, env string) (SelectorScope, error) {
 	target, environment, err := a.resolve(identity, service, env, api.CapabilityLogs)
 	if err != nil {
 		return SelectorScope{}, err
@@ -142,7 +156,7 @@ func (a *Authorizer) LogScope(identity *config.Identity, service, env string) (S
 	return SelectorScope{Target: target, binding: environment.Logs}, nil
 }
 
-func (a *Authorizer) MetricScope(identity *config.Identity, service, env string) (SelectorScope, error) {
+func (a *Authorizer) MetricScope(identity *Identity, service, env string) (SelectorScope, error) {
 	target, environment, err := a.resolve(identity, service, env, api.CapabilityMetrics)
 	if err != nil {
 		return SelectorScope{}, err

@@ -1,0 +1,25 @@
+{{define "content"}}
+<p class="actions"><a class="button" href="/admin/identities/new">New identity</a></p>
+{{if .}}
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Name</th><th>Grants</th><th>Limit overrides</th><th>Created (UTC)</th><th></th></tr>
+  </thead>
+  <tbody>
+  {{range .}}
+    <tr>
+      <td><a href="/admin/identities/{{.Name}}">{{.Name}}</a></td>
+      <td>{{range .Grants}}<div>{{.}}</div>{{else}}<span class="muted">none</span>{{end}}</td>
+      <td>{{range .Limits}}<div>{{.}}</div>{{else}}<span class="muted">server defaults</span>{{end}}</td>
+      <td class="nowrap">{{time .CreatedAt}}</td>
+      <td><a href="/admin/audit?identity={{.Name}}">Audit</a></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<p class="muted">No identities yet. Create one to give an agent a token.</p>
+{{end}}
+{{end}}

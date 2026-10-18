@@ -1,0 +1,69 @@
+{{define "content"}}
+<form method="post" action="{{if .IsNew}}/admin/identities{{else}}/admin/identities/{{.Name}}{{end}}">
+  {{if .IsNew}}
+  <label class="field">Name
+    <input name="name" value="{{.Name}}" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" autocomplete="off">
+    <small>Lowercase letters, digits, '.', '_' and '-'. Shown in the audit log.</small>
+  </label>
+  {{end}}
+
+  <h2>Grants</h2>
+  {{if .Matrix}}
+  <div class="scroll">
+  <table class="matrix">
+    <thead>
+      <tr><th>Service</th><th>Environment</th>{{range .Capabilities}}<th class="check">{{.}}</th>{{end}}</tr>
+    </thead>
+    <tbody>
+    {{range .Matrix}}
+      <tr>
+        <td>{{.Service}}</td>
+        <td>{{.Environment}}</td>
+        {{$row := .}}
+        {{range $i, $cell := .Cells}}
+        <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="muted" title="Not configured for this environment">–</span>{{end}}</td>
+        {{end}}
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}
+  <p class="muted">The configuration has no services.</p>
+  {{end}}
+  {{if .Stale}}
+  <div class="warning">
+    <p>These stored grants refer to services or capabilities that are no longer in the configuration. They have no effect, and saving removes them:</p>
+    <ul>{{range .Stale}}<li>{{.}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+
+  <h2>Limits</h2>
+  <p class="muted">An empty field uses the server default, shown in grey.</p>
+  <div class="limits">
+    {{range .Limits}}
+    <label class="field">{{.Label}}
+      <input name="{{.Name}}" value="{{.Value}}" placeholder="{{.Default}}">
+    </label>
+    {{end}}
+  </div>
+
+  <p class="actions">
+    <button type="submit">{{if .IsNew}}Create and show token{{else}}Save{{end}}</button>
+    <a href="/admin/identities">Cancel</a>
+  </p>
+</form>
+
+{{if not .IsNew}}
+<h2>Token</h2>
+<form method="post" action="/admin/identities/{{.Name}}/token" hx-confirm="Rotate the token of {{.Name}}? The current token stops working immediately.">
+  <p>Rotating creates a new token. The current token stops working immediately.</p>
+  <button type="submit">Rotate token</button>
+</form>
+
+<h2>Delete</h2>
+<form method="post" action="/admin/identities/{{.Name}}/delete" hx-confirm="Delete {{.Name}}? Its token stops working immediately.">
+  <button type="submit" class="danger">Delete identity</button>
+</form>
+{{end}}
+{{end}}

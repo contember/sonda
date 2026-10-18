@@ -2,9 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +20,7 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/query"
 	"github.com/contember/sonda/internal/store"
 )
@@ -78,11 +79,6 @@ type testEnv struct {
 	dbPath   string
 }
 
-func tokenHash(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}
-
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	up := &upstreams{}
@@ -107,15 +103,7 @@ services:
     environments:
       production:
         logs: { source: loki, selector: '{app="billing"}' }
-identities:
-  agent:
-    token_sha256: %[2]s
-    grants: [{ services: [api], environments: [production], capabilities: [errors, logs, metrics] }]
-  other:
-    token_sha256: %[3]s
-    grants: [{ services: [api, billing], environments: [production], capabilities: [logs] }]
-    limits: { requests_per_minute: 6 }
-`, fake.URL, tokenHash("agent-token"), tokenHash("other-token"))), func(string) (string, bool) { return "", false })
+`, fake.URL)), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +113,32 @@ identities:
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	authorizer := authz.New(cfg)
+	requestsPerMinute := 6
+	for _, identity := range []identities.Identity{
+		{
+			Name:        "agent",
+			TokenSHA256: sha256.Sum256([]byte("agent-token")),
+			Grants: []identities.Grant{
+				{Service: "api", Environment: "production", Capability: api.CapabilityErrors},
+				{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
+				{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+			},
+		},
+		{
+			Name:        "other",
+			TokenSHA256: sha256.Sum256([]byte("other-token")),
+			Grants: []identities.Grant{
+				{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
+				{Service: "billing", Environment: "production", Capability: api.CapabilityLogs},
+			},
+			Limits: identities.LimitOverrides{RequestsPerMinute: &requestsPerMinute},
+		},
+	} {
+		if err := st.Create(context.Background(), identity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authorizer := authz.New(cfg, st)
 	connectors, err := query.NewConnectors(cfg)
 	if err != nil {
 		t.Fatal(err)

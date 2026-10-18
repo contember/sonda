@@ -2,10 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base32"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/contember/sonda/internal/admin"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/httpapi"
@@ -55,16 +52,6 @@ func main() {
 				return nil
 			},
 		},
-		&cobra.Command{
-			Use:   "token",
-			Short: "Generate an identity token and the hash to put in the configuration",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, _ []string) error {
-				token, hash := generateToken()
-				fmt.Fprintf(cmd.OutOrStdout(), "token:        %s\ntoken_sha256: %s\n", token, hash)
-				return nil
-			},
-		},
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -81,7 +68,6 @@ func serve(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	authorizer := authz.New(cfg)
 	connectors, err := query.NewConnectors(cfg)
 	if err != nil {
 		return err
@@ -91,11 +77,22 @@ func serve(ctx context.Context, configPath string) error {
 		return err
 	}
 	defer st.Close()
+	authorizer := authz.New(cfg, st)
 	q, err := query.New(cfg, authorizer, connectors, st)
 	if err != nil {
 		return err
 	}
-	handler := httpapi.New(q, authorizer, st, log)
+	handler := http.NewServeMux()
+	handler.Handle("/", httpapi.New(q, authorizer, st, log))
+	if cfg.Admin != nil {
+		adminHandler, err := admin.New(cfg, st, st, log)
+		if err != nil {
+			return err
+		}
+		handler.Handle("/admin/", adminHandler)
+	} else {
+		log.Info("admin UI disabled: admin.token is not configured")
+	}
 
 	server := &http.Server{
 		Addr:              cfg.Server.Listen,
@@ -121,12 +118,4 @@ func serve(ctx context.Context, configPath string) error {
 		return err
 	}
 	return nil
-}
-
-func generateToken() (token string, hash string) {
-	secret := make([]byte, 32)
-	_, _ = rand.Read(secret)
-	token = "sonda_" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
-	sum := sha256.Sum256([]byte(token))
-	return token, hex.EncodeToString(sum[:])
 }

@@ -1,10 +1,15 @@
 # Sonda server configuration. Copy to sonda.yaml and adjust.
 # ${NAME} references environment variables; they are allowed only in source URLs,
-# credentials and headers. Validate with: sonda-server check -c sonda.yaml
+# credentials, headers and the admin token. Validate with: sonda-server check -c sonda.yaml
 
 server:
   listen: ":8080"
-  database: sonda.db # audit log and result handles
+  database: sonda.db # identities, audit log and result handles
+
+# Enables the admin UI at /admin, where agent identities and their tokens are managed.
+# Generate the token with: openssl rand -hex 32
+admin:
+  token: "${SONDA_ADMIN_TOKEN}"
 
 # Optional. Used only to build Explore links in responses; Sonda never queries Grafana.
 grafana:
@@ -48,18 +53,7 @@ services:
       error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
       p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
 
-identities:
-  coding-agent:
-    # Generate with: sonda-server token
-    token_sha256: 0000000000000000000000000000000000000000000000000000000000000000
-    grants:
-      - services: [engine-api]
-        environments: [production]
-        capabilities: [errors, logs, metrics]
-    limits:
-      requests_per_minute: 30
-
-# Server defaults; identities can override each value.
+# Server defaults; each identity can override them in the admin UI.
 limits:
   max_range: 7d
   max_log_lines: 500

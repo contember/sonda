@@ -1,5 +1,5 @@
-// Package store keeps Sonda's own state in SQLite: the audit log and result handles.
-// It holds no telemetry beyond the samples behind result handles, which expire.
+// Package store keeps Sonda's own state in SQLite: identities, the audit log and result
+// handles. It holds no telemetry beyond the samples behind result handles, which expire.
 package store
 
 import (
@@ -42,6 +42,27 @@ CREATE TABLE IF NOT EXISTS audit_log (
 	response_bytes INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_log_time ON audit_log (time);
+CREATE INDEX IF NOT EXISTS audit_log_identity ON audit_log (identity, id);
+
+CREATE TABLE IF NOT EXISTS identities (
+	name                TEXT PRIMARY KEY,
+	token_sha256        BLOB NOT NULL UNIQUE,
+	created_at          INTEGER NOT NULL,
+	max_range_ms        INTEGER,
+	max_log_lines       INTEGER,
+	max_response_bytes  INTEGER,
+	query_timeout_ms    INTEGER,
+	concurrent_queries  INTEGER,
+	requests_per_minute INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS identity_grants (
+	identity    TEXT NOT NULL REFERENCES identities (name) ON DELETE CASCADE,
+	service     TEXT NOT NULL,
+	environment TEXT NOT NULL,
+	capability  TEXT NOT NULL,
+	PRIMARY KEY (identity, service, environment, capability)
+);
 `
 
 type Store struct {
@@ -50,7 +71,7 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
@@ -119,4 +140,53 @@ func newResultID() string {
 	b := make([]byte, 15)
 	_, _ = rand.Read(b)
 	return "res_" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
+}
+
+type AuditRecord struct {
+	ID int64
+	AuditEntry
+}
+
+type AuditFilter struct {
+	// Identity limits the result to one identity when not empty.
+	Identity string
+	// BeforeID pages backwards: only records with a lower ID are returned when positive.
+	BeforeID int64
+	Limit    int
+}
+
+// ListAudit returns audit records, newest first.
+func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditRecord, error) {
+	query := `SELECT id, time, identity, method, path, service, environment, queries, status, error_code, duration_ms, response_bytes
+		FROM audit_log WHERE 1 = 1`
+	var args []any
+	if f.Identity != "" {
+		query += ` AND identity = ?`
+		args = append(args, f.Identity)
+	}
+	if f.BeforeID > 0 {
+		query += ` AND id < ?`
+		args = append(args, f.BeforeID)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, f.Limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []AuditRecord
+	for rows.Next() {
+		var r AuditRecord
+		var timeMillis, durationMillis int64
+		if err := rows.Scan(&r.ID, &timeMillis, &r.Identity, &r.Method, &r.Path, &r.Service, &r.Environment,
+			&r.Queries, &r.Status, &r.ErrorCode, &durationMillis, &r.ResponseBytes); err != nil {
+			return nil, err
+		}
+		r.Time = time.UnixMilli(timeMillis)
+		r.Duration = time.Duration(durationMillis) * time.Millisecond
+		records = append(records, r)
+	}
+	return records, rows.Err()
 }

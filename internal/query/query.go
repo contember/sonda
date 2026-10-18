@@ -39,7 +39,7 @@ func recordQuery(ctx context.Context, target authz.Target, query string) {
 	}
 }
 
-func (s *Service) ListServices(identity *config.Identity) api.Response[[]api.ServiceSummary] {
+func (s *Service) ListServices(identity *authz.Identity) api.Response[[]api.ServiceSummary] {
 	services := s.authz.Services(identity)
 	summaries := make([]api.ServiceSummary, 0, len(services))
 	for _, svc := range services {
@@ -52,7 +52,7 @@ func (s *Service) ListServices(identity *config.Identity) api.Response[[]api.Ser
 	return api.Response[[]api.ServiceSummary]{Data: summaries}
 }
 
-func (s *Service) DescribeService(identity *config.Identity, name string) (api.Response[api.ServiceDetail], error) {
+func (s *Service) DescribeService(identity *authz.Identity, name string) (api.Response[api.ServiceDetail], error) {
 	svc, err := s.authz.Service(identity, name)
 	if err != nil {
 		return api.Response[api.ServiceDetail]{}, err

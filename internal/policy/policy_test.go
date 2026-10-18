@@ -1,8 +1,6 @@
 package policy
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -11,11 +9,11 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/identities"
 )
 
 func scopes(t *testing.T) (logs, metrics authz.SelectorScope) {
 	t.Helper()
-	hash := sha256.Sum256([]byte("t"))
 	cfg, err := config.Parse([]byte(`
 sources:
   loki: { type: loki, url: "http://loki" }
@@ -26,16 +24,16 @@ services:
       production:
         logs: { source: loki, selector: '{app="api"}' }
         metrics: { source: prom, selector: '{job="api"}' }
-identities:
-  agent:
-    token_sha256: `+hex.EncodeToString(hash[:])+`
-    grants: [{ services: [api], environments: [production], capabilities: [logs, metrics] }]
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := authz.New(cfg)
-	identity, _ := a.Authenticate("t")
+	// Scopes need no authentication, so no identity store.
+	a := authz.New(cfg, nil)
+	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
+		{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
+		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+	}}
 	logs, err = a.LogScope(identity, "api", "production")
 	if err != nil {
 		t.Fatal(err)

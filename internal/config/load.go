@@ -2,8 +2,6 @@ package config
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -17,23 +15,25 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 	"go.yaml.in/yaml/v3"
-
-	"github.com/contember/sonda/api"
 )
 
 type rawConfig struct {
-	Server     rawServer              `yaml:"server"`
-	Grafana    *rawGrafana            `yaml:"grafana"`
-	Sources    map[string]rawSource   `yaml:"sources"`
-	Services   map[string]rawService  `yaml:"services"`
-	Identities map[string]rawIdentity `yaml:"identities"`
-	Limits     rawLimits              `yaml:"limits"`
-	Redact     []string               `yaml:"redact"`
+	Server   rawServer             `yaml:"server"`
+	Admin    *rawAdmin             `yaml:"admin"`
+	Grafana  *rawGrafana           `yaml:"grafana"`
+	Sources  map[string]rawSource  `yaml:"sources"`
+	Services map[string]rawService `yaml:"services"`
+	Limits   rawLimits             `yaml:"limits"`
+	Redact   []string              `yaml:"redact"`
 }
 
 type rawServer struct {
 	Listen   string `yaml:"listen"`
 	Database string `yaml:"database"`
+}
+
+type rawAdmin struct {
+	Token string `yaml:"token"`
 }
 
 type rawGrafana struct {
@@ -80,18 +80,6 @@ type rawSelectorBinding struct {
 	Selector string `yaml:"selector"`
 }
 
-type rawIdentity struct {
-	TokenSHA256 string     `yaml:"token_sha256"`
-	Grants      []rawGrant `yaml:"grants"`
-	Limits      rawLimits  `yaml:"limits"`
-}
-
-type rawGrant struct {
-	Services     []string `yaml:"services"`
-	Environments []string `yaml:"environments"`
-	Capabilities []string `yaml:"capabilities"`
-}
-
 type rawLimits struct {
 	MaxRange          string `yaml:"max_range"`
 	MaxLogLines       *int   `yaml:"max_log_lines"`
@@ -110,7 +98,7 @@ func LoadFile(path string) (*Config, error) {
 }
 
 // Parse validates the YAML configuration. lookupEnv resolves ${NAME} references, which are
-// allowed only in source URLs, credentials and headers.
+// allowed only in source URLs, credentials, headers and the admin token.
 func Parse(data []byte, lookupEnv func(string) (string, bool)) (*Config, error) {
 	var raw rawConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -141,10 +129,12 @@ func (v *validator) config(raw rawConfig) *Config {
 			Listen:   valueOr(raw.Server.Listen, ":8080"),
 			Database: valueOr(raw.Server.Database, "sonda.db"),
 		},
-		Sources:    map[string]*Source{},
-		Services:   map[string]*Service{},
-		Identities: map[string]*Identity{},
-		Redact:     raw.Redact,
+		Sources:  map[string]*Source{},
+		Services: map[string]*Service{},
+		Redact:   raw.Redact,
+	}
+	if raw.Admin != nil {
+		cfg.Admin = v.admin(*raw.Admin)
 	}
 	if raw.Grafana != nil {
 		v.url("grafana.url", raw.Grafana.URL)
@@ -162,17 +152,18 @@ func (v *validator) config(raw rawConfig) *Config {
 		cfg.Services[name] = v.service(name, rs, cfg.Sources)
 	}
 	cfg.Limits = v.limits("limits", raw.Limits, DefaultLimits)
-
-	seenTokens := map[[sha256.Size]byte]string{}
-	for name, ri := range raw.Identities {
-		identity := v.identity(name, ri, cfg)
-		if other, ok := seenTokens[identity.TokenSHA256]; ok {
-			v.fail("identities.%s: token_sha256 is also used by identity %q", name, other)
-		}
-		seenTokens[identity.TokenSHA256] = name
-		cfg.Identities[name] = identity
-	}
 	return cfg
+}
+
+// minAdminTokenLength keeps the admin token out of reach of guessing.
+const minAdminTokenLength = 32
+
+func (v *validator) admin(raw rawAdmin) *Admin {
+	token := v.expand("admin.token", raw.Token)
+	if len(token) < minAdminTokenLength {
+		v.fail("admin.token must have at least %d characters (generate one with `openssl rand -hex 32`)", minAdminTokenLength)
+	}
+	return &Admin{Token: token}
 }
 
 func (v *validator) source(name string, raw rawSource) *Source {
@@ -310,54 +301,6 @@ func (v *validator) sourceRef(path, name string, sources map[string]*Source, wan
 		v.fail("%s: source %q has type %s, expected %s", path, name, src.Type, want)
 	}
 	return src
-}
-
-func (v *validator) identity(name string, raw rawIdentity, cfg *Config) *Identity {
-	path := "identities." + name
-	identity := &Identity{Name: name, Limits: v.limits(path+".limits", raw.Limits, cfg.Limits)}
-	hash, err := hex.DecodeString(raw.TokenSHA256)
-	if err != nil || len(hash) != sha256.Size {
-		v.fail("%s.token_sha256 must be 64 hex characters (generate one with `sonda-server token`)", path)
-	} else {
-		identity.TokenSHA256 = [sha256.Size]byte(hash)
-	}
-	if len(raw.Grants) == 0 {
-		v.fail("%s.grants: at least one grant is required", path)
-	}
-	for i, rg := range raw.Grants {
-		identity.Grants = append(identity.Grants, v.grant(fmt.Sprintf("%s.grants[%d]", path, i), rg, cfg.Services))
-	}
-	return identity
-}
-
-func (v *validator) grant(path string, raw rawGrant, services map[string]*Service) Grant {
-	grant := Grant{Services: raw.Services, Environments: raw.Environments}
-	if len(raw.Services) == 0 || len(raw.Environments) == 0 || len(raw.Capabilities) == 0 {
-		v.fail("%s: services, environments and capabilities must not be empty", path)
-	}
-	for _, name := range raw.Services {
-		if _, ok := services[name]; !ok {
-			v.fail("%s.services: unknown service %q", path, name)
-		}
-	}
-	for _, env := range raw.Environments {
-		known := slices.ContainsFunc(raw.Services, func(name string) bool {
-			svc, ok := services[name]
-			return ok && svc.Environments[env] != nil
-		})
-		if !known {
-			v.fail("%s.environments: %q is not an environment of any listed service", path, env)
-		}
-	}
-	for _, c := range raw.Capabilities {
-		capability, err := api.ParseCapability(c)
-		if err != nil {
-			v.fail("%s.capabilities: %v", path, err)
-			continue
-		}
-		grant.Capabilities = append(grant.Capabilities, capability)
-	}
-	return grant
 }
 
 func (v *validator) limits(path string, raw rawLimits, base Limits) Limits {

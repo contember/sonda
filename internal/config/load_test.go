@@ -28,15 +28,16 @@ services:
         metrics: { source: prom, selector: '{job="api"}' }
     signals:
       rps: sum(rate(http_requests_total[5m]))
-identities:
-  agent:
-    token_sha256: 0000000000000000000000000000000000000000000000000000000000000000
-    grants:
-      - { services: [api], environments: [production], capabilities: [errors, logs] }
-    limits: { max_log_lines: 100 }
+admin:
+  token: "${ADMIN_TOKEN}"
 limits:
   max_range: 3d
+  max_log_lines: 100
 `
+
+func validEnv() map[string]string {
+	return map[string]string{"SENTRY_TOKEN": "secret", "ADMIN_TOKEN": strings.Repeat("a", 32)}
+}
 
 func env(vars map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {
@@ -46,7 +47,7 @@ func env(vars map[string]string) func(string) (string, bool) {
 }
 
 func TestParseValid(t *testing.T) {
-	cfg, err := Parse([]byte(validConfig), env(map[string]string{"SENTRY_TOKEN": "secret"}))
+	cfg, err := Parse([]byte(validConfig), env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,15 +57,14 @@ func TestParseValid(t *testing.T) {
 	if got := cfg.Sources["sentry"].URL; got != "https://sentry.io" {
 		t.Errorf("sentry url default = %q", got)
 	}
-	identity := cfg.Identities["agent"]
-	if identity.Limits.MaxLogLines != 100 {
-		t.Errorf("identity override not applied: %d", identity.Limits.MaxLogLines)
+	if cfg.Admin == nil || cfg.Admin.Token != validEnv()["ADMIN_TOKEN"] {
+		t.Errorf("admin = %+v", cfg.Admin)
 	}
-	if identity.Limits.MaxRange != 3*24*time.Hour {
-		t.Errorf("server limit not inherited: %v", identity.Limits.MaxRange)
+	if cfg.Limits.MaxRange != 3*24*time.Hour || cfg.Limits.MaxLogLines != 100 {
+		t.Errorf("limits not applied: %+v", cfg.Limits)
 	}
-	if identity.Limits.RequestsPerMinute != DefaultLimits.RequestsPerMinute {
-		t.Errorf("default limit not inherited: %d", identity.Limits.RequestsPerMinute)
+	if cfg.Limits.RequestsPerMinute != DefaultLimits.RequestsPerMinute {
+		t.Errorf("default limit not inherited: %d", cfg.Limits.RequestsPerMinute)
 	}
 	if got := len(cfg.Services["api"].Environments["production"].Logs.Matchers); got != 1 {
 		t.Errorf("log matchers = %d", got)
@@ -83,16 +83,13 @@ func TestParseErrors(t *testing.T) {
 		{"selector matching everything", [2]string{`{job="api"}`, `{job!=""}`}, "rejects the empty value"},
 		{"invalid selector", [2]string{`{app="api"}`, `{app=}`}, "selector"},
 		{"invalid signal", [2]string{"sum(rate(http_requests_total[5m]))", "sum(("}, "invalid PromQL"},
-		{"unknown capability", [2]string{"[errors, logs]", "[errors, traces]"}, `unknown capability "traces"`},
-		{"unknown grant service", [2]string{"services: [api]", "services: [web]"}, `unknown service "web"`},
-		{"unknown grant environment", [2]string{"environments: [production]", "environments: [staging]"}, `"staging" is not an environment`},
-		{"bad token hash", [2]string{"token_sha256: 0000", "token_sha256: zz00"}, "64 hex characters"},
+		{"short admin token", [2]string{`"${ADMIN_TOKEN}"`, "too-short"}, "at least 32 characters"},
 		{"unknown field", [2]string{"max_range: 3d", "max_rang: 3d"}, "field max_rang not found"},
 		{"bad duration", [2]string{"max_range: 3d", "max_range: soon"}, "invalid duration"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			vars := map[string]string{"SENTRY_TOKEN": "secret"}
+			vars := validEnv()
 			input := validConfig
 			if tt.replace[0] == "" {
 				vars = nil

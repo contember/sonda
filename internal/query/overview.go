@@ -10,6 +10,7 @@ import (
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
+	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/policy"
 )
@@ -21,7 +22,7 @@ const (
 
 // Overview collects recent releases, top issues and signal summaries in one call. Each
 // part loads independently; a failing source fills the part's error instead of failing all.
-func (s *Service) Overview(ctx context.Context, identity *config.Identity, service string, w api.Window) (api.Response[api.Overview], error) {
+func (s *Service) Overview(ctx context.Context, identity *authz.Identity, service string, w api.Window) (api.Response[api.Overview], error) {
 	var resp api.Response[api.Overview]
 	svc, err := s.authz.Service(identity, service)
 	if err != nil {
@@ -72,7 +73,7 @@ func (s *Service) Overview(ctx context.Context, identity *config.Identity, servi
 	return resp, nil
 }
 
-func (s *Service) overviewEnvironment(identity *config.Identity, svc *config.Service, name string) (api.EnvironmentDetail, error) {
+func (s *Service) overviewEnvironment(identity *authz.Identity, svc *config.Service, name string) (api.EnvironmentDetail, error) {
 	envs := s.authz.Environments(identity, svc)
 	if name == "" && len(envs) == 1 {
 		return envs[0], nil
@@ -92,7 +93,7 @@ func (s *Service) overviewEnvironment(identity *config.Identity, svc *config.Ser
 	return api.EnvironmentDetail{}, apierr.NotFound("environment %q not found for service %q", name, svc.Name)
 }
 
-func (s *Service) signalOverview(ctx context.Context, identity *config.Identity, service, name string, w api.Window) api.SignalOverview {
+func (s *Service) signalOverview(ctx context.Context, identity *authz.Identity, service, name string, w api.Window) api.SignalOverview {
 	overview := api.SignalOverview{Name: name}
 	result, err := s.Signal(ctx, identity, service, name, w, "", false)
 	if err != nil {

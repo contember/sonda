@@ -8,7 +8,6 @@ import (
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/authz"
-	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/loki"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/shape"
@@ -29,7 +28,7 @@ type logResult struct {
 	Groups []int `json:"groups,omitempty"`
 }
 
-func (s *Service) logScope(identity *config.Identity, service, env string) (authz.SelectorScope, *loki.Client, error) {
+func (s *Service) logScope(identity *authz.Identity, service, env string) (authz.SelectorScope, *loki.Client, error) {
 	scope, err := s.authz.LogScope(identity, service, env)
 	if err != nil {
 		return authz.SelectorScope{}, nil, err
@@ -39,7 +38,7 @@ func (s *Service) logScope(identity *config.Identity, service, env string) (auth
 
 // SearchLogs counts all matching lines exactly, then groups a sample of the newest lines
 // into patterns.
-func (s *Service) SearchLogs(ctx context.Context, identity *config.Identity, service string, req api.LogSearchRequest) (api.Response[api.LogSearchResult], error) {
+func (s *Service) SearchLogs(ctx context.Context, identity *authz.Identity, service string, req api.LogSearchRequest) (api.Response[api.LogSearchResult], error) {
 	var resp api.Response[api.LogSearchResult]
 	scope, client, err := s.logScope(identity, service, req.Environment)
 	if err != nil {
@@ -102,7 +101,7 @@ func (s *Service) SearchLogs(ctx context.Context, identity *config.Identity, ser
 }
 
 // QueryLogs runs native LogQL. Log queries return lines; metric queries return series.
-func (s *Service) QueryLogs(ctx context.Context, identity *config.Identity, service string, req api.LogQueryRequest) (api.Response[api.LogQueryResult], error) {
+func (s *Service) QueryLogs(ctx context.Context, identity *authz.Identity, service string, req api.LogQueryRequest) (api.Response[api.LogQueryResult], error) {
 	var resp api.Response[api.LogQueryResult]
 	scope, client, err := s.logScope(identity, service, req.Environment)
 	if err != nil {
@@ -154,7 +153,7 @@ func (s *Service) QueryLogs(ctx context.Context, identity *config.Identity, serv
 	return resp, nil
 }
 
-func (s *Service) LogFields(ctx context.Context, identity *config.Identity, service string, w api.Window) (api.Response[api.LogFields], error) {
+func (s *Service) LogFields(ctx context.Context, identity *authz.Identity, service string, w api.Window) (api.Response[api.LogFields], error) {
 	var resp api.Response[api.LogFields]
 	scope, client, err := s.logScope(identity, service, w.Environment)
 	if err != nil {
@@ -203,7 +202,7 @@ func (s *Service) LogFields(ctx context.Context, identity *config.Identity, serv
 }
 
 // Result pages through the lines behind a result handle, optionally of one group.
-func (s *Service) Result(ctx context.Context, identity *config.Identity, id string, group *int, offset, limit int) (api.Response[api.ResultPage], error) {
+func (s *Service) Result(ctx context.Context, identity *authz.Identity, id string, group *int, offset, limit int) (api.Response[api.ResultPage], error) {
 	var resp api.Response[api.ResultPage]
 	_, payload, err := s.store.LoadResult(ctx, identity.Name, id)
 	if err != nil {
@@ -237,7 +236,7 @@ func (s *Service) Result(ctx context.Context, identity *config.Identity, id stri
 	return resp, nil
 }
 
-func (s *Service) saveLogResult(ctx context.Context, identity *config.Identity, result logResult) (string, error) {
+func (s *Service) saveLogResult(ctx context.Context, identity *authz.Identity, result logResult) (string, error) {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		return "", err
@@ -246,7 +245,7 @@ func (s *Service) saveLogResult(ctx context.Context, identity *config.Identity, 
 }
 
 // lineBudget leaves room in the response for metadata.
-func (s *Service) lineBudget(identity *config.Identity) int {
+func (s *Service) lineBudget(identity *authz.Identity) int {
 	return identity.Limits.MaxResponseBytes * 3 / 4
 }
 

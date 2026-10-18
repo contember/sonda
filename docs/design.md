@@ -15,9 +15,12 @@ returns compact, evidence-carrying responses.
 | Language | Go | TypeScript/Bun | Mature PromQL and LogQL parsers exist only in Go. Single static binary. |
 | Binaries | `sonda-server` and `sonda` (CLI), one Go module | One binary with subcommands | The CLI imports only the `api` package, so it does not link the parsers, connectors or SQLite. |
 | Native queries | Allowed in v1, scoped to one service, with matcher injection | Plain passthrough; string concatenation | Passthrough leaks other services. String concatenation protects only one selector. |
-| Configuration | One YAML file, loaded at startup | Configuration in a database | Reviewable in git, no admin UI needed. |
+| Configuration | Sources, services and limits in one YAML file, loaded at startup | Everything in a database | Reviewable in git. These change rarely and define the security boundary (selectors). |
+| Identities | In the identity store, managed at runtime in the admin UI | In the YAML file | Tokens are created, rotated and revoked often; a restart for each change is impractical. |
+| Identity store | `identities.Store` interface, SQLite implementation | SQLite only | Another database (e.g. Postgres) can be added without touching `authz` or the UI. |
+| Admin UI | Server-rendered `html/template` + htmx, embedded in `sonda-server` | React SPA | No JS toolchain, one binary. The UI is a few forms and tables. |
 | Provider secrets | Environment variable references in YAML | Encrypted in the database | No key management in v1. |
-| Internal storage | SQLite (`modernc.org/sqlite`, pure Go) | Postgres | No extra service to run. Holds only the audit log and result handles. Metadata caches live in memory. |
+| Internal storage | SQLite (`modernc.org/sqlite`, pure Go) | Postgres | No extra service to run. Holds identities, the audit log and result handles. Metadata caches live in memory. |
 | Loki/Prometheus access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `detected_fields`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
 | Range limit | Reject ranges over `max_range` with `limit_exceeded` | Silently shorten the range | A shortened range would make counts look complete when they are not. |
 | Native query capability | Same capability as the structured tools (`logs`, `metrics`) | Separate `logs:native` / `metrics:native` | Native queries are scoped the same way; cost is bounded by limits. |
@@ -46,15 +49,19 @@ Identity ──< Grant (services × environments × capabilities)
 - **Signal**: a named PromQL expression defined by the admin per service, e.g. `error_rate`. It
   is written without service matchers. Sonda injects the environment selector the same way as for
   native queries.
-- **Identity**: an agent service account. Authenticated by a bearer token. The config stores
-  only the SHA-256 of the token.
-- **Grant**: `services × environments × capabilities`. Capabilities: `errors`, `logs`, `metrics`.
-  A native query requires the same capability as the structured tool for that signal type.
-- **Limits**: defaults plus per-identity overrides.
+- **Identity**: an agent service account. Authenticated by a bearer token. The identity store
+  keeps only the SHA-256 of the token. Managed in the admin UI (section 10), not in the config.
+- **Grant**: one `(service, environment, capability)`. Capabilities: `errors`, `logs`,
+  `metrics`. A native query requires the same capability as the structured tool for that signal
+  type. A grant for a service or capability that is no longer configured has no effect.
+- **Limits**: server defaults from the config plus per-identity overrides from the store.
 
 ### Example configuration
 
 ```yaml
+admin:
+  token: "${SONDA_ADMIN_TOKEN}"
+
 sources:
   sentry:
     type: sentry
@@ -89,16 +96,6 @@ services:
       error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
       p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
 
-identities:
-  coding-agent:
-    token_sha256: 9f2c…
-    grants:
-      - services: [engine-api]
-        environments: [production, staging]
-        capabilities: [errors, logs, metrics]
-    limits:
-      requests_per_minute: 30
-
 limits:
   max_range: 7d
   max_log_lines: 500
@@ -110,18 +107,19 @@ limits:
 
 Config validation at startup fails on: unknown fields, unknown source references, unset
 environment variables, unparsable selectors or signals, selectors without an `=` or `=~` matcher
-that rejects the empty value (e.g. `{job!=""}` selects nearly everything), and grants that
-reference unknown services or environments. The full example is `sonda.example.yaml`.
+that rejects the empty value (e.g. `{job!=""}` selects nearly everything), and an admin token
+shorter than 32 characters. The full example is `sonda.example.yaml`.
 
 ## 3. Components
 
 ```text
-cmd/sonda-server   main: load config, open SQLite, start HTTP server
+cmd/sonda-server   main: load config, open SQLite, start HTTP server and admin UI
 cmd/sonda          CLI: thin HTTP client over the api package
 
 api/               request/response types shared by server and CLI (public package)
 internal/client    HTTP client used by the CLI
 internal/config    YAML loading, env expansion, validation → typed Config
+internal/identities  identity and grant types, Store interface, token generation
 internal/authz     token → Identity; (Identity, service, env, capability) → Scope or error
 internal/policy    PromQL/LogQL matcher injection and verification; time range and step
 internal/connector
@@ -132,8 +130,9 @@ internal/connector
 internal/query     use cases: overview, errors, logs search, metrics, results
 internal/shape     grouping (Drain), redaction, truncation, series summaries, source links
 internal/audit     per-request record of service, environment and upstream queries
-internal/store     SQLite: audit log, result handles
+internal/store     SQLite: identities (implements identities.Store), audit log, result handles
 internal/httpapi   routing, authentication, rate and concurrency limits, audit, JSON encoding
+internal/admin     admin UI: sign-in, identity management, audit log viewer
 ```
 
 Boundaries:
@@ -148,6 +147,8 @@ Boundaries:
 - Connectors know nothing about identities or services. They execute scoped queries and return
   typed results.
 - `shape` turns connector results into compact responses. It has no I/O.
+- `admin` writes identities only through `identities.Store` and accepts only grants for
+  capabilities configured in the YAML file.
 
 ## 4. Connector contracts
 
@@ -209,7 +210,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 
 Request flow:
 
-1. Authenticate: bearer token → SHA-256 → Identity. Constant-time compare.
+1. Authenticate: bearer token → SHA-256 → identity store lookup → Identity with effective
+   limits. Changes in the admin UI apply to the next request. A constant-time compare is not
+   needed: timing can reveal at most the hash, not the token.
 2. Authorize: `(identity, service, environment, capability)` against the grants → `Scope`.
 3. Limit: reject ranges over `max_range`, cap lines at `max_log_lines`, apply `query_timeout`,
    rate and concurrency limits.
@@ -225,7 +228,8 @@ Rules:
 - Discovery (`services`, `describe`) lists only services the identity has a grant for.
 - Result handles belong to the identity that created them. Another identity gets `not_found`.
 - Rate limit (token bucket, burst of ten seconds' worth) and concurrency limit are per identity,
-  in memory. Requests over either limit fail with `rate_limited` instead of queueing.
+  in memory. Requests over either limit fail with `rate_limited` instead of queueing. A limiter
+  is recreated with a full budget when the identity's limits change.
 
 ## 6. Native query enforcement
 
@@ -380,13 +384,35 @@ sonda result res_8KcW --group 2
 - Ships with `skills/sonda/SKILL.md` that teaches agents the investigation flow: `overview` →
   `errors` → `logs search` → drill-down.
 
-## 10. Security
+## 10. Admin UI
+
+Served under `/admin` only when `admin.token` is set. Pages:
+
+- **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
+  Grants are a matrix of configured service environments × capabilities; unconfigured cells
+  cannot be selected. A new or rotated token is shown once; only its SHA-256 is stored.
+- **Audit log**: newest first, filterable by identity, 100 records per page.
+
+Rules:
+
+- Sign-in takes the admin token. The session cookie holds its expiry (12 h) signed with
+  HMAC-SHA256 keyed by the admin token. No server-side session state; changing the token ends
+  all sessions.
+- Cookie: `HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` behind HTTPS.
+  `http.CrossOriginProtection` rejects cross-origin form posts.
+- Every state-changing admin request, including failed sign-ins, is written to the audit log
+  under the identity `(admin)`. Identity names cannot contain parentheses.
+- Sources and services are read-only here. They change only in the YAML file, with a restart.
+
+## 11. Security
 
 - Read-only: connectors implement only read calls. Provider tokens use read-only scopes or
   Viewer roles.
 - Provider credentials never appear in responses, errors or audit records.
 - Limits: time range, lines, response bytes, timeout, concurrency, rate.
-- Audit log in SQLite records every request, including denied ones.
+- Audit log in SQLite records every request, including denied ones and admin actions.
+- The admin UI can create tokens for any configured service. Protect the admin token like a
+  provider credential and expose `/admin` only on a trusted network.
 - Telemetry is untrusted: marked in `meta.untrusted`. Built-in rules redact bearer and basic
   tokens, URL credentials, AWS keys, JWTs, private keys and `password=`-style fields in log lines
   and Sentry titles, messages and tags; `redact` in the config adds patterns. Redaction reduces
@@ -394,16 +420,18 @@ sonda result res_8KcW --group 2
 - Expensive expressions inside a query (e.g. `rate(x[90d])`) are not detected by Sonda. Upstream
   limits in Prometheus and Loki remain necessary.
 
-## 11. Out of scope for v1
+## 12. Out of scope for v1
 
 - MCP adapter.
 - Traces (Tempo), CloudWatch, Datadog, Elasticsearch.
 - Correlation tools (`get_related_events`). The agent correlates using links, release versions
   and timestamps.
 - General query-result cache shared across identities.
-- Admin UI, multi-workspace, OAuth, token management API.
+- Multi-workspace, SSO/OIDC for the admin UI, a token management API.
+- Editing sources and services at runtime.
+- Identity stores other than SQLite (the `identities.Store` interface allows adding them).
 
-## 12. Open questions
+## 13. Open questions
 
 1. If a deployment can reach only Grafana, does its datasource proxy pass all needed Loki
    endpoints (`query_range`, `query`, `series`, `detected_fields`)? This affects only that

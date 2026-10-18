@@ -3,7 +3,6 @@
 package config
 
 import (
-	"crypto/sha256"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -12,18 +11,23 @@ import (
 )
 
 type Config struct {
-	Server     Server
-	Grafana    *Grafana
-	Sources    map[string]*Source
-	Services   map[string]*Service
-	Identities map[string]*Identity
-	Limits     Limits
-	Redact     []string
+	Server   Server
+	Admin    *Admin
+	Grafana  *Grafana
+	Sources  map[string]*Source
+	Services map[string]*Service
+	Limits   Limits
+	Redact   []string
 }
 
 type Server struct {
 	Listen   string
 	Database string
+}
+
+// Admin enables the admin UI under /admin. Without it the UI is not served.
+type Admin struct {
+	Token string
 }
 
 type Grafana struct {
@@ -107,20 +111,6 @@ func (e *Environment) Capabilities() []api.Capability {
 		caps = append(caps, api.CapabilityMetrics)
 	}
 	return caps
-}
-
-type Identity struct {
-	Name        string
-	TokenSHA256 [sha256.Size]byte
-	Grants      []Grant
-	// Limits are the server defaults merged with the identity's overrides.
-	Limits Limits
-}
-
-type Grant struct {
-	Services     []string
-	Environments []string
-	Capabilities []api.Capability
 }
 
 type Limits struct {

@@ -1,0 +1,30 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Swap 401 and 422 responses too: they carry the form with its error message. -->
+<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"401","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
+<title>{{.Title}} · Sonda admin</title>
+<link rel="stylesheet" href="/admin/static/style.css">
+<script src="/admin/static/htmx.min.js" defer></script>
+</head>
+<body hx-boost="true">
+<header>
+  <a class="brand" href="/admin/identities">Sonda</a>
+  {{if .Nav}}
+  <nav>
+    <a href="/admin/identities"{{if eq .Nav "identities"}} aria-current="page"{{end}}>Identities</a>
+    <a href="/admin/audit"{{if eq .Nav "audit"}} aria-current="page"{{end}}>Audit log</a>
+  </nav>
+  <form method="post" action="/admin/logout"><button type="submit" class="link">Sign out</button></form>
+  {{end}}
+</header>
+<main>
+<h1>{{.Title}}</h1>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{template "content" .Data}}
+</main>
+</body>
+</html>
+{{end}}

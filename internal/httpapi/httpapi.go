@@ -14,7 +14,6 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/audit"
 	"github.com/contember/sonda/internal/authz"
-	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/query"
 	"github.com/contember/sonda/internal/store"
 )
@@ -51,8 +50,8 @@ func New(q *query.Service, authorizer *authz.Authorizer, st *store.Store, log *s
 
 type identityKey struct{}
 
-func identityFrom(ctx context.Context) *config.Identity {
-	return ctx.Value(identityKey{}).(*config.Identity)
+func identityFrom(ctx context.Context) *authz.Identity {
+	return ctx.Value(identityKey{}).(*authz.Identity)
 }
 
 type handlerFunc func(r *http.Request) (any, error)
@@ -78,11 +77,14 @@ func (s *Server) handle(h handlerFunc) http.Handler {
 }
 
 // run authenticates, applies the identity's limits and encodes the handler's result.
-func (s *Server) run(r *http.Request, h handlerFunc) (*config.Identity, []byte, error) {
+func (s *Server) run(r *http.Request, h handlerFunc) (*authz.Identity, []byte, error) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	identity, authenticated := s.authz.Authenticate(token)
-	if !ok || !authenticated {
-		return nil, nil, apierr.New(api.CodeUnauthenticated, "missing or invalid bearer token")
+	if !ok {
+		token = ""
+	}
+	identity, err := s.authz.Authenticate(r.Context(), token)
+	if err != nil {
+		return nil, nil, err
 	}
 	release, err := s.limiters.acquire(identity)
 	if err != nil {
@@ -121,7 +123,7 @@ func (s *Server) clientError(err error) *apierr.Error {
 	return apierr.New(api.CodeInternal, "internal error")
 }
 
-func (s *Server) writeAudit(r *http.Request, identity *config.Identity, record *audit.Record, status int, code api.ErrorCode, duration time.Duration, size int) {
+func (s *Server) writeAudit(r *http.Request, identity *authz.Identity, record *audit.Record, status int, code api.ErrorCode, duration time.Duration, size int) {
 	service, environment, queries := record.Snapshot()
 	entry := store.AuditEntry{
 		Time:          time.Now(),

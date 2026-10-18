@@ -1,0 +1,39 @@
+{{define "content"}}
+<form method="get" action="/admin/audit" class="filter">
+  <label>Identity
+    <select name="identity">
+      <option value="">All</option>
+      {{range .Identities}}<option{{if eq . $.Identity}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>
+{{if .Records}}
+<div class="scroll">
+<table class="audit">
+  <thead>
+    <tr><th>Time (UTC)</th><th>Identity</th><th>Request</th><th>Service</th><th>Status</th><th>Duration</th><th>Bytes</th></tr>
+  </thead>
+  <tbody>
+  {{range .Records}}
+    <tr>
+      <td class="nowrap">{{time .Time}}</td>
+      <td>{{with .Identity}}{{.}}{{else}}<span class="muted">unauthenticated</span>{{end}}</td>
+      <td>
+        <code>{{.Method}} {{.Path}}</code>
+        {{if .Queries}}<details><summary>Upstream queries</summary><pre>{{.Queries}}</pre></details>{{end}}
+      </td>
+      <td>{{.Service}}{{if .Environment}} / {{.Environment}}{{end}}</td>
+      <td{{if ge .Status 400}} class="bad"{{end}}>{{.Status}}{{with .ErrorCode}} {{.}}{{end}}</td>
+      <td class="nowrap">{{.Duration}}</td>
+      <td>{{.ResponseBytes}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{if .OlderID}}<p><a href="/admin/audit?identity={{.Identity}}&amp;before={{.OlderID}}">Older entries</a></p>{{end}}
+{{else}}
+<p class="muted">No audit records.</p>
+{{end}}
+{{end}}

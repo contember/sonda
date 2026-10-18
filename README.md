@@ -30,11 +30,13 @@ Sonda does not reason about incidents. The agent does; Sonda supplies the eviden
 ```bash
 go build -o . ./cmd/...            # builds sonda-server and sonda
 
-./sonda-server token               # prints a token for the agent and its SHA-256
-cp sonda.example.yaml sonda.yaml   # configure sources, services, identities
+cp sonda.example.yaml sonda.yaml   # configure sources and services
+export SONDA_ADMIN_TOKEN=$(openssl rand -hex 32)
 ./sonda-server check -c sonda.yaml
 ./sonda-server serve -c sonda.yaml
 
+# Open http://localhost:8080/admin, sign in with the admin token, create an identity
+# and copy its token.
 export SONDA_URL=http://localhost:8080 SONDA_TOKEN=sonda_...
 ./sonda services
 ./sonda overview engine-api -e production
@@ -60,14 +62,29 @@ The CLI prints JSON when its output is piped and compact text in a terminal.
 
 ## Configuration
 
-See `sonda.example.yaml`. The parts that matter for security:
+Sources, services and server limits are in `sonda.yaml` (see `sonda.example.yaml`). The server
+reads it at startup. Agent identities are in the database and are managed in the admin UI. The
+parts that matter for security:
 
 - **Selectors** (`logs.selector`, `metrics.selector`) are the scoping boundary. Every query of
   the service gets these matchers. They must contain an `=` or `=~` matcher that rejects the
   empty value, and the labels must really identify the service in your data.
-- **Grants** give an identity `services × environments × capabilities`
-  (`errors`, `logs`, `metrics`). Anything else is not found.
+- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`) for service
+  environments. Anything else is not found.
 - **Provider credentials** come from environment variables. Use read-only tokens.
+- **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
+  `/admin` only on a trusted network.
+
+## Admin UI
+
+Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.
+
+- **Identities**: create an identity, select its grants in a service × capability matrix,
+  override limits, rotate or revoke its token. Changes apply to the next request; no restart.
+  A token is shown once; Sonda stores only its SHA-256.
+- **Audit log**: every agent request and every admin action, filterable by identity.
+
+The UI is server-rendered with htmx and embedded in `sonda-server`.
 
 ## HTTP API
 

@@ -25,7 +25,7 @@ const (
 
 var issueUntrusted = []string{"data[].title", "data[].culprit"}
 
-func (s *Service) errorScope(identity *config.Identity, service, env string) (authz.ErrorScope, *sentry.Client, error) {
+func (s *Service) errorScope(identity *authz.Identity, service, env string) (authz.ErrorScope, *sentry.Client, error) {
 	scope, err := s.authz.ErrorScope(identity, service, env)
 	if err != nil {
 		return authz.ErrorScope{}, nil, err
@@ -34,7 +34,7 @@ func (s *Service) errorScope(identity *config.Identity, service, env string) (au
 }
 
 // ListErrors returns issues seen in the range, most frequent first.
-func (s *Service) ListErrors(ctx context.Context, identity *config.Identity, service string, w api.Window, query string, limit int) (api.Response[[]api.Issue], error) {
+func (s *Service) ListErrors(ctx context.Context, identity *authz.Identity, service string, w api.Window, query string, limit int) (api.Response[[]api.Issue], error) {
 	var resp api.Response[[]api.Issue]
 	scope, client, err := s.errorScope(identity, service, w.Environment)
 	if err != nil {
@@ -65,7 +65,7 @@ func (s *Service) ListErrors(ctx context.Context, identity *config.Identity, ser
 	return resp, nil
 }
 
-func (s *Service) GetError(ctx context.Context, identity *config.Identity, service, env, id string) (api.Response[api.IssueDetail], error) {
+func (s *Service) GetError(ctx context.Context, identity *authz.Identity, service, env, id string) (api.Response[api.IssueDetail], error) {
 	var resp api.Response[api.IssueDetail]
 	scope, client, err := s.errorScope(identity, service, env)
 	if err != nil {
@@ -88,7 +88,7 @@ func (s *Service) GetError(ctx context.Context, identity *config.Identity, servi
 	return resp, nil
 }
 
-func (s *Service) Releases(ctx context.Context, identity *config.Identity, service string, w api.Window) (api.Response[[]api.Release], error) {
+func (s *Service) Releases(ctx context.Context, identity *authz.Identity, service string, w api.Window) (api.Response[[]api.Release], error) {
 	var resp api.Response[[]api.Release]
 	scope, client, err := s.errorScope(identity, service, w.Environment)
 	if err != nil {

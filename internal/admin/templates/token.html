@@ -1,0 +1,9 @@
+{{define "content"}}
+<p>Copy the token now. Sonda stores only its hash and cannot show it again.</p>
+<pre class="token"><code id="token">{{.Token}}</code></pre>
+<p><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('token').textContent)">Copy token</button></p>
+<p>Configure the agent:</p>
+<pre><code>export SONDA_URL={{.URL}}
+export SONDA_TOKEN={{.Token}}</code></pre>
+<p><a href="/admin/identities">Back to identities</a></p>
+{{end}}
