@@ -5,8 +5,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/grafana/loki/v3/pkg/pattern/drain"
-
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/connector/loki"
 )
@@ -62,78 +60,62 @@ type Groups struct {
 	Ungrouped  int
 }
 
-// jsonFields are the message fields Drain tokenizes in JSON lines (Loki's defaults).
-type jsonFields struct{}
-
-func (jsonFields) PatternIngesterTokenizableJSONFields(string) []string {
-	return []string{"log", "message", "msg", "msg_", "_msg", "content"}
-}
-
 func GroupLines(lines []api.LogLine, total int64) Groups {
 	type cluster struct {
 		first, last time.Time
 		example     string
 	}
-	trainers := map[string]*drain.Drain{}
-	byCluster := map[*drain.LogCluster]*cluster{}
-	lineCluster := make([]*drain.LogCluster, len(lines))
+	trainer := newDrain()
+	byTemplate := map[*template]*cluster{}
+	lineTemplate := make([]*template, len(lines))
 	for i, line := range lines {
-		format := drain.DetectLogFormat(line.Line)
-		trainer, ok := trainers[format]
-		if !ok {
-			config := drain.DefaultConfig()
-			// No eviction: clusters must stay alive until every line is assigned.
-			config.MaxClusters = 0
-			trainer = drain.New("", config, jsonFields{}, format, nil)
-			trainers[format] = trainer
-		}
-		c := trainer.Train(line.Line, line.Time.UnixNano())
-		if c == nil {
+		t := trainer.train(line.Line)
+		if t == nil {
 			continue
 		}
-		lineCluster[i] = c
-		info, ok := byCluster[c]
+		lineTemplate[i] = t
+		info, ok := byTemplate[t]
 		if !ok {
 			info = &cluster{first: line.Time, last: line.Time, example: line.Line}
-			byCluster[c] = info
+			byTemplate[t] = info
 		}
 		info.first = minTime(info.first, line.Time)
 		info.last = maxTime(info.last, line.Time)
 	}
 
-	clusters := make([]*drain.LogCluster, 0, len(byCluster))
-	for c := range byCluster {
-		clusters = append(clusters, c)
+	templates := make([]*template, 0, len(byTemplate))
+	for t := range byTemplate {
+		templates = append(templates, t)
 	}
-	sort.Slice(clusters, func(i, j int) bool {
-		if clusters[i].SampleCount != clusters[j].SampleCount {
-			return clusters[i].SampleCount > clusters[j].SampleCount
+	sort.Slice(templates, func(i, j int) bool {
+		if templates[i].count != templates[j].count {
+			return templates[i].count > templates[j].count
 		}
-		return clusters[i].String() < clusters[j].String()
+		return templates[i].pattern() < templates[j].pattern()
 	})
 
-	result := Groups{Groups: make([]api.LogGroup, len(clusters)), Assignment: make([]int, len(lines))}
-	index := map[*drain.LogCluster]int{}
-	for i, c := range clusters {
-		info := byCluster[c]
-		index[c] = i
+	result := Groups{Groups: make([]api.LogGroup, len(templates)), Assignment: make([]int, len(lines))}
+	index := map[*template]int{}
+	for i, t := range templates {
+		info := byTemplate[t]
+		index[t] = i
 		result.Groups[i] = api.LogGroup{
 			Index:          i,
-			Pattern:        c.String(),
-			SampleCount:    int(c.SampleCount),
-			EstimatedCount: estimate(int(c.SampleCount), len(lines), total),
+			Pattern:        t.pattern(),
+			SampleCount:    t.count,
+			EstimatedCount: estimate(t.count, len(lines), total),
 			Example:        info.example,
 			FirstSeen:      info.first,
 			LastSeen:       info.last,
 		}
 	}
-	for i, c := range lineCluster {
-		if c == nil {
+	for i, t := range lineTemplate {
+		if t == nil {
 			result.Assignment[i] = -1
 			result.Ungrouped++
 			continue
 		}
-		result.Assignment[i] = index[c]
+		result.Assignment[i] = index[t]
 	}
 	return result
 }
