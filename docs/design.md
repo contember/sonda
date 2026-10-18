@@ -12,7 +12,7 @@ returns compact, evidence-carrying responses.
 | Topic | Decision | Rejected alternative | Reason |
 |---|---|---|---|
 | Interface | HTTP API + `sonda` CLI | MCP server | No context cost until used. One contract (HTTP) for agents, bots and CI. MCP can be a thin adapter later. |
-| Language | Go | TypeScript/Bun | Mature PromQL and LogQL parsers exist only in Go. Single static binary. |
+| Language | Go | TypeScript/Bun | The Prometheus PromQL parser is Go. Single static binary. |
 | Binaries | `sonda-server` and `sonda` (CLI), one Go module | One binary with subcommands | The CLI imports only the `api` package, so it does not link the parsers, connectors or SQLite. |
 | Native queries | Allowed in v1, scoped to one service, with matcher injection | Plain passthrough; string concatenation | Passthrough leaks other services. String concatenation protects only one selector. |
 | Configuration | Sources, services and limits in one YAML file, loaded at startup | Everything in a database | Reviewable in git. These change rarely and define the security boundary (selectors). |
@@ -122,6 +122,7 @@ internal/config    YAML loading, env expansion, validation → typed Config
 internal/identities  identity and grant types, Store interface, token generation
 internal/authz     token → Identity; (Identity, service, env, capability) → Scope or error
 internal/policy    PromQL/LogQL matcher injection and verification; time range and step
+internal/logql     LogQL lexer that finds and rewrites stream selectors
 internal/connector
   upstream/        HTTP client per source: auth, headers, error mapping
   sentry/          Sentry REST client
@@ -233,8 +234,8 @@ Rules:
 
 ## 6. Native query enforcement
 
-Sonda parses the query, appends the scope matchers to every selector in the AST (skipping
-matchers the selector already has), and serializes it back. It then re-parses the result and
+Sonda finds every selector of the query, appends the scope matchers to it (skipping matchers
+the selector already has), and serializes the query back. It then re-parses the result and
 checks that every selector carries all scope matchers, so a serialization bug cannot silently
 drop the scope. Matchers combine with AND, so:
 
@@ -248,6 +249,28 @@ label sets, so a union cannot be expressed as one injected matcher.
 
 The scope selector is a security setting. If a service's logs or metrics lack the label, the
 filter cannot protect them. Config review must check this.
+
+### PromQL and LogQL
+
+- **PromQL** is parsed with the Prometheus parser (Apache-2.0). Selectors are rewritten in the
+  AST, which is serialized back.
+- **LogQL** is not parsed with Loki's parser: it is AGPL-licensed and pulls hundreds of
+  packages. `internal/logql` only lexes the query. Outside strings, comments and ranges, a brace
+  always opens a stream selector, so the lexer finds every selector without parsing the rest of
+  the language. It mirrors the lexical rules of Loki's lexer: `"…"` strings with Go escapes,
+  raw strings, `#`, `//` and `/* */` comments, and `[…]` read verbatim up to `]`. It rejects
+  what it does not understand (single-quoted literals, unbalanced parentheses, invalid UTF-8),
+  so it fails closed. Each selector is replaced by its serialized matchers and each comment by
+  a space; the rest of the query is kept byte for byte. Loki validates the rest when it runs
+  the query and reports errors as `invalid_query`.
+- The lexer's security property: every selector Loki executes carries the scope matchers.
+  `internal/logql` tests check it against a running Loki, so no Loki code is linked:
+  `/loki/api/v1/format_query` prints a query from Loki's AST without comments, which shows the
+  selectors as Loki parses them. A corpus of queries and a fuzz target
+  (`go test ./internal/logql -fuzz FuzzScope`) use it. A second test stores lines of another
+  service and checks that scoped queries do not return them, which does not depend on the
+  formatter. The tests run when `SONDA_TEST_LOKI_URL` is set; CI runs them against a Loki
+  service container.
 
 ### Spike results (2026-10-16)
 
@@ -272,6 +295,10 @@ Loki pulls gRPC, OpenTelemetry, etcd and k8s client packages. This affects only 
 Mitigation: pin the Loki version, keep the replace directives (commented in `go.mod`), and
 treat each Loki upgrade as a deliberate change. If the cost becomes a problem, vendor the
 `syntax` and `pattern/drain` packages alone. Final sizes: `sonda-server` 45 MB, `sonda` 10 MB.
+
+Since then, Sonda links no Loki code (Loki is AGPL-licensed, Sonda is MIT): LogQL scoping
+uses `internal/logql` and log grouping uses its own Drain implementation in `internal/shape`.
+`sonda-server` is 28 MB, and the `replace` directives are gone.
 
 The PromQL API changed between Prometheus versions (`parser.ParseExpr` →
 `parser.NewParser(opts).ParseExpr`). Pin the version.
@@ -311,9 +338,10 @@ Every response uses one envelope:
 1. Exact total: `sum(count_over_time(<selector + filter>[range]))` as one instant query.
 2. Sample: fetch up to `max_log_lines` of the newest matching lines. `sampleRange` reports the
    time span they cover.
-3. Redact the lines, then group them into patterns with Drain (`loki/pkg/pattern/drain`, already
-   a dependency). Lines Drain cannot tokenize (fewer than 4 or more than 80 tokens) are counted
-   as `ungrouped`.
+3. Redact the lines, then group them into patterns with Drain (`internal/shape/drain.go`). A
+   JSON line is grouped by its message field (`log`, `message`, `msg`, …). Tokens are split at
+   whitespace and after the `=` of `key=value`, so a varying value becomes `<_>` and its key
+   stays. Lines with fewer than 4 or more than 80 tokens are counted as `ungrouped`.
 4. Return the total, the groups with sample-based counts and estimates (`sampled: true`), and a
    `resultId`.
 5. The agent drills down with `resultId` + group index, or pages through raw lines.
