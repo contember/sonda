@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/contember/sonda/api"
-	"github.com/contember/sonda/internal/connector/loki"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 const maxLineLength = 1000
@@ -19,7 +19,7 @@ type LogSample struct {
 
 // Flatten merges streams into one list sorted newest first. Lines are redacted and cut
 // to maxLineLength.
-func Flatten(streams []loki.Stream, redactor *Redactor) LogSample {
+func Flatten(streams []telemetry.LogStream, redactor *Redactor) LogSample {
 	sample := LogSample{Streams: make([]map[string]string, len(streams))}
 	for i, s := range streams {
 		sample.Streams[i] = s.Labels

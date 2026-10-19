@@ -5,6 +5,7 @@ package policy
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,8 +111,11 @@ func verifyLogQL(query string, matchers []*labels.Matcher) error {
 	return nil
 }
 
-// LogSearchQuery builds a log query from line filters and an optional pipeline.
-func LogSearchQuery(scope authz.SelectorScope, contains []string, pipeline string) (LogQL, error) {
+var lokiLabelName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// LogSearchQuery builds a log query from line filters, an optional pipeline and where
+// conditions, which become label filters after the pipeline.
+func LogSearchQuery(scope authz.SelectorScope, contains []string, pipeline string, where []Where) (LogQL, error) {
 	var b strings.Builder
 	b.WriteString(scope.Selector())
 	for _, text := range contains {
@@ -121,6 +125,17 @@ func LogSearchQuery(scope authz.SelectorScope, contains []string, pipeline strin
 	if pipeline = strings.TrimSpace(pipeline); pipeline != "" {
 		b.WriteString(" ")
 		b.WriteString(pipeline)
+	}
+	for _, w := range where {
+		if !lokiLabelName.MatchString(w.Field) {
+			return LogQL{}, apierr.InvalidRequest("where field %q is not a valid Loki label name", w.Field)
+		}
+		operator := "="
+		if w.Negate {
+			operator = "!="
+		}
+		b.WriteString(" | ")
+		b.WriteString(w.Field + operator + strconv.Quote(w.Value))
 	}
 	q, err := ScopeLogQL(scope, b.String())
 	if err != nil {

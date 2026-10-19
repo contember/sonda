@@ -2,20 +2,26 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/logql"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 type rawConfig struct {
@@ -48,6 +54,11 @@ type rawSource struct {
 	Auth                 rawAuth           `yaml:"auth"`
 	Headers              map[string]string `yaml:"headers"`
 	GrafanaDatasourceUID string            `yaml:"grafana_datasource_uid"`
+	AccountID            string            `yaml:"account_id"`
+	Region               string            `yaml:"region"`
+	RoleARN              string            `yaml:"role_arn"`
+	ExternalID           string            `yaml:"external_id"`
+	MaxScanBytes         string            `yaml:"max_scan_bytes"`
 }
 
 type rawAuth struct {
@@ -61,13 +72,15 @@ type rawService struct {
 	Description  string                    `yaml:"description"`
 	Repository   string                    `yaml:"repository"`
 	Environments map[string]rawEnvironment `yaml:"environments"`
-	Signals      map[string]string         `yaml:"signals"`
+	// Signals are decoded as nodes, because a signal is either a PromQL string or a mapping.
+	Signals map[string]yaml.Node `yaml:"signals"`
 }
 
 type rawEnvironment struct {
-	Errors  *rawErrorBinding    `yaml:"errors"`
-	Logs    *rawSelectorBinding `yaml:"logs"`
-	Metrics *rawSelectorBinding `yaml:"metrics"`
+	Errors  *rawErrorBinding `yaml:"errors"`
+	Logs    *rawBinding      `yaml:"logs"`
+	Metrics *rawBinding      `yaml:"metrics"`
+	Traces  *rawBinding      `yaml:"traces"`
 }
 
 type rawErrorBinding struct {
@@ -76,9 +89,16 @@ type rawErrorBinding struct {
 	Environment string `yaml:"environment"`
 }
 
-type rawSelectorBinding struct {
-	Source   string `yaml:"source"`
-	Selector string `yaml:"selector"`
+// rawBinding holds the fields of every log, metric and trace binding variant; the source
+// type decides which of them are allowed.
+type rawBinding struct {
+	Source     string            `yaml:"source"`
+	Selector   string            `yaml:"selector"`
+	Script     string            `yaml:"script"`
+	LogGroups  []string          `yaml:"log_groups"`
+	Namespace  string            `yaml:"namespace"`
+	Dimensions map[string]string `yaml:"dimensions"`
+	Service    string            `yaml:"service"`
 }
 
 type rawLimits struct {
@@ -99,7 +119,7 @@ func LoadFile(path string) (*Config, error) {
 }
 
 // Parse validates the YAML configuration. lookupEnv resolves ${NAME} references, which are
-// allowed only in source URLs, credentials, headers and the admin token.
+// allowed only in source URLs, credentials, account IDs, role ARNs, headers and the admin token.
 func Parse(data []byte, lookupEnv func(string) (string, bool)) (*Config, error) {
 	var raw rawConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -167,6 +187,11 @@ func (v *validator) admin(raw rawAdmin) *Admin {
 	return &Admin{Token: token}
 }
 
+const (
+	defaultCloudflareURL = "https://api.cloudflare.com/client/v4"
+	defaultMaxScanBytes  = 10 * humanize.GByte
+)
+
 func (v *validator) source(name string, raw rawSource) *Source {
 	path := "sources." + name
 	src := &Source{
@@ -176,7 +201,14 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		Headers:              map[string]string{},
 		SentryOrg:            raw.Org,
 		GrafanaDatasourceUID: raw.GrafanaDatasourceUID,
+		CloudflareAccountID:  v.expand(path+".account_id", raw.AccountID),
 	}
+	v.onlyFor(path+".org", raw.Org != "", src.Type, SourceSentry)
+	v.onlyFor(path+".account_id", raw.AccountID != "", src.Type, SourceCloudflare)
+	v.onlyFor(path+".region", raw.Region != "", src.Type, SourceAWS)
+	v.onlyFor(path+".role_arn", raw.RoleARN != "", src.Type, SourceAWS)
+	v.onlyFor(path+".external_id", raw.ExternalID != "", src.Type, SourceAWS)
+	v.onlyFor(path+".max_scan_bytes", raw.MaxScanBytes != "", src.Type, SourceAWS)
 	switch src.Type {
 	case SourceSentry:
 		if src.URL == "" {
@@ -185,12 +217,23 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		if raw.Org == "" {
 			v.fail("%s.org is required for sentry sources", path)
 		}
-	case SourceLoki, SourcePrometheus:
-		if raw.Org != "" {
-			v.fail("%s.org is allowed only for sentry sources", path)
+	case SourceLoki, SourcePrometheus, SourceTempo:
+	case SourceCloudflare:
+		if src.URL == "" {
+			src.URL = defaultCloudflareURL
 		}
+		if raw.AccountID == "" {
+			v.fail("%s.account_id is required for cloudflare sources", path)
+		}
+		if raw.Auth.Type != string(AuthBearer) {
+			v.fail("%s.auth must be bearer for cloudflare sources", path)
+		}
+	case SourceAWS:
+		src.AWS = v.awsSource(path, raw)
+		src.Auth = Auth{Type: AuthNone}
+		return src
 	default:
-		v.fail("%s.type must be sentry, loki or prometheus, got %q", path, raw.Type)
+		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare or aws, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
@@ -198,6 +241,43 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		src.Headers[header] = v.expand(path+".headers."+header, value)
 	}
 	return src
+}
+
+// awsSource validates an AWS source. It talks to AWS through the SDK, which resolves the
+// endpoint and credentials, so url, auth and headers do not apply.
+func (v *validator) awsSource(path string, raw rawSource) *AWSSource {
+	if raw.URL != "" {
+		v.fail("%s.url is not allowed for aws sources", path)
+	}
+	if raw.Auth != (rawAuth{}) {
+		v.fail("%s.auth is not allowed for aws sources; credentials come from the AWS credential chain", path)
+	}
+	if len(raw.Headers) > 0 {
+		v.fail("%s.headers is not allowed for aws sources", path)
+	}
+	if raw.Region == "" {
+		v.fail("%s.region is required for aws sources", path)
+	}
+	aws := &AWSSource{
+		Region:       raw.Region,
+		RoleARN:      v.expand(path+".role_arn", raw.RoleARN),
+		ExternalID:   v.expand(path+".external_id", raw.ExternalID),
+		MaxScanBytes: defaultMaxScanBytes,
+	}
+	if raw.ExternalID != "" && raw.RoleARN == "" {
+		v.fail("%s.external_id is allowed only with role_arn", path)
+	}
+	if raw.MaxScanBytes != "" {
+		aws.MaxScanBytes = v.byteSize(path+".max_scan_bytes", raw.MaxScanBytes)
+	}
+	return aws
+}
+
+// onlyFor reports a source field that is set on a source of another type.
+func (v *validator) onlyFor(path string, set bool, sourceType, allowed SourceType) {
+	if set && sourceType != allowed {
+		v.fail("%s is allowed only for %s sources", path, allowed)
+	}
 }
 
 func (v *validator) auth(path string, raw rawAuth) Auth {
@@ -233,7 +313,6 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 		Description:  raw.Description,
 		Repository:   raw.Repository,
 		Environments: map[string]*Environment{},
-		Signals:      map[string]string{},
 	}
 	if len(raw.Environments) == 0 {
 		v.fail("%s.environments: at least one environment is required", path)
@@ -245,23 +324,105 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 			env.Errors = v.errorBinding(envPath+".errors", *re.Errors, sources)
 		}
 		if re.Logs != nil {
-			env.Logs = v.selectorBinding(envPath+".logs", *re.Logs, sources, SourceLoki, parseLogSelector)
+			env.Logs = v.logBinding(envPath+".logs", *re.Logs, sources)
 		}
 		if re.Metrics != nil {
-			env.Metrics = v.selectorBinding(envPath+".metrics", *re.Metrics, sources, SourcePrometheus, parseMetricSelector)
+			env.Metrics = v.metricBinding(envPath+".metrics", *re.Metrics, sources)
+		}
+		if re.Traces != nil {
+			env.Traces = v.traceBinding(envPath+".traces", *re.Traces, sources)
 		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs or metrics is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics or traces is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
-	for signal, expr := range raw.Signals {
-		if _, err := parser.NewParser(parser.Options{}).ParseExpr(expr); err != nil {
-			v.fail("%s.signals.%s: invalid PromQL: %v", path, signal, err)
-		}
-		svc.Signals[signal] = expr
-	}
+	svc.Signals = v.signals(path+".signals", raw.Signals, svc.Environments)
 	return svc
+}
+
+// signals validates the signals in the dialect of the service's metrics backend, which all
+// metrics environments must share.
+func (v *validator) signals(path string, raw map[string]yaml.Node, envs map[string]*Environment) map[string]Signal {
+	signals := map[string]Signal{}
+	if len(raw) == 0 {
+		return signals
+	}
+	var metrics *MetricBinding
+	var types []SourceType
+	for _, env := range envs {
+		if env.Metrics != nil && env.Metrics.Source != nil && !slices.Contains(types, env.Metrics.Source.Type) {
+			metrics = env.Metrics
+			types = append(types, env.Metrics.Source.Type)
+		}
+	}
+	switch {
+	case len(types) == 0:
+		v.fail("%s: signals require an environment with metrics", path)
+		return signals
+	case len(types) > 1:
+		names := make([]string, len(types))
+		for i, t := range types {
+			names[i] = string(t)
+		}
+		slices.Sort(names)
+		v.fail("%s: signals require all metrics environments to use one source type, got %s", path, strings.Join(names, ", "))
+		return signals
+	}
+	dialect := metrics.Dialect()
+	for name, node := range raw {
+		query, err := signalQuery(node, dialect)
+		if err != nil {
+			v.fail("%s.%s: %v", path, name, err)
+			continue
+		}
+		signals[name] = Signal{Dialect: dialect, Query: query}
+	}
+	return signals
+}
+
+// signalQuery returns the signal as query text of the dialect: PromQL as written, or the
+// canonical JSON of a structured metric query.
+func signalQuery(node yaml.Node, dialect api.Dialect) (string, error) {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if dialect != api.DialectPromQL {
+			return "", fmt.Errorf("a string signal is PromQL, but the metrics dialect is %s; use a mapping", dialect)
+		}
+		if _, err := parser.NewParser(parser.Options{}).ParseExpr(node.Value); err != nil {
+			return "", fmt.Errorf("invalid PromQL: %v", err)
+		}
+		return node.Value, nil
+	case yaml.MappingNode:
+		// The mapping goes through JSON, so it gets the same strict decoding as a native query.
+		var fields map[string]any
+		if err := node.Decode(&fields); err != nil {
+			return "", err
+		}
+		text, err := json.Marshal(fields)
+		if err != nil {
+			return "", err
+		}
+		switch dialect {
+		case api.DialectCloudflareMetric:
+			return canonical(string(text), telemetry.DecodeCloudflareMetricQuery)
+		case api.DialectCloudWatchMetric:
+			return canonical(string(text), telemetry.DecodeCloudWatchMetricQuery)
+		}
+		return "", fmt.Errorf("a mapping signal needs cloudflare or aws metrics, but the metrics dialect is %s", dialect)
+	}
+	return "", errors.New("must be a PromQL string or a mapping")
+}
+
+// canonical decodes a structured query and encodes it again, so the stored text holds only
+// known fields in a stable order.
+func canonical[T any](text string, decode func(string) (T, error)) (string, error) {
+	query, err := decode(text)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(query)
+	return string(encoded), err
 }
 
 func (v *validator) errorBinding(path string, raw rawErrorBinding, sources map[string]*Source) *ErrorBinding {
@@ -275,33 +436,177 @@ func (v *validator) errorBinding(path string, raw rawErrorBinding, sources map[s
 	return &ErrorBinding{Source: src, Project: raw.Project, Environment: raw.Environment}
 }
 
-func (v *validator) selectorBinding(
-	path string,
-	raw rawSelectorBinding,
-	sources map[string]*Source,
-	sourceType SourceType,
-	parse func(string) ([]*labels.Matcher, error),
-) *SelectorBinding {
-	src := v.sourceRef(path+".source", raw.Source, sources, sourceType)
-	matchers, err := parse(raw.Selector)
+func (v *validator) logBinding(path string, raw rawBinding, sources map[string]*Source) *LogBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceLoki, SourceCloudflare, SourceAWS)
+	binding := &LogBinding{Source: src}
+	if src == nil {
+		// The source type is unknown, but the fields can still be checked on their own.
+		if raw.Selector != "" {
+			v.selector(path, raw.Selector, parseLogSelector)
+		}
+		if raw.LogGroups != nil {
+			v.logGroups(path, raw.LogGroups)
+		}
+		return binding
+	}
+	switch src.Type {
+	case SourceLoki:
+		v.bindingFields(path, raw, src, "selector")
+		binding.Selector = v.selector(path, raw.Selector, parseLogSelector)
+	case SourceCloudflare:
+		v.bindingFields(path, raw, src, "script")
+		binding.Script = v.script(path, raw.Script)
+	case SourceAWS:
+		v.bindingFields(path, raw, src, "log_groups")
+		binding.LogGroups = v.logGroups(path, raw.LogGroups)
+	}
+	return binding
+}
+
+func (v *validator) metricBinding(path string, raw rawBinding, sources map[string]*Source) *MetricBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourcePrometheus, SourceCloudflare, SourceAWS)
+	binding := &MetricBinding{Source: src}
+	if src == nil {
+		// The source type is unknown, but the fields can still be checked on their own.
+		if raw.Selector != "" {
+			v.selector(path, raw.Selector, parseMetricSelector)
+		}
+		if raw.Dimensions != nil {
+			v.dimensions(path, raw.Dimensions)
+		}
+		return binding
+	}
+	switch src.Type {
+	case SourcePrometheus:
+		v.bindingFields(path, raw, src, "selector")
+		binding.Selector = v.selector(path, raw.Selector, parseMetricSelector)
+	case SourceCloudflare:
+		v.bindingFields(path, raw, src, "script")
+		binding.Script = v.script(path, raw.Script)
+	case SourceAWS:
+		v.bindingFields(path, raw, src, "namespace", "dimensions")
+		if raw.Namespace == "" {
+			v.fail("%s.namespace is required for aws sources", path)
+		}
+		binding.Namespace = raw.Namespace
+		binding.Dimensions = v.dimensions(path, raw.Dimensions)
+	}
+	return binding
+}
+
+func (v *validator) traceBinding(path string, raw rawBinding, sources map[string]*Source) *TraceBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceTempo, SourceCloudflare)
+	binding := &TraceBinding{Source: src}
+	if src == nil {
+		return binding
+	}
+	switch src.Type {
+	case SourceTempo:
+		v.bindingFields(path, raw, src, "service")
+		if raw.Service == "" {
+			v.fail("%s.service is required for tempo sources", path)
+		}
+		binding.ServiceName = raw.Service
+	case SourceCloudflare:
+		v.bindingFields(path, raw, src, "script")
+		binding.Script = v.script(path, raw.Script)
+	}
+	return binding
+}
+
+// bindingFields reports set fields that do not belong to the binding variant of the source.
+func (v *validator) bindingFields(path string, raw rawBinding, src *Source, allowed ...string) {
+	fields := []struct {
+		name string
+		set  bool
+	}{
+		{"selector", raw.Selector != ""},
+		{"script", raw.Script != ""},
+		{"log_groups", raw.LogGroups != nil},
+		{"namespace", raw.Namespace != ""},
+		{"dimensions", raw.Dimensions != nil},
+		{"service", raw.Service != ""},
+	}
+	for _, field := range fields {
+		if field.set && !slices.Contains(allowed, field.name) {
+			v.fail("%s.%s is not allowed for %s sources", path, field.name, src.Type)
+		}
+	}
+}
+
+func (v *validator) selector(path, raw string, parse func(string) ([]*labels.Matcher, error)) *Selector {
+	matchers, err := parse(raw)
 	if err != nil {
 		v.fail("%s.selector: %v", path, err)
 	} else if !restrictsScope(matchers) {
-		v.fail("%s.selector %q must contain an = or =~ matcher that rejects the empty value, e.g. app=\"name\"", path, raw.Selector)
+		v.fail("%s.selector %q must contain an = or =~ matcher that rejects the empty value, e.g. app=\"name\"", path, raw)
 	}
-	return &SelectorBinding{Source: src, Selector: raw.Selector, Matchers: matchers}
+	return &Selector{Text: raw, Matchers: matchers}
 }
 
-func (v *validator) sourceRef(path, name string, sources map[string]*Source, want SourceType) *Source {
+func (v *validator) script(path, raw string) string {
+	if raw == "" {
+		v.fail("%s.script is required for cloudflare sources", path)
+	}
+	return raw
+}
+
+// maxLogGroups is the limit of log groups in one Logs Insights query.
+const maxLogGroups = 50
+
+// logGroups requires exact names, because a pattern would widen the scope as groups are added.
+func (v *validator) logGroups(path string, raw []string) []string {
+	if len(raw) == 0 || len(raw) > maxLogGroups {
+		v.fail("%s.log_groups must have 1 to %d entries", path, maxLogGroups)
+	}
+	seen := map[string]bool{}
+	for _, group := range raw {
+		switch {
+		case group == "":
+			v.fail("%s.log_groups: empty log group name", path)
+		case strings.Contains(group, "*"):
+			v.fail("%s.log_groups: %q must be an exact name, not a pattern", path, group)
+		case seen[group]:
+			v.fail("%s.log_groups: duplicate log group %q", path, group)
+		}
+		seen[group] = true
+	}
+	return raw
+}
+
+func (v *validator) dimensions(path string, raw map[string]string) map[string]string {
+	if len(raw) == 0 {
+		v.fail("%s.dimensions: at least one dimension is required for aws sources", path)
+	}
+	for name, value := range raw {
+		if name == "" || value == "" {
+			v.fail("%s.dimensions: names and values must not be empty", path)
+		}
+	}
+	return raw
+}
+
+func (v *validator) sourceRef(path, name string, sources map[string]*Source, want ...SourceType) *Source {
 	src, ok := sources[name]
 	if !ok {
 		v.fail("%s: unknown source %q", path, name)
 		return nil
 	}
-	if src.Type != want {
-		v.fail("%s: source %q has type %s, expected %s", path, name, src.Type, want)
+	if !slices.Contains(want, src.Type) {
+		v.fail("%s: source %q has type %s, expected %s", path, name, src.Type, joinTypes(want))
 	}
 	return src
+}
+
+func joinTypes(types []SourceType) string {
+	names := make([]string, len(types))
+	for i, t := range types {
+		names[i] = string(t)
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 func (v *validator) limits(path string, raw rawLimits, base Limits) Limits {
@@ -325,6 +630,15 @@ func (v *validator) duration(path, raw string) time.Duration {
 		v.fail("%s: invalid duration %q", path, raw)
 	}
 	return time.Duration(d)
+}
+
+func (v *validator) byteSize(path, raw string) int64 {
+	size, err := humanize.ParseBytes(raw)
+	if err != nil || size == 0 || size > math.MaxInt64 {
+		v.fail("%s: invalid size %q, expected a size like 10GB", path, raw)
+		return 0
+	}
+	return int64(size)
 }
 
 func (v *validator) positive(path string, raw *int, target *int) {

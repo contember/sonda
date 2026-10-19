@@ -44,6 +44,9 @@ func New(q *query.Service, authorizer *authz.Authorizer, st *store.Store, log *s
 	mux.Handle("POST /v1/services/{service}/logs/search", s.handle(s.searchLogs))
 	mux.Handle("POST /v1/services/{service}/logs/query", s.handle(s.queryLogs))
 	mux.Handle("GET /v1/services/{service}/logs/fields", s.handle(s.logFields))
+	mux.Handle("POST /v1/services/{service}/traces/search", s.handle(s.searchTraces))
+	mux.Handle("POST /v1/services/{service}/traces/query", s.handle(s.queryTraces))
+	mux.Handle("GET /v1/services/{service}/traces/{id}", s.handle(s.getTrace))
 	mux.Handle("GET /v1/results/{id}", s.handle(s.result))
 	return mux
 }

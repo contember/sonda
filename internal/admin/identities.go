@@ -17,7 +17,7 @@ import (
 	"github.com/contember/sonda/internal/identities"
 )
 
-var capabilities = []api.Capability{api.CapabilityErrors, api.CapabilityLogs, api.CapabilityMetrics}
+var capabilities = []api.Capability{api.CapabilityErrors, api.CapabilityLogs, api.CapabilityMetrics, api.CapabilityTraces}
 
 type identityRow struct {
 	Name      string

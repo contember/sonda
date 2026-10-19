@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
-	"github.com/contember/sonda/internal/connector/prometheus"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/shape"
 )
@@ -23,16 +23,20 @@ const (
 
 var seriesUntrusted = []string{"data.series[].labels"}
 
-func (s *Service) metricScope(identity *authz.Identity, service, env string) (authz.SelectorScope, *prometheus.Client, error) {
+func (s *Service) metricScope(identity *authz.Identity, service, env string) (authz.MetricScope, metricBackend, error) {
 	scope, err := s.authz.MetricScope(identity, service, env)
 	if err != nil {
-		return authz.SelectorScope{}, nil, err
+		return authz.MetricScope{}, nil, err
 	}
-	return scope, s.connectors.Prometheus[scope.Source().Name], nil
+	backend, err := s.metricBackend(scope)
+	if err != nil {
+		return authz.MetricScope{}, nil, err
+	}
+	return scope, backend, nil
 }
 
 func (s *Service) MetricNames(ctx context.Context, identity *authz.Identity, service string, w api.Window, filter string) (api.Response[[]api.MetricInfo], error) {
-	scope, client, err := s.metricScope(identity, service, w.Environment)
+	scope, backend, err := s.metricScope(identity, service, w.Environment)
 	if err != nil {
 		return api.Response[[]api.MetricInfo]{}, err
 	}
@@ -40,23 +44,15 @@ func (s *Service) MetricNames(ctx context.Context, identity *authz.Identity, ser
 	if err != nil {
 		return api.Response[[]api.MetricInfo]{}, err
 	}
-	names, err := client.MetricNames(ctx, scope, r)
-	if err != nil {
-		return api.Response[[]api.MetricInfo]{}, err
-	}
-	metadata, err := client.Metadata(ctx)
+	all, err := backend.names(ctx, r)
 	if err != nil {
 		return api.Response[[]api.MetricInfo]{}, err
 	}
 
 	var infos []api.MetricInfo
-	for _, name := range names {
-		if filter != "" && !strings.Contains(name, filter) {
+	for _, info := range all {
+		if filter != "" && !strings.Contains(info.Name, filter) {
 			continue
-		}
-		info := api.MetricInfo{Name: name}
-		if entries := metadata[name]; len(entries) > 0 {
-			info.Type, info.Help = string(entries[0].Type), entries[0].Help
 		}
 		infos = append(infos, info)
 	}
@@ -68,23 +64,36 @@ func (s *Service) MetricNames(ctx context.Context, identity *authz.Identity, ser
 	return api.Response[[]api.MetricInfo]{Data: infos, Meta: meta}, nil
 }
 
+// Signal runs a named query of the service, stored in the dialect of its metrics source.
 func (s *Service) Signal(ctx context.Context, identity *authz.Identity, service, signal string, w api.Window, step string, withPoints bool) (api.Response[api.MetricResult], error) {
 	svc, err := s.authz.Service(identity, service)
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
 	}
-	expr, ok := svc.Signals[signal]
+	sig, ok := svc.Signals[signal]
 	if !ok {
 		return api.Response[api.MetricResult]{}, apierr.NotFound("signal %q is not defined for service %q", signal, service)
 	}
-	return s.QueryMetrics(ctx, identity, service, api.MetricQueryRequest{Window: w, Query: expr, Step: step}, withPoints)
-}
-
-func (s *Service) QueryMetrics(ctx context.Context, identity *authz.Identity, service string, req api.MetricQueryRequest, withPoints bool) (api.Response[api.MetricResult], error) {
-	scope, client, err := s.metricScope(identity, service, req.Environment)
+	scope, backend, err := s.metricScope(identity, service, w.Environment)
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
 	}
+	// The config check makes every metrics environment of a service with signals share one dialect.
+	if sig.Dialect != backend.dialect() {
+		return api.Response[api.MetricResult]{}, fmt.Errorf("signal %s of service %s is %s, but the metrics source uses %s", signal, service, sig.Dialect, backend.dialect())
+	}
+	return s.queryMetrics(ctx, identity, scope, backend, api.MetricQueryRequest{Window: w, Query: sig.Query, Step: step}, withPoints)
+}
+
+func (s *Service) QueryMetrics(ctx context.Context, identity *authz.Identity, service string, req api.MetricQueryRequest, withPoints bool) (api.Response[api.MetricResult], error) {
+	scope, backend, err := s.metricScope(identity, service, req.Environment)
+	if err != nil {
+		return api.Response[api.MetricResult]{}, err
+	}
+	return s.queryMetrics(ctx, identity, scope, backend, req, withPoints)
+}
+
+func (s *Service) queryMetrics(ctx context.Context, identity *authz.Identity, scope authz.MetricScope, backend metricBackend, req api.MetricQueryRequest, withPoints bool) (api.Response[api.MetricResult], error) {
 	r, err := policy.Range(req.Window, s.now(), identity.Limits.MaxRange, defaultSince)
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
@@ -93,22 +102,17 @@ func (s *Service) QueryMetrics(ctx context.Context, identity *authz.Identity, se
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
 	}
-	q, err := policy.ScopePromQL(scope, req.Query)
+	result, err := backend.query(ctx, r, req.Query, step)
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
 	}
-	recordQuery(ctx, scope.Target, q.String())
-	matrix, err := client.QueryRange(ctx, q, r, step)
-	if err != nil {
-		return api.Response[api.MetricResult]{}, err
-	}
-	series, truncated := shape.Series(matrix, maxSeries, withPoints)
+	series, truncated := shape.Series(result.series, maxSeries, withPoints)
 	meta := metaFor(scope.Target, r)
 	meta.Truncated = truncated
-	meta.Sources = []api.SourceRef{shape.SourceRef(s.cfg.Grafana, scope.Source(), q.String(), r)}
+	meta.Sources = []api.SourceRef{result.source}
 	meta.Untrusted = seriesUntrusted
 	return api.Response[api.MetricResult]{
-		Data: api.MetricResult{Query: q.String(), Step: step.String(), Series: series},
+		Data: api.MetricResult{Query: result.query, Step: step.String(), Series: series},
 		Meta: meta,
 	}, nil
 }

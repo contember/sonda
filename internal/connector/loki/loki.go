@@ -19,6 +19,7 @@ import (
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/policy"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 type Client struct {
@@ -28,16 +29,6 @@ type Client struct {
 
 func New(src *config.Source) *Client {
 	return &Client{source: src, http: upstream.HTTPClient(src)}
-}
-
-type Entry struct {
-	Time time.Time
-	Line string
-}
-
-type Stream struct {
-	Labels  map[string]string
-	Entries []Entry
 }
 
 type Field struct {
@@ -60,7 +51,7 @@ type rawStream struct {
 }
 
 // Lines returns the newest lines of a log query, newest first.
-func (c *Client) Lines(ctx context.Context, q policy.LogQL, r api.TimeRange, limit int) ([]Stream, error) {
+func (c *Client) Lines(ctx context.Context, q policy.LogQL, r api.TimeRange, limit int) ([]telemetry.LogStream, error) {
 	params := rangeParams(q, r)
 	params.Set("limit", strconv.Itoa(limit))
 	params.Set("direction", "backward")
@@ -75,15 +66,15 @@ func (c *Client) Lines(ctx context.Context, q policy.LogQL, r api.TimeRange, lim
 	if err := json.Unmarshal(resp.Data.Result, &raw); err != nil {
 		return nil, apierr.Upstream("source %s returned invalid streams: %v", c.source.Name, err)
 	}
-	streams := make([]Stream, 0, len(raw))
+	streams := make([]telemetry.LogStream, 0, len(raw))
 	for _, rs := range raw {
-		s := Stream{Labels: rs.Stream, Entries: make([]Entry, 0, len(rs.Values))}
+		s := telemetry.LogStream{Labels: rs.Stream, Entries: make([]telemetry.LogEntry, 0, len(rs.Values))}
 		for _, v := range rs.Values {
 			ns, err := strconv.ParseInt(v[0], 10, 64)
 			if err != nil {
 				return nil, apierr.Upstream("source %s returned an invalid timestamp %q", c.source.Name, v[0])
 			}
-			s.Entries = append(s.Entries, Entry{Time: time.Unix(0, ns).UTC(), Line: v[1]})
+			s.Entries = append(s.Entries, telemetry.LogEntry{Time: time.Unix(0, ns).UTC(), Line: v[1]})
 		}
 		streams = append(streams, s)
 	}

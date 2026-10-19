@@ -70,6 +70,30 @@ func (s *Server) logFields(r *http.Request) (any, error) {
 	return s.query.LogFields(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
 }
 
+func (s *Server) searchTraces(r *http.Request) (any, error) {
+	var req api.TraceSearchRequest
+	if err := decodeBody(r, &req); err != nil {
+		return nil, err
+	}
+	return s.query.SearchTraces(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req)
+}
+
+func (s *Server) queryTraces(r *http.Request) (any, error) {
+	var req api.TraceQueryRequest
+	if err := decodeBody(r, &req); err != nil {
+		return nil, err
+	}
+	return s.query.QueryTraces(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req)
+}
+
+func (s *Server) getTrace(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.GetTrace(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.PathValue("id"), w)
+}
+
 func (s *Server) result(r *http.Request) (any, error) {
 	var group *int
 	if r.URL.Query().Has("group") {

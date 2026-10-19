@@ -67,14 +67,35 @@ const (
 	CapabilityErrors  Capability = "errors"
 	CapabilityLogs    Capability = "logs"
 	CapabilityMetrics Capability = "metrics"
+	CapabilityTraces  Capability = "traces"
 )
 
 func ParseCapability(s string) (Capability, error) {
 	switch c := Capability(s); c {
-	case CapabilityErrors, CapabilityLogs, CapabilityMetrics:
+	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces:
 		return c, nil
 	}
-	return "", fmt.Errorf("unknown capability %q (expected errors, logs or metrics)", s)
+	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics or traces)", s)
+}
+
+// Dialect names the query language of a native query endpoint.
+type Dialect string
+
+const (
+	DialectLogQL            Dialect = "logql"
+	DialectPromQL           Dialect = "promql"
+	DialectTraceQL          Dialect = "traceql"
+	DialectCloudflareQuery  Dialect = "cloudflare-query"
+	DialectCloudflareMetric Dialect = "cloudflare-metric"
+	DialectLogsInsights     Dialect = "logs-insights"
+	DialectCloudWatchMetric Dialect = "cloudwatch-metric"
+)
+
+// BackendInfo tells the agent which source type serves a capability and which query dialect
+// its native query endpoint accepts. Dialect is empty for errors.
+type BackendInfo struct {
+	Source  string  `json:"source"`
+	Dialect Dialect `json:"dialect,omitempty"`
 }
 
 // Window selects an environment and a time range. Since is a duration like "1h" or "7d"
@@ -101,8 +122,9 @@ type ServiceDetail struct {
 }
 
 type EnvironmentDetail struct {
-	Name         string       `json:"name"`
-	Capabilities []Capability `json:"capabilities"`
+	Name         string                     `json:"name"`
+	Capabilities []Capability               `json:"capabilities"`
+	Backends     map[Capability]BackendInfo `json:"backends,omitempty"`
 }
 
 type Issue struct {
@@ -166,7 +188,10 @@ type LogSearchRequest struct {
 	Window
 	// Contains adds case-sensitive line filters (|= "...").
 	Contains []string `json:"contains,omitempty"`
+	// Where adds field conditions, `field=value` or `field!=value`, combined by AND.
+	Where []string `json:"where,omitempty"`
 	// Pipeline is a LogQL pipeline appended after the service selector, e.g. `| json | level="error"`.
+	// Only Loki sources accept it.
 	Pipeline string `json:"pipeline,omitempty"`
 	// Limit caps the number of sampled lines used for grouping.
 	Limit int `json:"limit,omitempty"`
@@ -324,6 +349,72 @@ type SignalOverview struct {
 type LabeledSummary struct {
 	Labels  map[string]string `json:"labels"`
 	Summary SeriesSummary     `json:"summary"`
+}
+
+type TraceSearchRequest struct {
+	Window
+	MinDuration string `json:"minDuration,omitempty"` // e.g. "500ms"
+	MaxDuration string `json:"maxDuration,omitempty"`
+	// Errors keeps only traces with an error span of the service.
+	Errors bool `json:"errors,omitempty"`
+	// Name keeps spans whose name contains the text.
+	Name string `json:"name,omitempty"`
+	// Where filters span attributes, `field=value` or `field!=value`, combined by AND.
+	Where []string `json:"where,omitempty"`
+	Limit int      `json:"limit,omitempty"`
+}
+
+type TraceQueryRequest struct {
+	Window
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type TraceSearchResult struct {
+	Query  string         `json:"query"`
+	Traces []TraceSummary `json:"traces"`
+}
+
+type TraceSummary struct {
+	TraceID     string    `json:"traceId"`
+	RootService string    `json:"rootService,omitempty"`
+	RootName    string    `json:"rootName,omitempty"`
+	Start       time.Time `json:"start"`
+	DurationMs  float64   `json:"durationMs"`
+	SpanCount   int       `json:"spanCount,omitempty"`
+	ErrorCount  int       `json:"errorCount,omitempty"`
+	Matched     []Span    `json:"matched,omitempty"`
+}
+
+type Trace struct {
+	TraceID  string   `json:"traceId"`
+	Services []string `json:"services"`
+	// Spans are ordered depth-first from the roots, children by start time.
+	Spans []Span `json:"spans"`
+}
+
+// Span of a trace. Granted is false for spans of services the identity cannot see; such
+// spans keep only identifiers, service, timing and status.
+type Span struct {
+	SpanID        string            `json:"spanId"`
+	ParentID      string            `json:"parentId,omitempty"`
+	Depth         int               `json:"depth"`
+	Service       string            `json:"service"`
+	Granted       bool              `json:"granted"`
+	Name          string            `json:"name,omitempty"`
+	Kind          string            `json:"kind,omitempty"`
+	Start         time.Time         `json:"start"`
+	DurationMs    float64           `json:"durationMs"`
+	Status        string            `json:"status,omitempty"`
+	StatusMessage string            `json:"statusMessage,omitempty"`
+	Attributes    map[string]string `json:"attributes,omitempty"`
+	Events        []SpanEvent       `json:"events,omitempty"`
+}
+
+type SpanEvent struct {
+	Time       time.Time         `json:"time"`
+	Name       string            `json:"name"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 type ResultPage struct {

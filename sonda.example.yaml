@@ -1,6 +1,6 @@
 # Sonda server configuration. Copy to sonda.yaml and adjust.
 # ${NAME} references environment variables; they are allowed only in source URLs,
-# credentials, headers and the admin token. Validate with: sonda-server check -c sonda.yaml
+# credentials, account IDs, role ARNs, headers and the admin token. Validate with: sonda-server check -c sonda.yaml
 
 server:
   listen: ":8080"
@@ -37,6 +37,29 @@ sources:
     auth: { type: basic, username: "123456", password: "${GRAFANA_CLOUD_METRICS_TOKEN}" }
     grafana_datasource_uid: prom-prod
 
+  # Grafana Tempo serves the traces capability.
+  # tempo-prod:
+  #   type: tempo
+  #   url: http://tempo.monitoring.svc:3200
+  #   headers: { X-Scope-OrgID: prod } # multi-tenant Tempo only
+  #   grafana_datasource_uid: tempo-prod
+
+  # Cloudflare serves Workers logs, metrics and traces. The url defaults to
+  # https://api.cloudflare.com/client/v4; the auth must be a bearer API token.
+  # cloudflare:
+  #   type: cloudflare
+  #   account_id: "${CF_ACCOUNT_ID}"
+  #   auth: { type: bearer, token: "${CF_API_TOKEN}" }
+
+  # AWS serves CloudWatch Logs Insights and CloudWatch metrics. Credentials come from the
+  # default AWS credential chain (IRSA, environment, profile), or from assuming role_arn.
+  # aws-prod:
+  #   type: aws
+  #   region: eu-west-1
+  #   role_arn: "${SONDA_AWS_ROLE_ARN}" # optional
+  #   external_id: sonda # optional, only with role_arn
+  #   max_scan_bytes: 10GB # Logs Insights is billed by scanned bytes; larger queries stop
+
 services:
   engine-api:
     description: GraphQL API of the content engine
@@ -49,11 +72,36 @@ services:
         # the empty value.
         logs: { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
         metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
+        # traces: { source: tempo-prod, service: engine-api } # resource.service.name
     # Named PromQL expressions without service matchers; Sonda adds the selector.
     signals:
       rps: sum(rate(http_requests_total[5m]))
       error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
       p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+
+  # A Cloudflare Worker. Every query is restricted to the script.
+  # web-worker:
+  #   environments:
+  #     production:
+  #       logs: { source: cloudflare, script: web-worker }
+  #       metrics: { source: cloudflare, script: web-worker }
+  #       traces: { source: cloudflare, script: web-worker }
+  #   # With Cloudflare metrics, a signal is a mapping: a metric from the catalog
+  #   # (requests, errors, subrequests, cpu_time_p50, cpu_time_p99, duration_p50, duration_p99)
+  #   # and optional dimensions to group by (status, scriptVersion).
+  #   signals:
+  #     errors: { metric: errors, by: [status] }
+
+  # An AWS-managed database. Logs come from exact log group names (1 to 50, no patterns);
+  # metrics from one namespace, restricted by at least one dimension.
+  # engine-db:
+  #   environments:
+  #     production:
+  #       logs: { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
+  #       metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
+  #   # With CloudWatch metrics, a signal is a mapping with a metric name and a statistic.
+  #   signals:
+  #     cpu: { metric: CPUUtilization, stat: Average }
 
 # Server defaults; each identity can override them in the admin UI.
 limits:

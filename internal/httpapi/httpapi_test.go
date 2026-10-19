@@ -90,6 +90,8 @@ sources:
   sentry: { type: sentry, url: %[1]q, org: acme, auth: { type: bearer, token: s } }
   loki: { type: loki, url: %[1]q }
   prom: { type: prometheus, url: %[1]q }
+  tempo: { type: tempo, url: %[1]q }
+  cf: { type: cloudflare, url: %[1]q, account_id: acc, auth: { type: bearer, token: t } }
 services:
   api:
     environments:
@@ -97,12 +99,17 @@ services:
         errors: { source: sentry, project: api, environment: production }
         logs: { source: loki, selector: '{app="api"}' }
         metrics: { source: prom, selector: '{job="api"}' }
+        traces: { source: tempo, service: api }
     signals:
       rps: sum(rate(http_requests_total[5m]))
   billing:
     environments:
       production:
         logs: { source: loki, selector: '{app="billing"}' }
+  worker:
+    environments:
+      production:
+        logs: { source: cf, script: worker }
 `, fake.URL)), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +129,8 @@ services:
 				{Service: "api", Environment: "production", Capability: api.CapabilityErrors},
 				{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
 				{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+				{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
+				{Service: "worker", Environment: "production", Capability: api.CapabilityLogs},
 			},
 		},
 		{
@@ -307,5 +316,74 @@ func TestOverviewReportsPartialFailures(t *testing.T) {
 	}
 	if len(o.Signals) != 1 || o.Signals[0].Name != "rps" || len(o.Signals[0].Series) != 1 {
 		t.Errorf("signals = %+v", o.Signals)
+	}
+}
+
+func TestTracesAreAuthorizedBeforeTheBackend(t *testing.T) {
+	env := newTestEnv(t)
+	requests := []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/traces/search", api.TraceSearchRequest{MinDuration: "1s"}},
+		{"POST", "/traces/query", api.TraceQueryRequest{Query: "{}"}},
+		{"GET", "/traces/0123456789ABCDEF", nil},
+	}
+	for _, req := range requests {
+		var errResp api.ErrorResponse
+		status := env.call(t, "agent-token", req.method, "/v1/services/api"+req.path, req.body, &errResp)
+		if status != http.StatusInternalServerError || errResp.Error.Code != api.CodeInternal || !strings.Contains(errResp.Error.Message, "traceql queries are not implemented") {
+			t.Errorf("%s granted: %d %+v", req.path, status, errResp)
+		}
+		errResp = api.ErrorResponse{}
+		status = env.call(t, "agent-token", req.method, "/v1/services/billing"+req.path, req.body, &errResp)
+		if status != http.StatusNotFound || errResp.Error.Message != `service "billing" not found` {
+			t.Errorf("%s of ungranted service: %d %+v", req.path, status, errResp)
+		}
+	}
+
+	var errResp api.ErrorResponse
+	if status := env.call(t, "other-token", "POST", "/v1/services/api/traces/search", api.TraceSearchRequest{}, &errResp); status != http.StatusNotFound || errResp.Error.Code != api.CodeNotFound {
+		t.Errorf("ungranted traces capability: %d %+v", status, errResp)
+	}
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api/traces/not-a-trace-id", nil, &errResp); status != http.StatusBadRequest || errResp.Error.Code != api.CodeInvalidRequest {
+		t.Errorf("invalid trace ID: %d %+v", status, errResp)
+	}
+	if status := env.call(t, "agent-token", "POST", "/v1/services/api/traces/search", api.TraceSearchRequest{MinDuration: "2s", MaxDuration: "1s"}, &errResp); status != http.StatusBadRequest || errResp.Error.Code != api.CodeInvalidRequest {
+		t.Errorf("invalid duration range: %d %+v", status, errResp)
+	}
+}
+
+func TestLogSearchWhere(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.Response[api.LogSearchResult]
+	status := env.call(t, "agent-token", "POST", "/v1/services/api/logs/search",
+		api.LogSearchRequest{Where: []string{"level=error", `user!=a"b`}}, &resp)
+	if status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	want := `{app="api"} | level="error" | user!="a\"b"`
+	if resp.Data.Query != want || env.upstream.last() != want {
+		t.Errorf("query = %s, upstream received %s, want %s", resp.Data.Query, env.upstream.last(), want)
+	}
+
+	var errResp api.ErrorResponse
+	status = env.call(t, "agent-token", "POST", "/v1/services/api/logs/search", api.LogSearchRequest{Where: []string{"level"}}, &errResp)
+	if status != http.StatusBadRequest || errResp.Error.Code != api.CodeInvalidRequest {
+		t.Errorf("invalid where: %d %+v", status, errResp)
+	}
+}
+
+func TestPipelineIsLokiOnly(t *testing.T) {
+	env := newTestEnv(t)
+	var errResp api.ErrorResponse
+	status := env.call(t, "agent-token", "POST", "/v1/services/worker/logs/search", api.LogSearchRequest{Pipeline: "| json"}, &errResp)
+	if status != http.StatusBadRequest || !strings.Contains(errResp.Error.Message, "pipeline is supported only for Loki sources") {
+		t.Errorf("pipeline on cloudflare: %d %+v", status, errResp)
+	}
+	errResp = api.ErrorResponse{}
+	status = env.call(t, "agent-token", "POST", "/v1/services/worker/logs/search", api.LogSearchRequest{Contains: []string{"x"}}, &errResp)
+	if status != http.StatusInternalServerError || !strings.Contains(errResp.Error.Message, "cloudflare-query queries are not implemented") {
+		t.Errorf("cloudflare search: %d %+v", status, errResp)
 	}
 }

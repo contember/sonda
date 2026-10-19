@@ -2,11 +2,13 @@ package shape
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/contember/sonda/api"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 func TestRedact(t *testing.T) {
@@ -68,5 +70,32 @@ func TestFitLines(t *testing.T) {
 	kept, truncated = FitLines(lines[:1], 10)
 	if len(kept) != 1 || truncated {
 		t.Errorf("first line must always be kept")
+	}
+}
+
+func TestFlatten(t *testing.T) {
+	r, err := NewRedactor(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	streams := []telemetry.LogStream{
+		{Labels: map[string]string{"app": "a"}, Entries: []telemetry.LogEntry{{Time: base, Line: "old"}}},
+		{Labels: map[string]string{"app": "b"}, Entries: []telemetry.LogEntry{
+			{Time: base.Add(time.Second), Line: "password=hunter2"},
+			{Time: base.Add(2 * time.Second), Line: strings.Repeat("x", maxLineLength+1)},
+		}},
+	}
+	sample := Flatten(streams, r)
+	if len(sample.Streams) != 2 || sample.Streams[1]["app"] != "b" {
+		t.Fatalf("streams = %v", sample.Streams)
+	}
+	want := []api.LogLine{
+		{Time: base.Add(2 * time.Second), Stream: 1, Line: strings.Repeat("x", maxLineLength) + "…"},
+		{Time: base.Add(time.Second), Stream: 1, Line: "password=[REDACTED]"},
+		{Time: base, Stream: 0, Line: "old"},
+	}
+	if !reflect.DeepEqual(sample.Lines, want) {
+		t.Errorf("lines = %v, want %v", sample.Lines, want)
 	}
 }

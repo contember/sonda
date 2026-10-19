@@ -34,14 +34,16 @@ services:
 		{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
 		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
 	}}
-	logs, err = a.LogScope(identity, "api", "production")
+	logScope, err := a.LogScope(identity, "api", "production")
 	if err != nil {
 		t.Fatal(err)
 	}
-	metrics, err = a.MetricScope(identity, "api", "production")
+	metricScope, err := a.MetricScope(identity, "api", "production")
 	if err != nil {
 		t.Fatal(err)
 	}
+	logs, _ = logScope.Loki()
+	metrics, _ = metricScope.Prometheus()
 	return logs, metrics
 }
 
@@ -112,7 +114,7 @@ func TestInvalidQueries(t *testing.T) {
 
 func TestLogSearchQuery(t *testing.T) {
 	scope, _ := scopes(t)
-	q, err := LogSearchQuery(scope, []string{`timeout "db"`}, `| json | level="error"`)
+	q, err := LogSearchQuery(scope, []string{`timeout "db"`}, `| json | level="error"`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,9 +123,23 @@ func TestLogSearchQuery(t *testing.T) {
 	}
 
 	// A pipeline that smuggles in a second selector is still scoped.
-	q, err = LogSearchQuery(scope, nil, `[5m])) or count_over_time({app="billing"}[5m]`)
+	q, err = LogSearchQuery(scope, nil, `[5m])) or count_over_time({app="billing"}[5m]`, nil)
 	if err == nil && !strings.Contains(q.String(), `{app="billing", app="api"}`) {
 		t.Errorf("smuggled selector not scoped: %s", q)
+	}
+
+	where := []Where{{Field: "level", Value: "error"}, {Field: "user", Value: `x" or {app="billing"}`, Negate: true}}
+	q, err = LogSearchQuery(scope, []string{"timeout"}, "| logfmt", where)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{app="api"} |= "timeout" | logfmt | level="error" | user!="x\" or {app=\"billing\"}"`; q.String() != want {
+		t.Errorf("where query = %s", q)
+	}
+	for _, field := range []string{"@message", "$metadata.service", "http.method", "trace-id"} {
+		if _, err := LogSearchQuery(scope, nil, "", []Where{{Field: field, Value: "x"}}); !isCode(err, api.CodeInvalidRequest) {
+			t.Errorf("where field %q: %v", field, err)
+		}
 	}
 
 	count, err := LogCountQuery(scope, mustLogQL(t, scope, `{level="error"}`), time.Hour)
