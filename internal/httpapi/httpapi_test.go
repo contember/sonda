@@ -383,7 +383,7 @@ func TestPipelineIsLokiOnly(t *testing.T) {
 	}
 	errResp = api.ErrorResponse{}
 	status = env.call(t, "agent-token", "POST", "/v1/services/worker/logs/search", api.LogSearchRequest{Contains: []string{"x"}}, &errResp)
-	if status != http.StatusInternalServerError || !strings.Contains(errResp.Error.Message, "cloudflare-query queries are not implemented") {
+	if status != http.StatusBadGateway || errResp.Error.Code != api.CodeUpstreamError {
 		t.Errorf("cloudflare search: %d %+v", status, errResp)
 	}
 }
