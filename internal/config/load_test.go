@@ -126,9 +126,9 @@ services:
   worker:
     environments:
       production:
-        logs: { source: cf, script: nua-worker }
-        metrics: { source: cf, script: nua-worker }
-        traces: { source: cf, script: nua-worker }
+        logs: { source: cf, script: edge-worker }
+        metrics: { source: cf, script: edge-worker }
+        traces: { source: cf, script: edge-worker }
     signals:
       requests: { metric: requests, by: [status] }
   db:
@@ -163,7 +163,7 @@ func TestParseBackends(t *testing.T) {
 	if got := worker.Capabilities(); len(got) != 3 || got[2] != api.CapabilityTraces {
 		t.Errorf("capabilities = %v", got)
 	}
-	if worker.Logs.Script != "nua-worker" || worker.Logs.Dialect() != api.DialectCloudflareQuery {
+	if worker.Logs.Script != "edge-worker" || worker.Logs.Dialect() != api.DialectCloudflareQuery {
 		t.Errorf("cloudflare logs = %+v", worker.Logs)
 	}
 	if worker.Metrics.Dialect() != api.DialectCloudflareMetric || worker.Traces.Dialect() != api.DialectCloudflareQuery {
@@ -227,8 +227,8 @@ func TestParseBackendErrors(t *testing.T) {
 		{"tempo without url", [2]string{"    url: http://tempo:3200\n", ""}, "sources.tempo.url: invalid URL"},
 		{"tempo with role", [2]string{"type: tempo\n", "type: tempo\n    role_arn: arn\n"}, "sources.tempo.role_arn is allowed only for aws sources"},
 
-		{"cloudflare logs without script", [2]string{"logs: { source: cf, script: nua-worker }", "logs: { source: cf }"}, "logs.script is required"},
-		{"cloudflare logs with selector", [2]string{"logs: { source: cf, script: nua-worker }", `logs: { source: cf, script: w, selector: '{app="w"}' }`}, "logs.selector is not allowed for cloudflare sources"},
+		{"cloudflare logs without script", [2]string{"logs: { source: cf, script: edge-worker }", "logs: { source: cf }"}, "logs.script is required"},
+		{"cloudflare logs with selector", [2]string{"logs: { source: cf, script: edge-worker }", `logs: { source: cf, script: w, selector: '{app="w"}' }`}, "logs.selector is not allowed for cloudflare sources"},
 		{"logs on tempo", [2]string{"logs: { source: cf,", "logs: { source: tempo,"}, `source "tempo" has type tempo, expected loki, cloudflare or aws`},
 		{"no log groups", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[]"}, "log_groups must have 1 to 50 entries"},
 		{"too many log groups", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[" + strings.Join(manyGroups, ", ") + "]"}, "log_groups must have 1 to 50 entries"},
