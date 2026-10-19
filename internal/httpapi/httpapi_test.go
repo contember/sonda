@@ -324,15 +324,17 @@ func TestTracesAreAuthorizedBeforeTheBackend(t *testing.T) {
 	requests := []struct {
 		method, path string
 		body         any
+		// The fake upstream has no Tempo API, so a granted request ends with this backend error.
+		wantMessage string
 	}{
-		{"POST", "/traces/search", api.TraceSearchRequest{MinDuration: "1s"}},
-		{"POST", "/traces/query", api.TraceQueryRequest{Query: "{}"}},
-		{"GET", "/traces/0123456789ABCDEF", nil},
+		{"POST", "/traces/search", api.TraceSearchRequest{MinDuration: "1s"}, "source tempo returned HTTP 404"},
+		{"POST", "/traces/query", api.TraceQueryRequest{Query: "{}"}, "source tempo returned HTTP 404"},
+		{"GET", "/traces/0123456789ABCDEF", nil, `trace "0123456789abcdef" not found for service "api"`},
 	}
 	for _, req := range requests {
 		var errResp api.ErrorResponse
 		status := env.call(t, "agent-token", req.method, "/v1/services/api"+req.path, req.body, &errResp)
-		if status != http.StatusInternalServerError || errResp.Error.Code != api.CodeInternal || !strings.Contains(errResp.Error.Message, "traceql queries are not implemented") {
+		if !strings.Contains(errResp.Error.Message, req.wantMessage) {
 			t.Errorf("%s granted: %d %+v", req.path, status, errResp)
 		}
 		errResp = api.ErrorResponse{}
