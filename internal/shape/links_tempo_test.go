@@ -30,17 +30,17 @@ func TestTempoSourceRef(t *testing.T) {
 	if err != nil || !strings.HasPrefix(ref.URL, "https://grafana/explore?") || link.Query().Get("schemaVersion") != "1" {
 		t.Fatalf("link %q: %v", ref.URL, err)
 	}
-	var panes map[string]tempoPane
+	var panes map[string]explorePane
 	if err := json.Unmarshal([]byte(link.Query().Get("panes")), &panes); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]tempoPane{"sonda": {
+	want := map[string]explorePane{"sonda": {
 		Datasource: "tempo-uid",
-		Queries: []tempoPaneQuery{{
+		Queries: []exploreQuery{{
 			RefID: "A", QueryType: "traceql", Query: query,
-			Datasource: map[string]string{"type": "tempo", "uid": "tempo-uid"},
+			Datasource: exploreDatasource{Type: "tempo", UID: "tempo-uid"},
 		}},
-		Range: map[string]string{"from": "1000", "to": "2000"},
+		Range: exploreRange{From: "1000", To: "2000"},
 	}}
 	if !reflect.DeepEqual(panes, want) {
 		t.Errorf("panes %+v, want %+v", panes, want)

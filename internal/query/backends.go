@@ -109,7 +109,7 @@ func (s *Service) metricBackend(scope authz.MetricScope) (metricBackend, error) 
 
 func (s *Service) traceBackend(scope authz.TraceScope) (traceBackend, error) {
 	if tempo, ok := scope.Tempo(); ok {
-		return newTempoTraces(tempo, s.connectors.Tempo[tempo.Source().Name]), nil
+		return newTempoTraces(tempo, s.connectors.Tempo[tempo.Source().Name], s.cfg.Grafana), nil
 	}
 	if cf, ok := scope.Cloudflare(); ok {
 		return newCloudflareTraces(cf, s.connectors.Cloudflare[cf.Source().Name]), nil

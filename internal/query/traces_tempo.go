@@ -5,18 +5,20 @@ import (
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/authz"
+	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/tempo"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/shape"
 )
 
 type tempoTraces struct {
-	scope  authz.TempoScope
-	client *tempo.Client
+	scope   authz.TempoScope
+	client  *tempo.Client
+	grafana *config.Grafana
 }
 
-func newTempoTraces(scope authz.TempoScope, client *tempo.Client) traceBackend {
-	return &tempoTraces{scope: scope, client: client}
+func newTempoTraces(scope authz.TempoScope, client *tempo.Client, grafana *config.Grafana) traceBackend {
+	return &tempoTraces{scope: scope, client: client, grafana: grafana}
 }
 
 func (b *tempoTraces) dialect() api.Dialect { return api.DialectTraceQL }
@@ -61,7 +63,6 @@ func (b *tempoTraces) trace(ctx context.Context, r api.TimeRange, id string) (tr
 	return traceFetch{spans: spans, source: b.sourceRef(id, r)}, nil
 }
 
-// sourceRef builds no Grafana link: newTempoTraces does not receive the Grafana config.
 func (b *tempoTraces) sourceRef(query string, r api.TimeRange) api.SourceRef {
-	return shape.TempoSourceRef(nil, b.scope.Source(), query, r)
+	return shape.TempoSourceRef(b.grafana, b.scope.Source(), query, r)
 }

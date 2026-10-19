@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,8 +33,9 @@ func newTestTempoTraces(t *testing.T, handler http.HandlerFunc) (traceBackend, *
 	}))
 	t.Cleanup(server.Close)
 	cfg, err := config.Parse([]byte(fmt.Sprintf(`
+grafana: { url: "https://grafana.example" }
 sources:
-  tempo: { type: tempo, url: %q }
+  tempo: { type: tempo, url: %q, grafana_datasource_uid: tempo-uid }
 services:
   api:
     environments:
@@ -53,7 +55,7 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newTempoTraces(tempoScope, client), &queries
+	return newTempoTraces(tempoScope, client, cfg.Grafana), &queries
 }
 
 func TestTempoQueryIsScopedAndRecorded(t *testing.T) {
@@ -70,7 +72,7 @@ func TestTempoQueryIsScopedAndRecorded(t *testing.T) {
 	if !slices.Equal(*queries, []string{"/api/search " + want}) {
 		t.Errorf("upstream queries %q", *queries)
 	}
-	if found.query != want || found.source != (api.SourceRef{Kind: "tempo", Query: want}) {
+	if found.query != want || found.source.Kind != "tempo" || found.source.Query != want || !strings.HasPrefix(found.source.URL, "https://grafana.example/explore?") {
 		t.Errorf("query %q, source %+v", found.query, found.source)
 	}
 	if _, _, recorded := record.Snapshot(); !slices.Equal(recorded, []string{want}) {
@@ -127,7 +129,7 @@ func TestTempoTrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fetched.spans) != 1 || fetched.spans[0].Service != "engine-api" || fetched.source != (api.SourceRef{Kind: "tempo", Query: id}) {
+	if len(fetched.spans) != 1 || fetched.spans[0].Service != "engine-api" || fetched.source.Query != id || fetched.source.URL == "" {
 		t.Errorf("fetched %+v", fetched)
 	}
 	if _, _, recorded := record.Snapshot(); !slices.Equal(recorded, []string{"trace " + id}) {
