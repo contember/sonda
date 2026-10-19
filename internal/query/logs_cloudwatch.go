@@ -3,8 +3,6 @@ package query
 import (
 	"context"
 
-	"github.com/prometheus/common/model"
-
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/connector/aws"
@@ -38,8 +36,8 @@ func (b *cloudWatchLogs) search(ctx context.Context, r api.TimeRange, f policy.L
 	return logSearch{query: q.String(), total: result.Total, streams: result.Streams, source: b.sourceRef(q, r)}, nil
 }
 
-// query runs Logs Insights QL. Statistics over bin() buckets return series, other rows return
-// lines. The step is unused, because bin() in the query sets the bucket size.
+// query runs Logs Insights QL. Queries with a stats stage return series, others lines. The
+// step is unused, because bin() in the query sets the bucket size.
 func (b *cloudWatchLogs) query(ctx context.Context, r api.TimeRange, text string, limit int, step string) (logQuery, error) {
 	q, err := policy.ScopeInsights(b.scope, text)
 	if err != nil {
@@ -55,11 +53,7 @@ func (b *cloudWatchLogs) query(ctx context.Context, r api.TimeRange, text string
 	if err != nil {
 		return logQuery{}, err
 	}
-	out := logQuery{query: q.String(), streams: result.Streams, series: result.Series, source: b.sourceRef(q, r)}
-	if out.series == nil && q.Aggregates() && len(out.streams) == 0 {
-		out.series = model.Matrix{}
-	}
-	return out, nil
+	return logQuery{query: q.String(), streams: result.Streams, series: result.Series, source: b.sourceRef(q, r)}, nil
 }
 
 func (b *cloudWatchLogs) fields(ctx context.Context, r api.TimeRange) (api.LogFields, error) {

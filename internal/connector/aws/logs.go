@@ -31,8 +31,8 @@ const (
 	insightsTime = "2006-01-02 15:04:05"
 )
 
-// InsightsResult holds the rows of a finished query. Series is non-nil when the rows are
-// statistics over bin() buckets; otherwise Streams holds the rows as log lines.
+// InsightsResult holds the rows of a finished query. Series is non-nil exactly when the query
+// has a stats stage; otherwise Streams holds the rows as log lines.
 type InsightsResult struct {
 	Streams []telemetry.LogStream
 	Series  model.Matrix
@@ -75,7 +75,7 @@ func (c *Client) Insights(ctx context.Context, scope authz.LogGroupScope, q poli
 	if err := c.checkScannedGroups(ctx, id, groups); err != nil {
 		return InsightsResult{}, err
 	}
-	return c.result(out, r)
+	return c.result(out, q, r)
 }
 
 // await polls until the query completes. On any other outcome it stops the query, because a
@@ -176,7 +176,7 @@ type resultField struct {
 	name, value string
 }
 
-func (c *Client) result(out *cloudwatchlogs.GetQueryResultsOutput, r api.TimeRange) (InsightsResult, error) {
+func (c *Client) result(out *cloudwatchlogs.GetQueryResultsOutput, q policy.InsightsQuery, r api.TimeRange) (InsightsResult, error) {
 	var result InsightsResult
 	if out.Statistics != nil {
 		result.Total = int64(out.Statistics.RecordsMatched)
@@ -194,8 +194,8 @@ func (c *Client) result(out *cloudwatchlogs.GetQueryResultsOutput, r api.TimeRan
 	}
 	var err error
 	switch {
-	case slices.ContainsFunc(rows, func(row []resultField) bool { return binColumn(row) >= 0 }):
-		result.Series, err = c.binnedSeries(rows)
+	case q.Aggregates():
+		result.Series, err = c.statsSeries(rows, r)
 	case len(rows) > 0 && !slices.ContainsFunc(rows, func(row []resultField) bool { return !isEvent(row) }):
 		result.Streams, err = c.eventStreams(rows)
 	default:
@@ -254,8 +254,8 @@ func (c *Client) eventStreams(rows [][]resultField) ([]telemetry.LogStream, erro
 	return streams, nil
 }
 
-// rowLines renders rows that are not log events, like stats without bin(), as compact
-// field=value lines. A row without @timestamp is stamped with the end of the range it covers.
+// rowLines renders rows that are not log events, like a fields stage without @message, as
+// compact field=value lines. A row without @timestamp is stamped with the end of the range.
 func (c *Client) rowLines(rows [][]resultField, r api.TimeRange) ([]telemetry.LogStream, error) {
 	stream := telemetry.LogStream{Labels: map[string]string{}}
 	for _, row := range rows {
@@ -286,19 +286,21 @@ func compactValue(value string) string {
 	return value
 }
 
-// binnedSeries turns stats rows over bin() buckets into series. Numeric columns become series
-// named by the column; other columns are the labels of the group. A numeric group-by field
-// therefore shows as a series of its own.
-func (c *Client) binnedSeries(rows [][]resultField) (model.Matrix, error) {
+// statsSeries turns stats rows into series. A row's time is its bin() bucket, or the end of
+// the range without bin(), as the statistic covers the whole range. Numeric columns become
+// series named by the column; other columns are the labels of the group. A numeric group-by
+// field therefore shows as a series of its own.
+func (c *Client) statsSeries(rows [][]resultField, r api.TimeRange) (model.Matrix, error) {
 	streams := map[model.Fingerprint]*model.SampleStream{}
 	for _, row := range rows {
+		t := r.To
 		column := binColumn(row)
-		if column < 0 {
-			return nil, apierr.Upstream("source %s: a stats row has no bin() column", c.source.Name)
-		}
-		t, err := c.parseTime(row[column].value)
-		if err != nil {
-			return nil, err
+		if column >= 0 {
+			parsed, err := c.parseTime(row[column].value)
+			if err != nil {
+				return nil, err
+			}
+			t = parsed
 		}
 		labels := model.Metric{}
 		values := map[string]float64{}

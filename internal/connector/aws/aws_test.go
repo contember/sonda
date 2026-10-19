@@ -397,9 +397,36 @@ func TestInsightsStats(t *testing.T) {
 		}
 	}
 
-	plain := complete(5, row("status", "ok", "count(*)", "5"), row("status", "with space", "count(*)", "1"))
+	plain := complete(6, row("status", "ok", "count(*)", "5", "avg(ms)", "1.5"), row("status", "with space", "count(*)", "1", "avg(ms)", "2"))
 	c = testClient(cfg, &fakeLogs{polls: []*cloudwatchlogs.GetQueryResultsOutput{plain}}, nil)
-	result, err = c.Insights(context.Background(), scope, mustInsights(t, scope, "stats count(*) by status"), testRange, 10)
+	result, err = c.Insights(context.Background(), scope, mustInsights(t, scope, "stats count(*), avg(ms) by status"), testRange, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Series) != 4 || result.Streams != nil {
+		t.Fatalf("result = %+v", result)
+	}
+	for _, s := range result.Series {
+		if len(s.Values) != 1 || !s.Values[0].Timestamp.Time().Equal(testRange.To) || s.Metric["status"] == "" {
+			t.Errorf("series = %v", s)
+		}
+	}
+
+	c = testClient(cfg, &fakeLogs{polls: []*cloudwatchlogs.GetQueryResultsOutput{complete(0)}}, nil)
+	result, err = c.Insights(context.Background(), scope, mustInsights(t, scope, "filter x = 1 | stats count(*) by bin(5m)"), testRange, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Series == nil || len(result.Series) != 0 || result.Streams != nil {
+		t.Errorf("empty stats result = %+v", result)
+	}
+}
+
+func TestInsightsRowsWithoutMessage(t *testing.T) {
+	cfg, scope, _ := scopes(t)
+	rows := complete(2, row("status", "ok", "user", "a b"), row("status", "error", "user", ""))
+	c := testClient(cfg, &fakeLogs{polls: []*cloudwatchlogs.GetQueryResultsOutput{rows}}, nil)
+	result, err := c.Insights(context.Background(), scope, mustInsights(t, scope, "fields status, user"), testRange, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +434,7 @@ func TestInsightsStats(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	entries := result.Streams[0].Entries
-	if len(entries) != 2 || entries[0].Line != "status=ok count(*)=5" || entries[1].Line != `status="with space" count(*)=1` || !entries[0].Time.Equal(testRange.To) {
+	if len(entries) != 2 || entries[0].Line != `status=ok user="a b"` || entries[1].Line != `status=error user=""` || !entries[0].Time.Equal(testRange.To) {
 		t.Errorf("entries = %+v", entries)
 	}
 }
