@@ -10,8 +10,10 @@ import (
 	"time"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/dustin/go-humanize"
 	"github.com/prometheus/common/model"
 
@@ -151,7 +153,11 @@ func (c *Client) checkScannedGroups(ctx context.Context, id string, groups []str
 			return c.apiError("ListLogGroupsForQuery", err)
 		}
 		for _, identifier := range page.LogGroupIdentifiers {
-			if !slices.Contains(groups, logGroupName(identifier)) {
+			inScope, err := c.inScope(ctx, identifier, groups)
+			if err != nil {
+				return err
+			}
+			if !inScope {
 				return fmt.Errorf("source %s: Logs Insights query %s scanned log group %q outside the scope %v", c.source.Name, id, identifier, groups)
 			}
 		}
@@ -159,17 +165,44 @@ func (c *Client) checkScannedGroups(ctx context.Context, id string, groups []str
 	return nil
 }
 
-// logGroupName returns the name of a log group identifier: a name, or an ARN like
-// arn:aws:logs:region:account:log-group:name, optionally ending in :*.
-func logGroupName(identifier string) string {
-	if !strings.HasPrefix(identifier, "arn:") {
-		return identifier
+// inScope reports whether a log group identifier is one of the scope's groups. The scope names
+// groups of the source's region and of the account Sonda's credentials belong to, so an ARN
+// must match both before its name is compared.
+func (c *Client) inScope(ctx context.Context, identifier string, groups []string) (bool, error) {
+	if !arn.IsARN(identifier) {
+		return slices.Contains(groups, identifier), nil
 	}
-	_, name, found := strings.Cut(identifier, ":log-group:")
-	if !found {
-		return identifier
+	parsed, err := arn.Parse(identifier)
+	if err != nil {
+		return false, nil
 	}
-	return strings.TrimSuffix(name, ":*")
+	name, isLogGroup := strings.CutPrefix(parsed.Resource, "log-group:")
+	if parsed.Service != "logs" || !isLogGroup || parsed.Region != c.source.AWS.Region {
+		return false, nil
+	}
+	account, err := c.account(ctx)
+	if err != nil {
+		return false, err
+	}
+	return parsed.AccountID == account && slices.Contains(groups, strings.TrimSuffix(name, ":*")), nil
+}
+
+// account returns the account of Sonda's credentials. It is resolved on first use and cached.
+func (c *Client) account(ctx context.Context) (string, error) {
+	c.accountMu.Lock()
+	defer c.accountMu.Unlock()
+	if c.accountID != "" {
+		return c.accountID, nil
+	}
+	out, err := c.identity.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return "", c.apiError("GetCallerIdentity", err)
+	}
+	if sdkaws.ToString(out.Account) == "" {
+		return "", apierr.Upstream("source %s: GetCallerIdentity returned no account", c.source.Name)
+	}
+	c.accountID = *out.Account
+	return c.accountID, nil
 }
 
 type resultField struct {

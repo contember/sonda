@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
@@ -32,6 +33,11 @@ type logsAPI interface {
 	GetLogGroupFields(ctx context.Context, in *cloudwatchlogs.GetLogGroupFieldsInput, opts ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.GetLogGroupFieldsOutput, error)
 }
 
+// identityAPI resolves the account of Sonda's credentials.
+type identityAPI interface {
+	GetCallerIdentity(ctx context.Context, in *sts.GetCallerIdentityInput, opts ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
 // metricsAPI is the part of the CloudWatch client the connector uses.
 type metricsAPI interface {
 	GetMetricData(ctx context.Context, in *cloudwatch.GetMetricDataInput, opts ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error)
@@ -39,9 +45,13 @@ type metricsAPI interface {
 }
 
 type Client struct {
-	source  *config.Source
-	logs    logsAPI
-	metrics metricsAPI
+	source   *config.Source
+	logs     logsAPI
+	metrics  metricsAPI
+	identity identityAPI
+	// accountMu guards accountID, the account of Sonda's credentials once resolved.
+	accountMu sync.Mutex
+	accountID string
 	// firstPoll and maxPoll bound the backoff between GetQueryResults calls.
 	firstPoll time.Duration
 	maxPoll   time.Duration
@@ -57,11 +67,18 @@ func New(src *config.Source) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source %s: load AWS configuration: %w", src.Name, err)
 	}
-	return newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg)), nil
+	return newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg)), nil
 }
 
-func newClient(src *config.Source, logs logsAPI, metrics metricsAPI) *Client {
-	return &Client{source: src, logs: logs, metrics: metrics, firstPoll: 250 * time.Millisecond, maxPoll: 2 * time.Second}
+func newClient(src *config.Source, logs logsAPI, metrics metricsAPI, identity identityAPI) *Client {
+	return &Client{
+		source:    src,
+		logs:      logs,
+		metrics:   metrics,
+		identity:  identity,
+		firstPoll: 250 * time.Millisecond,
+		maxPoll:   2 * time.Second,
+	}
 }
 
 // loadConfig uses the default credential chain, and assumes the role on top of it when set.

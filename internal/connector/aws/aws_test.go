@@ -15,6 +15,7 @@ import (
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
 	"github.com/contember/sonda/api"
@@ -148,8 +149,22 @@ func (f *fakeLogs) GetLogGroupFields(_ context.Context, in *cloudwatchlogs.GetLo
 	return &cloudwatchlogs.GetLogGroupFieldsOutput{LogGroupFields: f.fields[*in.LogGroupIdentifier]}, nil
 }
 
+const account = "123456789012"
+
+type fakeIdentity struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeIdentity) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return &sts.GetCallerIdentityOutput{Account: sdkaws.String(account)}, nil
+}
+
 func testClient(cfg *config.Config, logs logsAPI, metrics metricsAPI) *Client {
-	c := newClient(cfg.Sources["aws"], logs, metrics)
+	c := newClient(cfg.Sources["aws"], logs, metrics, &fakeIdentity{})
 	c.firstPoll, c.maxPoll = time.Millisecond, time.Millisecond
 	return c
 }
@@ -288,6 +303,11 @@ func TestInsightsRejectsForeignLogGroup(t *testing.T) {
 		"arn:aws:logs:eu-west-1:123456789012:log-group:/aws/lambda/billing:*",
 		engineGroup + "-copy",
 		"arn:aws:logs:eu-west-1:123456789012:log-group:" + engineGroup + "x",
+		"arn:aws:logs:eu-west-1:999999999999:log-group:" + engineGroup,
+		"arn:aws:logs:us-east-1:123456789012:log-group:" + engineGroup + ":*",
+		"arn:aws:s3:eu-west-1:123456789012:log-group:" + engineGroup,
+		"arn:aws:logs:eu-west-1:123456789012:log-stream:" + engineGroup,
+		"arn:broken",
 	} {
 		logs := &fakeLogs{
 			polls:   []*cloudwatchlogs.GetQueryResultsOutput{complete(1, row("@timestamp", "2026-10-19 08:30:00.000", "@message", "secret"))},
@@ -459,17 +479,28 @@ func TestLogFields(t *testing.T) {
 	}
 }
 
-func TestLogGroupName(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{engineGroup, engineGroup},
-		{"arn:aws:logs:eu-west-1:1:log-group:" + engineGroup, engineGroup},
-		{"arn:aws:logs:eu-west-1:1:log-group:" + engineGroup + ":*", engineGroup},
-		{"arn:aws:s3:::bucket", "arn:aws:s3:::bucket"},
+func TestInScopeResolvesAccountOnce(t *testing.T) {
+	cfg, scope, _ := scopes(t)
+	identity := &fakeIdentity{}
+	c := newClient(cfg.Sources["aws"], nil, nil, identity)
+	tests := []struct {
+		identifier string
+		want       bool
+	}{
+		{engineGroup, true},
+		{"arn:aws:logs:eu-west-1:" + account + ":log-group:" + engineGroup, true},
+		{"arn:aws:logs:eu-west-1:" + account + ":log-group:" + auditGroup + ":*", true},
+		{"arn:aws:logs:eu-west-1:999999999999:log-group:" + engineGroup, false},
+		{"arn:aws:logs:eu-central-1:" + account + ":log-group:" + engineGroup, false},
 	}
 	for _, tt := range tests {
-		if got := logGroupName(tt.in); got != tt.want {
-			t.Errorf("logGroupName(%q) = %q, want %q", tt.in, got, tt.want)
+		got, err := c.inScope(context.Background(), tt.identifier, scope.LogGroups())
+		if err != nil || got != tt.want {
+			t.Errorf("inScope(%q) = %v, %v; want %v", tt.identifier, got, err, tt.want)
 		}
+	}
+	if identity.calls != 1 {
+		t.Errorf("GetCallerIdentity called %d times, want 1", identity.calls)
 	}
 }
 
