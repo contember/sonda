@@ -238,7 +238,9 @@ func TestParseBackendErrors(t *testing.T) {
 		{"aws logs with namespace", [2]string{"logs: { source: aws,", "logs: { source: aws, namespace: AWS/RDS,"}, "logs.namespace is not allowed for aws sources"},
 
 		{"aws metrics without namespace", [2]string{"namespace: AWS/RDS, ", ""}, "metrics.namespace is required"},
-		{"aws metrics without dimensions", [2]string{", dimensions: { DBClusterIdentifier: engine }", ""}, "at least one dimension"},
+		{"aws metrics without dimensions", [2]string{", dimensions: { DBClusterIdentifier: engine }", ""}, "dimensions must have 1 to 10 entries"},
+		{"aws metrics with too many dimensions", [2]string{"{ DBClusterIdentifier: engine }", "{ A: a, B: b, C: c, D: d, E: e, F: f, G: g, H: h, I: i, J: j, K: k }"}, "dimensions must have 1 to 10 entries"},
+		{"log group ARN", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[\"arn:aws:logs:eu-west-1:1:log-group:/aws/x\"]"}, "must be a log group name, not an ARN"},
 		{"aws metrics with empty dimension", [2]string{"{ DBClusterIdentifier: engine }", `{ DBClusterIdentifier: "" }`}, "must not be empty"},
 		{"metrics on tempo", [2]string{"metrics: { source: cf,", "metrics: { source: tempo,"}, "expected prometheus, cloudflare or aws"},
 

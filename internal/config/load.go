@@ -555,6 +555,8 @@ func (v *validator) script(path, raw string) string {
 const maxLogGroups = 50
 
 // logGroups requires exact names, because a pattern would widen the scope as groups are added.
+// An ARN is rejected too: the Logs Insights post-check compares names within the source's
+// account and region.
 func (v *validator) logGroups(path string, raw []string) []string {
 	if len(raw) == 0 || len(raw) > maxLogGroups {
 		v.fail("%s.log_groups must have 1 to %d entries", path, maxLogGroups)
@@ -566,6 +568,8 @@ func (v *validator) logGroups(path string, raw []string) []string {
 			v.fail("%s.log_groups: empty log group name", path)
 		case strings.Contains(group, "*"):
 			v.fail("%s.log_groups: %q must be an exact name, not a pattern", path, group)
+		case strings.HasPrefix(group, "arn:"):
+			v.fail("%s.log_groups: %q must be a log group name, not an ARN", path, group)
 		case seen[group]:
 			v.fail("%s.log_groups: duplicate log group %q", path, group)
 		}
@@ -574,9 +578,12 @@ func (v *validator) logGroups(path string, raw []string) []string {
 	return raw
 }
 
+// maxDimensionFilters is the limit of dimension filters in one ListMetrics call.
+const maxDimensionFilters = 10
+
 func (v *validator) dimensions(path string, raw map[string]string) map[string]string {
-	if len(raw) == 0 {
-		v.fail("%s.dimensions: at least one dimension is required for aws sources", path)
+	if len(raw) == 0 || len(raw) > maxDimensionFilters {
+		v.fail("%s.dimensions must have 1 to %d entries for aws sources", path, maxDimensionFilters)
 	}
 	for name, value := range raw {
 		if name == "" || value == "" {
