@@ -3,10 +3,13 @@ package query
 import (
 	"context"
 
+	"github.com/prometheus/common/model"
+
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/connector/aws"
 	"github.com/contember/sonda/internal/policy"
+	"github.com/contember/sonda/internal/shape"
 )
 
 type cloudWatchLogs struct {
@@ -20,14 +23,56 @@ func newCloudWatchLogs(scope authz.LogGroupScope, client *aws.Client) logBackend
 
 func (b *cloudWatchLogs) dialect() api.Dialect { return api.DialectLogsInsights }
 
+// search runs one query; its statistics give the exact number of matching events.
 func (b *cloudWatchLogs) search(ctx context.Context, r api.TimeRange, f policy.LogFilter, limit int) (logSearch, error) {
-	return logSearch{}, notImplemented(b.dialect())
+	q, err := policy.InsightsSearch(b.scope, f, limit)
+	if err != nil {
+		return logSearch{}, err
+	}
+	recordQuery(ctx, b.scope.Target, q.String())
+	result, err := b.client.Insights(ctx, b.scope, q, r, limit)
+	if err != nil {
+		return logSearch{}, err
+	}
+	return logSearch{query: q.String(), total: result.Total, streams: result.Streams, source: b.sourceRef(q, r)}, nil
 }
 
+// query runs Logs Insights QL. Statistics over bin() buckets return series, other rows return
+// lines. The step is unused, because bin() in the query sets the bucket size.
 func (b *cloudWatchLogs) query(ctx context.Context, r api.TimeRange, text string, limit int, step string) (logQuery, error) {
-	return logQuery{}, notImplemented(b.dialect())
+	q, err := policy.ScopeInsights(b.scope, text)
+	if err != nil {
+		return logQuery{}, err
+	}
+	// The line limit must not cut statistics rows, so they get as many rows as AWS returns.
+	rows := limit
+	if q.Aggregates() {
+		rows = aws.MaxRows
+	}
+	recordQuery(ctx, b.scope.Target, q.String())
+	result, err := b.client.Insights(ctx, b.scope, q, r, rows)
+	if err != nil {
+		return logQuery{}, err
+	}
+	out := logQuery{query: q.String(), streams: result.Streams, series: result.Series, source: b.sourceRef(q, r)}
+	if out.series == nil && q.Aggregates() && len(out.streams) == 0 {
+		out.series = model.Matrix{}
+	}
+	return out, nil
 }
 
 func (b *cloudWatchLogs) fields(ctx context.Context, r api.TimeRange) (api.LogFields, error) {
-	return api.LogFields{}, notImplemented(b.dialect())
+	fields, err := b.client.LogFields(ctx, b.scope, r)
+	if err != nil {
+		return api.LogFields{}, err
+	}
+	result := api.LogFields{Fields: make([]api.LogField, 0, len(fields))}
+	for _, f := range fields {
+		result.Fields = append(result.Fields, api.LogField{Name: f.Name})
+	}
+	return result, nil
+}
+
+func (b *cloudWatchLogs) sourceRef(q policy.InsightsQuery, r api.TimeRange) api.SourceRef {
+	return shape.CloudWatchLogsSourceRef(b.scope.Source(), b.scope.LogGroups(), q.String(), r)
 }
