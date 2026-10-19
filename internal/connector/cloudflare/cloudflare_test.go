@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,7 @@ func TestPostCheckRejectsForeignService(t *testing.T) {
 		{"metadata service", `{"$metadata":{"id":"1","service":"other"},"timestamp":1}`},
 		{"script name", `{"$metadata":{"id":"1"},"$workers":{"scriptName":"other","eventType":"fetch"},"timestamp":1}`},
 		{"no service", `{"$metadata":{"id":"1","message":"x"},"timestamp":1}`},
+		{"script name differs from service", `{"$metadata":{"id":"1","service":"api-worker"},"$workers":{"scriptName":"other","eventType":"fetch"},"timestamp":1}`},
 	}
 	for _, tt := range tests {
 		f := &fake{response: success(`{"events":{"events":[{"$metadata":{"id":"0","service":"api-worker"},"timestamp":1},` + tt.events + `]}}`)}
@@ -218,34 +220,51 @@ func TestErrorMapping(t *testing.T) {
 	}
 }
 
+const serviceGroupBy = `"groupBys":[{"type":"string","value":"$metadata.service"}]`
+
 func TestCount(t *testing.T) {
-	f := &fake{response: success(`{"calculations":[{"calculation":"count","aggregates":[{"value":41.6,"count":41.6,"sampleInterval":1}],"series":[]}]}`)}
+	f := &fake{response: success(`{"calculations":[{"calculation":"count","aggregates":[
+		{"value":41.6,"count":41.6,"sampleInterval":1,"groups":[{"key":"$metadata.service","value":"api-worker"}]}
+	],"series":[]}]}`)}
 	client, scope := setup(t, f)
-	_, count, err := policy.CloudflareLogSearch(scope, policy.LogFilter{}, 10)
+	_, count, err := policy.CloudflareLogSearch(scope, policy.LogFilter{Contains: []string{"x"}}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	total, err := client.Count(context.Background(), count, testRange)
+	total, err := client.Count(context.Background(), scope, count, testRange)
 	if err != nil || total != 42 {
 		t.Errorf("total = %d, %v", total, err)
 	}
-	if !strings.Contains(f.requests[0].body, `"view":"calculations"`) || !strings.Contains(f.requests[0].body, `"calculations":[{"operator":"count"}]`) {
-		t.Errorf("count body = %s", f.requests[0].body)
+	body := f.requests[0].body
+	for _, part := range []string{`"view":"calculations"`, `"calculations":[{"operator":"count"}]`, `"filters":[` + scopeLeaf + `]`, serviceGroupBy} {
+		if !strings.Contains(body, part) {
+			t.Errorf("count body lacks %s: %s", part, body)
+		}
 	}
 }
 
 func TestCalculations(t *testing.T) {
 	f := &fake{response: success(`{"calculations":[
 		{"calculation":"count","alias":"n","aggregates":[],"series":[
-			{"time":"2023-11-14T22:14:00Z","data":[{"value":1,"groups":[{"key":"$metadata.statusCode","value":500}]},{"value":2,"groups":[{"key":"$metadata.statusCode","value":200}]}]},
-			{"time":"2023-11-14T22:13:00Z","data":[{"value":3,"groups":[{"key":"$metadata.statusCode","value":500}]}]}
+			{"time":"2023-11-14T22:14:00Z","data":[
+				{"value":1,"groups":[{"key":"$metadata.statusCode","value":500},{"key":"$metadata.service","value":"api-worker"}]},
+				{"value":2,"groups":[{"key":"$metadata.statusCode","value":200},{"key":"$metadata.service","value":"api-worker"}]}
+			]},
+			{"time":"2023-11-14T22:13:00Z","data":[{"value":3,"groups":[{"key":"$metadata.statusCode","value":500},{"key":"$metadata.service","value":"api-worker"}]}]}
 		]},
-		{"calculation":"p99","aggregates":[{"value":12.5,"groups":[{"key":"$metadata.level","value":"error"}]}],"series":[]}
+		{"calculation":"p99","aggregates":[{"value":12.5,"groups":[{"key":"$metadata.level","value":"error"},{"key":"$metadata.service","value":"api-worker"}]}],"series":[]}
 	]}`)}
 	client, scope := setup(t, f)
-	matrix, err := client.Calculations(context.Background(), scopedQuery(t, scope, `{"view":"calculations"}`), testRange)
+	q := scopedQuery(t, scope, `{"view":"calculations","calculations":[{"operator":"count","alias":"n"}],"groupBys":[{"type":"number","value":"$metadata.statusCode"}]}`)
+	matrix, err := client.Calculations(context.Background(), scope, q, testRange)
 	if err != nil {
 		t.Fatal(err)
+	}
+	body := f.requests[0].body
+	for _, part := range []string{`"filters":[` + scopeLeaf + `]`, `"groupBys":[{"type":"number","value":"$metadata.statusCode"},{"type":"string","value":"$metadata.service"}]`} {
+		if !strings.Contains(body, part) {
+			t.Errorf("calculations body lacks %s: %s", part, body)
+		}
 	}
 	byLabels := map[string]*model.SampleStream{}
 	for _, s := range matrix {
@@ -261,9 +280,31 @@ func TestCalculations(t *testing.T) {
 	}
 
 	f.response = success(`{"calculations":[]}`)
-	matrix, err = client.Calculations(context.Background(), scopedQuery(t, scope, `{"view":"calculations"}`), testRange)
+	matrix, err = client.Calculations(context.Background(), scope, q, testRange)
 	if err != nil || matrix == nil || len(matrix) != 0 {
 		t.Errorf("empty calculations = %v, %v", matrix, err)
+	}
+}
+
+func TestCalculationsPostCheck(t *testing.T) {
+	tests := []struct{ name, calculation string }{
+		{"foreign aggregate", `{"calculation":"count","aggregates":[{"value":1,"groups":[{"key":"$metadata.service","value":"other"}]}],"series":[]}`},
+		{"aggregate without service", `{"calculation":"count","aggregates":[{"value":1}],"series":[]}`},
+		{"foreign series point", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[
+			{"value":1,"groups":[{"key":"$metadata.service","value":"api-worker"}]},{"value":1,"groups":[{"key":"$metadata.service","value":"other"}]}]}]}`},
+		{"series point without service", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[{"value":1,"groups":[]}]}]}`},
+	}
+	for _, tt := range tests {
+		f := &fake{response: success(`{"calculations":[` + tt.calculation + `]}`)}
+		client, scope := setup(t, f)
+		matrix, err := client.Calculations(context.Background(), scope, scopedQuery(t, scope, `{"view":"calculations"}`), testRange)
+		if !isCode(err, api.CodeInternal) || matrix != nil {
+			t.Errorf("%s calculations: matrix %v, error %v", tt.name, matrix, err)
+		}
+		_, count, _ := policy.CloudflareLogSearch(scope, policy.LogFilter{}, 10)
+		if total, err := client.Count(context.Background(), scope, count, testRange); !isCode(err, api.CodeInternal) || total != 0 {
+			t.Errorf("%s count: total %d, error %v", tt.name, total, err)
+		}
 	}
 }
 
@@ -323,8 +364,23 @@ func TestTraceSpans(t *testing.T) {
 		child.Duration != 2500*time.Microsecond || !child.Start.Equal(time.UnixMilli(1700000000005)) {
 		t.Errorf("child = %+v", child)
 	}
-	if !strings.Contains(f.requests[0].body, `"filters":[{"key":"$metadata.traceId","operation":"eq","type":"string","value":"abc"}]`) {
+	wantFilters := `"filters":[{"key":"$metadata.traceId","operation":"eq","type":"string","value":"abc"},{"key":"$metadata.spanName","operation":"exists","type":"string"}]`
+	if !strings.Contains(f.requests[0].body, wantFilters) {
 		t.Errorf("body = %s", f.requests[0].body)
+	}
+}
+
+func TestTraceSpanLimit(t *testing.T) {
+	q := policy.CloudflareTraceByID(authz.CloudflareScope{}, "abc")
+	events := make([]string, q.Limit())
+	for i := range events {
+		events[i] = `{"$metadata":{"id":"e","service":"api-worker","spanId":"s` + strconv.Itoa(i) + `","spanName":"x"},"timestamp":1}`
+	}
+	f := &fake{response: success(`{"events":{"events":[` + strings.Join(events, ",") + `]}}`)}
+	client, _ := setup(t, f)
+	spans, err := client.Trace(context.Background(), q, testRange)
+	if !isCode(err, api.CodeLimitExceeded) || !strings.Contains(err.Error(), "2000 spans") || spans != nil {
+		t.Errorf("spans %d, error %v", len(spans), err)
 	}
 }
 
@@ -357,9 +413,12 @@ func TestMetric(t *testing.T) {
 	]}]}},"errors":null}`}
 	client, scope := setup(t, f)
 	m := telemetry.CloudflareMetricQuery{Metric: "requests", By: []string{"status"}}
-	matrix, err := client.Metric(context.Background(), scope, m, testRange, 30*time.Minute)
+	matrix, step, err := client.Metric(context.Background(), scope, m, testRange, 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if step != 15*time.Minute {
+		t.Errorf("effective step = %s", step)
 	}
 
 	sent := f.requests[0]
@@ -384,7 +443,7 @@ func TestMetric(t *testing.T) {
 	if strings.Contains(body.Query, "api-worker") || strings.Contains(body.Query, "acc-1") {
 		t.Errorf("scope is interpolated into the query: %s", body.Query)
 	}
-	for _, part := range []string{"sum { requests }", "dimensions { scriptName datetimeFifteenMinutes status }", "scriptName: $scriptName"} {
+	for _, part := range []string{"sum { requests }", "dimensions { scriptName datetimeFifteenMinutes status }", "scriptName: $scriptName", "orderBy: [datetimeFifteenMinutes_ASC]"} {
 		if !strings.Contains(body.Query, part) {
 			t.Errorf("query lacks %q: %s", part, body.Query)
 		}
@@ -415,16 +474,50 @@ func TestMetricBuckets(t *testing.T) {
 		want string
 	}{
 		{15 * time.Second, "datetimeMinute"},
-		{5 * time.Minute, "datetimeMinute"},
+		{time.Minute, "datetimeMinute"},
+		{5 * time.Minute, "datetimeFifteenMinutes"},
 		{15 * time.Minute, "datetimeFifteenMinutes"},
-		{30 * time.Minute, "datetimeFifteenMinutes"},
+		{30 * time.Minute, "datetimeHour"},
 		{time.Hour, "datetimeHour"},
-		{24 * time.Hour, "datetimeHour"},
+		{2 * time.Hour, "date"},
+		{24 * time.Hour, "date"},
+		{48 * time.Hour, "date"},
 	}
 	for _, tt := range tests {
 		if got := bucketFor(tt.step).field; got != tt.want {
 			t.Errorf("step %s: bucket %s, want %s", tt.step, got, tt.want)
 		}
+	}
+}
+
+func TestMetricRequestDurationByDay(t *testing.T) {
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[
+		{"quantiles":{"requestDurationP99":2500},"dimensions":{"scriptName":"api-worker","date":"2023-11-14"}}
+	]}]}}}`}
+	client, scope := setup(t, f)
+	matrix, step, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "duration_p99"}, testRange, 3*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.requests[0].body, "quantiles { requestDurationP99 }") || !strings.Contains(f.requests[0].body, "orderBy: [date_ASC]") {
+		t.Errorf("body = %s", f.requests[0].body)
+	}
+	if step != 24*time.Hour || len(matrix) != 1 || matrix[0].Values[0].Value != 2.5 ||
+		matrix[0].Values[0].Timestamp.Time().UTC().Format(time.DateOnly) != "2023-11-14" {
+		t.Errorf("step %s, matrix %v", step, matrix)
+	}
+}
+
+func TestMetricRowLimit(t *testing.T) {
+	rows := make([]string, maxInvocationRows)
+	for i := range rows {
+		rows[i] = `{"sum":{"requests":1},"dimensions":{"scriptName":"api-worker","datetimeMinute":"2023-11-14T22:15:00Z"}}`
+	}
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[` + strings.Join(rows, ",") + `]}]}}}`}
+	client, scope := setup(t, f)
+	matrix, _, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "requests"}, testRange, time.Minute)
+	if !isCode(err, api.CodeLimitExceeded) || matrix != nil {
+		t.Errorf("matrix %d series, error %v", len(matrix), err)
 	}
 }
 
@@ -455,7 +548,7 @@ func TestMetricErrors(t *testing.T) {
 	for _, tt := range tests {
 		f := &fake{response: tt.response}
 		client, scope := setup(t, f)
-		_, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "requests"}, testRange, time.Minute)
+		_, _, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "requests"}, testRange, time.Minute)
 		if !isCode(err, tt.code) || !strings.Contains(err.Error(), tt.message) {
 			t.Errorf("%s: error = %v, want %s containing %q", tt.name, err, tt.code, tt.message)
 		}

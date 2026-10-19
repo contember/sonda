@@ -31,7 +31,7 @@ func (b *cloudflareLogs) search(ctx context.Context, r api.TimeRange, f policy.L
 		return logSearch{}, err
 	}
 	recordQuery(ctx, b.scope.Target, count.String())
-	total, err := b.client.Count(ctx, count, r)
+	total, err := b.client.Count(ctx, b.scope, count, r)
 	if err != nil {
 		return logSearch{}, err
 	}
@@ -54,7 +54,7 @@ func (b *cloudflareLogs) query(ctx context.Context, r api.TimeRange, text string
 	recordQuery(ctx, b.scope.Target, q.String())
 	result := logQuery{query: q.String(), source: b.sourceRef(q, r)}
 	if q.View() == policy.CloudflareViewCalculations {
-		series, err := b.client.Calculations(ctx, q, r)
+		series, err := b.client.Calculations(ctx, b.scope, q, r)
 		if err != nil {
 			return logQuery{}, err
 		}

@@ -23,7 +23,7 @@ const maxInvocationRows = 10000
 const invocationsQuery = `query SondaWorkerMetric($accountTag: string, $scriptName: string, $datetimeStart: string, $datetimeEnd: string) {
   viewer {
     accounts(filter: {accountTag: $accountTag}) {
-      workersInvocationsAdaptive(limit: %d, filter: {scriptName: $scriptName, datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd}) {
+      workersInvocationsAdaptive(limit: %d, filter: {scriptName: $scriptName, datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd}, orderBy: [%s_ASC]) {
         %s
         dimensions { scriptName %s }
       }
@@ -42,8 +42,8 @@ var metricFields = map[string]metricField{
 	"subrequests":  {"sum { subrequests }", func(r invocationRow) float64 { return r.Sum.Subrequests }},
 	"cpu_time_p50": {"quantiles { cpuTimeP50 }", func(r invocationRow) float64 { return r.Quantiles.CPUTimeP50 }},
 	"cpu_time_p99": {"quantiles { cpuTimeP99 }", func(r invocationRow) float64 { return r.Quantiles.CPUTimeP99 }},
-	"duration_p50": {"quantiles { durationP50 }", func(r invocationRow) float64 { return r.Quantiles.DurationP50 }},
-	"duration_p99": {"quantiles { durationP99 }", func(r invocationRow) float64 { return r.Quantiles.DurationP99 }},
+	"duration_p50": {"quantiles { requestDurationP50 }", func(r invocationRow) float64 { return r.Quantiles.RequestDurationP50 / 1000 }},
+	"duration_p99": {"quantiles { requestDurationP99 }", func(r invocationRow) float64 { return r.Quantiles.RequestDurationP99 / 1000 }},
 }
 
 var dimensionFields = map[string]func(invocationRow) string{
@@ -52,16 +52,19 @@ var dimensionFields = map[string]func(invocationRow) string{
 }
 
 type timeBucket struct {
-	size  time.Duration
-	field string
-	value func(invocationRow) string
+	size   time.Duration
+	field  string
+	layout string
+	value  func(invocationRow) string
 }
 
-// timeBuckets go from the coarsest; a query uses the coarsest bucket that fits into the step.
+// timeBuckets go from the finest; a query uses the finest bucket not finer than the step, so
+// it returns no more points than the step allows.
 var timeBuckets = []timeBucket{
-	{time.Hour, "datetimeHour", func(r invocationRow) string { return r.Dimensions.DatetimeHour }},
-	{15 * time.Minute, "datetimeFifteenMinutes", func(r invocationRow) string { return r.Dimensions.DatetimeFifteenMinutes }},
-	{time.Minute, "datetimeMinute", func(r invocationRow) string { return r.Dimensions.DatetimeMinute }},
+	{time.Minute, "datetimeMinute", time.RFC3339, func(r invocationRow) string { return r.Dimensions.DatetimeMinute }},
+	{15 * time.Minute, "datetimeFifteenMinutes", time.RFC3339, func(r invocationRow) string { return r.Dimensions.DatetimeFifteenMinutes }},
+	{time.Hour, "datetimeHour", time.RFC3339, func(r invocationRow) string { return r.Dimensions.DatetimeHour }},
+	{24 * time.Hour, "date", time.DateOnly, func(r invocationRow) string { return r.Dimensions.Date }},
 }
 
 type invocationRow struct {
@@ -71,10 +74,10 @@ type invocationRow struct {
 		Subrequests float64 `json:"subrequests"`
 	} `json:"sum"`
 	Quantiles struct {
-		CPUTimeP50  float64 `json:"cpuTimeP50"`
-		CPUTimeP99  float64 `json:"cpuTimeP99"`
-		DurationP50 float64 `json:"durationP50"`
-		DurationP99 float64 `json:"durationP99"`
+		CPUTimeP50         float64 `json:"cpuTimeP50"`
+		CPUTimeP99         float64 `json:"cpuTimeP99"`
+		RequestDurationP50 float64 `json:"requestDurationP50"` // µs
+		RequestDurationP99 float64 `json:"requestDurationP99"` // µs
 	} `json:"quantiles"`
 	Dimensions struct {
 		ScriptName             string `json:"scriptName"`
@@ -83,6 +86,7 @@ type invocationRow struct {
 		DatetimeMinute         string `json:"datetimeMinute"`
 		DatetimeFifteenMinutes string `json:"datetimeFifteenMinutes"`
 		DatetimeHour           string `json:"datetimeHour"`
+		Date                   string `json:"date"`
 	} `json:"dimensions"`
 }
 
@@ -111,23 +115,23 @@ type graphQLResponse struct {
 	} `json:"errors"`
 }
 
-// Metric reads one catalog metric of the scoped script, bucketed by the coarsest time
-// dimension that fits into step, with one series per value of the requested dimensions.
-func (c *Client) Metric(ctx context.Context, scope authz.CloudflareScope, m telemetry.CloudflareMetricQuery, r api.TimeRange, step time.Duration) (model.Matrix, error) {
+// Metric reads one catalog metric of the scoped script, with one series per value of the
+// requested dimensions. It returns the time bucket it used as the effective step.
+func (c *Client) Metric(ctx context.Context, scope authz.CloudflareScope, m telemetry.CloudflareMetricQuery, r api.TimeRange, step time.Duration) (model.Matrix, time.Duration, error) {
 	field, ok := metricFields[m.Metric]
 	if !ok {
-		return nil, apierr.InvalidQuery("unknown metric %q", m.Metric)
+		return nil, 0, apierr.InvalidQuery("unknown metric %q", m.Metric)
 	}
 	dimensions := make([]string, 0, len(m.By))
 	for _, name := range m.By {
 		if _, ok := dimensionFields[name]; !ok {
-			return nil, apierr.InvalidQuery("unknown dimension %q", name)
+			return nil, 0, apierr.InvalidQuery("unknown dimension %q", name)
 		}
 		dimensions = append(dimensions, name)
 	}
 	bucket := bucketFor(step)
 	body, err := json.Marshal(graphQLRequest{
-		Query: fmt.Sprintf(invocationsQuery, maxInvocationRows, field.selection, strings.Join(append([]string{bucket.field}, dimensions...), " ")),
+		Query: fmt.Sprintf(invocationsQuery, maxInvocationRows, bucket.field, field.selection, strings.Join(append([]string{bucket.field}, dimensions...), " ")),
 		Variables: metricsVariables{
 			AccountTag:    scope.AccountID(),
 			ScriptName:    scope.Script(),
@@ -136,27 +140,30 @@ func (c *Client) Metric(ctx context.Context, scope authz.CloudflareScope, m tele
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var resp graphQLResponse
 	if err := c.post(ctx, strings.TrimRight(c.source.URL, "/")+"/graphql", body, &resp); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(resp.Errors) > 0 {
-		return nil, apierr.Upstream("source %s returned a GraphQL error: %s", c.source.Name, resp.Errors[0].Message)
+		return nil, 0, apierr.Upstream("source %s returned a GraphQL error: %s", c.source.Name, resp.Errors[0].Message)
 	}
 	if resp.Data == nil {
-		return nil, apierr.Upstream("source %s returned no GraphQL data", c.source.Name)
+		return nil, 0, apierr.Upstream("source %s returned no GraphQL data", c.source.Name)
 	}
 	matrix := newMatrixBuilder()
 	for _, account := range resp.Data.Viewer.Accounts {
+		if len(account.WorkersInvocationsAdaptive) >= maxInvocationRows {
+			return nil, 0, apierr.New(api.CodeLimitExceeded, "too many rows; use a shorter range, a longer step or fewer by dimensions")
+		}
 		for _, row := range account.WorkersInvocationsAdaptive {
 			if row.Dimensions.ScriptName != scope.Script() {
-				return nil, c.outsideScope()
+				return nil, 0, c.outsideScope()
 			}
-			at, err := time.Parse(time.RFC3339, bucket.value(row))
+			at, err := time.Parse(bucket.layout, bucket.value(row))
 			if err != nil {
-				return nil, apierr.Upstream("source %s returned an invalid %s %q", c.source.Name, bucket.field, bucket.value(row))
+				return nil, 0, apierr.Upstream("source %s returned an invalid %s %q", c.source.Name, bucket.field, bucket.value(row))
 			}
 			labels := model.Metric{}
 			for _, name := range dimensions {
@@ -165,12 +172,12 @@ func (c *Client) Metric(ctx context.Context, scope authz.CloudflareScope, m tele
 			matrix.add(labels, at, field.value(row))
 		}
 	}
-	return matrix.build(), nil
+	return matrix.build(), bucket.size, nil
 }
 
 func bucketFor(step time.Duration) timeBucket {
 	for _, bucket := range timeBuckets {
-		if bucket.size <= step {
+		if bucket.size >= step {
 			return bucket
 		}
 	}

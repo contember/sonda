@@ -123,3 +123,58 @@ func TestCloudflareTraceSearchHonorsLimit(t *testing.T) {
 		t.Errorf("query traces %+v, body %s", found.traces, (*bodies)[1])
 	}
 }
+
+func TestCloudflareMetricsReportBucketAsStep(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[
+			{"sum":{"requests":3},"dimensions":{"scriptName":"api-worker","datetimeHour":"2023-11-14T22:00:00Z"}}
+		]}]}}}`)
+	}))
+	t.Cleanup(server.Close)
+	cfg, err := config.Parse([]byte(`
+sources:
+  cf: { type: cloudflare, url: "`+server.URL+`", account_id: acc, auth: { type: bearer, token: t } }
+services:
+  api:
+    environments:
+      production:
+        metrics: { source: cf, script: api-worker }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
+		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+	}}
+	scope, err := authz.New(cfg, nil).MetricScope(identity, "api", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := cloudflare.New(cfg.Sources["cf"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, _ := scope.Cloudflare()
+	metrics := newCloudflareMetrics(cf, client)
+
+	result, err := metrics.query(context.Background(), cloudflareRange, `{"metric":"requests"}`, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.step != time.Hour || len(result.series) != 1 || result.query != `{"metric":"requests"}` {
+		t.Errorf("result = %+v", result)
+	}
+	if _, err := metrics.query(context.Background(), cloudflareRange, `{"metric":"requests","scriptName":"other"}`, time.Minute); err == nil {
+		t.Error("unknown field accepted")
+	}
+
+	infos, err := metrics.names(context.Background(), cloudflareRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, info := range infos {
+		if info.Help == "" {
+			t.Errorf("metric %s has no help", info.Name)
+		}
+	}
+}

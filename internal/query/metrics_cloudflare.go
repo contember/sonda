@@ -20,8 +20,8 @@ var cloudflareMetricHelp = map[string]string{
 	"subrequests":  "Subrequests made by the Worker (sum)",
 	"cpu_time_p50": "CPU time per invocation, 50th percentile, in microseconds",
 	"cpu_time_p99": "CPU time per invocation, 99th percentile, in microseconds",
-	"duration_p50": "Billed duration per invocation, 50th percentile, in GB*s (not latency)",
-	"duration_p99": "Billed duration per invocation, 99th percentile, in GB*s (not latency)",
+	"duration_p50": "Request duration per invocation, 50th percentile, in ms",
+	"duration_p99": "Request duration per invocation, 99th percentile, in ms",
 }
 
 type cloudflareMetrics struct {
@@ -54,9 +54,14 @@ func (b *cloudflareMetrics) query(ctx context.Context, r api.TimeRange, text str
 		return metricQuery{}, err
 	}
 	recordQuery(ctx, b.scope.Target, string(canonical))
-	matrix, err := b.client.Metric(ctx, b.scope, m, r, step)
+	matrix, bucket, err := b.client.Metric(ctx, b.scope, m, r, step)
 	if err != nil {
 		return metricQuery{}, err
 	}
-	return metricQuery{query: string(canonical), series: matrix, source: shape.CloudflareSourceRef(b.scope.Source(), string(canonical), r)}, nil
+	return metricQuery{
+		query:  string(canonical),
+		series: matrix,
+		source: shape.CloudflareSourceRef(b.scope.Source(), string(canonical), r),
+		step:   bucket,
+	}, nil
 }

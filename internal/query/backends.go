@@ -53,6 +53,8 @@ type metricQuery struct {
 	query  string
 	series model.Matrix
 	source api.SourceRef
+	// step is the resolution the backend actually used; 0 means the requested step.
+	step time.Duration
 }
 
 // traceBackend runs trace use cases for one scope. search and query return at most limit

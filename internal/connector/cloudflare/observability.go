@@ -136,6 +136,9 @@ func (c *Client) Lines(ctx context.Context, scope authz.CloudflareScope, q polic
 	streams := newStreamSet()
 	if result.Events != nil {
 		for _, e := range result.Events.Events {
+			if !e.inScope(scope) {
+				return nil, c.outsideScope()
+			}
 			streams.add(e, "")
 		}
 	}
@@ -146,21 +149,22 @@ func (c *Client) Lines(ctx context.Context, scope authz.CloudflareScope, q polic
 	sort.Strings(requestIDs)
 	for _, id := range requestIDs {
 		for _, e := range result.Invocations[id] {
+			if !e.inScope(scope) {
+				return nil, c.outsideScope()
+			}
 			streams.add(e, id)
 		}
-	}
-	if err := c.checkScope(scope, streams.services); err != nil {
-		return nil, err
 	}
 	return streams.list, nil
 }
 
 // Count runs a calculations query with one count and returns its value.
-func (c *Client) Count(ctx context.Context, q policy.CloudflareQuery, r api.TimeRange) (int64, error) {
-	result, err := c.query(ctx, q, r)
+func (c *Client) Count(ctx context.Context, scope authz.CloudflareScope, q policy.CloudflareQuery, r api.TimeRange) (int64, error) {
+	result, err := c.calculations(ctx, scope, q, r)
 	if err != nil {
 		return 0, err
 	}
+	// Cloudflare weights the count by each event's sample interval, so it estimates the total under sampling.
 	var total float64
 	if len(result.Calculations) > 0 {
 		for _, a := range result.Calculations[0].Aggregates {
@@ -172,8 +176,8 @@ func (c *Client) Count(ctx context.Context, q policy.CloudflareQuery, r api.Time
 
 // Calculations runs a calculations query into a non-nil matrix. Each calculation and group
 // becomes a series; a calculation without time buckets becomes one point at the range end.
-func (c *Client) Calculations(ctx context.Context, q policy.CloudflareQuery, r api.TimeRange) (model.Matrix, error) {
-	result, err := c.query(ctx, q, r)
+func (c *Client) Calculations(ctx context.Context, scope authz.CloudflareScope, q policy.CloudflareQuery, r api.TimeRange) (model.Matrix, error) {
+	result, err := c.calculations(ctx, scope, q, r)
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +204,49 @@ func (c *Client) Calculations(ctx context.Context, q policy.CloudflareQuery, r a
 		}
 	}
 	return matrix.build(), nil
+}
+
+// calculations runs a calculations query grouped by service. Every aggregate must belong to the
+// scoped script; the service group is removed from the result.
+func (c *Client) calculations(ctx context.Context, scope authz.CloudflareScope, q policy.CloudflareQuery, r api.TimeRange) (queryResult, error) {
+	result, err := c.query(ctx, q, r)
+	if err != nil {
+		return queryResult{}, err
+	}
+	for _, calc := range result.Calculations {
+		for i := range calc.Aggregates {
+			if calc.Aggregates[i].Groups, err = c.withoutService(scope, calc.Aggregates[i].Groups); err != nil {
+				return queryResult{}, err
+			}
+		}
+		for _, step := range calc.Series {
+			for i := range step.Data {
+				if step.Data[i].Groups, err = c.withoutService(scope, step.Data[i].Groups); err != nil {
+					return queryResult{}, err
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) withoutService(scope authz.CloudflareScope, groups []groupValue) ([]groupValue, error) {
+	inScope := false
+	kept := make([]groupValue, 0, len(groups))
+	for _, g := range groups {
+		if g.Key != policy.CloudflareServiceKey {
+			kept = append(kept, g)
+			continue
+		}
+		if scalarText(g.Value) != scope.Script() {
+			return nil, c.outsideScope()
+		}
+		inScope = true
+	}
+	if !inScope {
+		return nil, c.outsideScope()
+	}
+	return kept, nil
 }
 
 func calculationLabels(name string, groups []groupValue) model.Metric {
@@ -255,10 +302,12 @@ func (c *Client) Trace(ctx context.Context, q policy.CloudflareQuery, r api.Time
 	if result.Events == nil {
 		return nil, nil
 	}
+	if len(result.Events.Events) >= q.Limit() {
+		return nil, apierr.New(api.CodeLimitExceeded, "trace has at least %d spans, more than one fetch returns", q.Limit())
+	}
 	var spans []telemetry.Span
 	seen := map[string]bool{}
 	for _, e := range result.Events.Events {
-		// Log lines of a span share its span ID but have no span name.
 		if e.Metadata.SpanID == "" || e.Metadata.SpanName == "" || seen[e.Metadata.SpanID] {
 			continue
 		}
@@ -336,19 +385,14 @@ func (c *Client) Keys(ctx context.Context, scope authz.CloudflareScope, r api.Ti
 	return call[[]Key](ctx, c, keysPath, body)
 }
 
-// checkScope is defense in depth: the query filters by script, so any other service means the
-// filter did not apply.
-func (c *Client) checkScope(scope authz.CloudflareScope, services map[string]bool) error {
-	for service := range services {
-		if service != scope.Script() {
-			return c.outsideScope()
-		}
-	}
-	return nil
-}
-
+// outsideScope is the defense-in-depth error: queries filter by script, so data of another
+// script means the filter did not apply.
 func (c *Client) outsideScope() error {
 	return apierr.New(api.CodeInternal, "source %s returned data outside the scope", c.source.Name)
+}
+
+func (e event) inScope(scope authz.CloudflareScope) bool {
+	return e.service() == scope.Script() && (e.Workers == nil || e.Workers.ScriptName == scope.Script())
 }
 
 func (e event) service() string {
@@ -402,13 +446,12 @@ func (k streamKey) labels() map[string]string {
 }
 
 type streamSet struct {
-	list     []telemetry.LogStream
-	index    map[streamKey]int
-	services map[string]bool
+	list  []telemetry.LogStream
+	index map[streamKey]int
 }
 
 func newStreamSet() *streamSet {
-	return &streamSet{index: map[streamKey]int{}, services: map[string]bool{}}
+	return &streamSet{index: map[streamKey]int{}}
 }
 
 func (s *streamSet) add(e event, requestID string) {
@@ -419,7 +462,6 @@ func (s *streamSet) add(e event, requestID string) {
 			key.scriptVersion = w.ScriptVersion.ID
 		}
 	}
-	s.services[key.service] = true
 	i, ok := s.index[key]
 	if !ok {
 		i = len(s.list)

@@ -106,6 +106,9 @@ func (s *Service) queryMetrics(ctx context.Context, identity *authz.Identity, sc
 	if err != nil {
 		return api.Response[api.MetricResult]{}, err
 	}
+	if result.step != 0 {
+		step = result.step
+	}
 	series, truncated := shape.Series(result.series, maxSeries, withPoints)
 	meta := metaFor(scope.Target, r)
 	meta.Truncated = truncated

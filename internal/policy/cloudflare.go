@@ -23,6 +23,10 @@ const (
 	CloudflareViewInvocations  = "invocations"
 	CloudflareViewTraces       = "traces"
 
+	// CloudflareServiceKey holds the script name of an event. Calculations are grouped by it,
+	// so the connector can check that every aggregate belongs to the scope.
+	CloudflareServiceKey = "$metadata.service"
+
 	cloudflareMaxLimit = 2000
 	// Cloudflare nests filter groups at most 4 deep; the scope wrapper takes one level.
 	cloudflareMaxAgentDepth  = 3
@@ -48,6 +52,9 @@ type CloudflareQuery struct {
 }
 
 func (q CloudflareQuery) View() string { return q.view }
+
+// Limit is the maximum number of rows the query returns; 0 leaves it to Cloudflare.
+func (q CloudflareQuery) Limit() int { return q.limit }
 
 // WithLimit caps the number of returned rows at limit.
 func (q CloudflareQuery) WithLimit(limit int) CloudflareQuery {
@@ -214,6 +221,9 @@ func ScopeCloudflareQuery(scope authz.CloudflareScope, text string, allowedViews
 	parameters.Needle = in.Needle
 	parameters.Calculations = in.Calculations
 	parameters.GroupBys = in.GroupBys
+	if in.View == CloudflareViewCalculations {
+		parameters.GroupBys = withServiceGroup(in.GroupBys)
+	}
 	parameters.Havings = in.Havings
 	parameters.OrderBy = in.OrderBy
 	return CloudflareQuery{view: in.View, limit: in.Limit, parameters: parameters}, nil
@@ -323,7 +333,15 @@ func scopedParameters(scope authz.CloudflareScope, combination string, filters [
 }
 
 func scopeFilter(scope authz.CloudflareScope) cloudflareFilter {
-	return cloudflareFilter{Key: "$metadata.service", Operation: "eq", Type: "string", Value: textValue(scope.Script())}
+	return cloudflareFilter{Key: CloudflareServiceKey, Operation: "eq", Type: "string", Value: textValue(scope.Script())}
+}
+
+// withServiceGroup adds the service group the connector checks and strips again.
+func withServiceGroup(groupBys []cloudflareGroupBy) []cloudflareGroupBy {
+	if slices.ContainsFunc(groupBys, func(g cloudflareGroupBy) bool { return g.Value == CloudflareServiceKey }) {
+		return groupBys
+	}
+	return append(slices.Clone(groupBys), cloudflareGroupBy{Type: "string", Value: CloudflareServiceKey})
 }
 
 // CloudflareLogSearch translates a backend-neutral log search into an events query and a
@@ -347,6 +365,7 @@ func CloudflareLogSearch(scope authz.CloudflareScope, f LogFilter, limit int) (e
 	parameters.Needle = needle
 	countParameters := parameters
 	countParameters.Calculations = []cloudflareCalculation{{Operator: "count"}}
+	countParameters.GroupBys = withServiceGroup(nil)
 	events = CloudflareQuery{view: CloudflareViewEvents, limit: min(limit, cloudflareMaxLimit), parameters: parameters}
 	count = CloudflareQuery{view: CloudflareViewCalculations, parameters: countParameters}
 	return events, count, nil
@@ -386,7 +405,7 @@ func whereFilters(where []Where) []cloudflareFilter {
 	return filters
 }
 
-// CloudflareTraceByID fetches the events of one trace. It is not scoped by service, because a
+// CloudflareTraceByID fetches the spans of one trace. It is not scoped by service, because a
 // trace spans services; the caller checks that the trace contains a span of the scoped script.
 func CloudflareTraceByID(_ authz.CloudflareScope, id string) CloudflareQuery {
 	return CloudflareQuery{
@@ -394,7 +413,10 @@ func CloudflareTraceByID(_ authz.CloudflareScope, id string) CloudflareQuery {
 		limit: cloudflareTraceByIDLimit,
 		parameters: cloudflareParameters{
 			FilterCombination: "and",
-			Filters:           []cloudflareFilter{{Key: "$metadata.traceId", Operation: "eq", Type: "string", Value: textValue(id)}},
+			Filters: []cloudflareFilter{
+				{Key: "$metadata.traceId", Operation: "eq", Type: "string", Value: textValue(id)},
+				{Key: "$metadata.spanName", Operation: "exists", Type: "string"},
+			},
 		},
 	}
 }

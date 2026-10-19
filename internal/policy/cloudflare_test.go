@@ -40,7 +40,10 @@ services:
 	return scope
 }
 
-const scopeLeaf = `{"key":"$metadata.service","operation":"eq","type":"string","value":"api-worker"}`
+const (
+	scopeLeaf      = `{"key":"$metadata.service","operation":"eq","type":"string","value":"api-worker"}`
+	serviceGroupBy = `{"type":"string","value":"$metadata.service"}`
+)
 
 func TestScopeCloudflareQuery(t *testing.T) {
 	scope := cloudflareScope(t)
@@ -60,7 +63,7 @@ func TestScopeCloudflareQuery(t *testing.T) {
 			`{"view":"calculations","limit":5,"needle":{"value":"boom","matchCase":true},"calculations":[{"operator":"count","alias":"n"}],` +
 				`"groupBys":[{"type":"number","value":"$metadata.statusCode"}],"havings":[{"key":"n","operation":"gt","value":1}],"orderBy":{"value":"n","order":"desc"}}`,
 			`{"view":"calculations","limit":5,"parameters":{"filterCombination":"and","filters":[` + scopeLeaf + `],"needle":{"value":"boom","matchCase":true},` +
-				`"calculations":[{"operator":"count","alias":"n"}],"groupBys":[{"type":"number","value":"$metadata.statusCode"}],"havings":[{"key":"n","operation":"gt","value":1}],"orderBy":{"value":"n","order":"desc"}}}`,
+				`"calculations":[{"operator":"count","alias":"n"}],"groupBys":[{"type":"number","value":"$metadata.statusCode"},` + serviceGroupBy + `],"havings":[{"key":"n","operation":"gt","value":1}],"orderBy":{"value":"n","order":"desc"}}}`,
 		},
 		{
 			`{"filters":[{"kind":"group","filterCombination":"or","filters":[{"kind":"group","filterCombination":"and","filters":[{"key":"x","operation":"gt","type":"number","value":3}]}]}]}`,
@@ -76,6 +79,64 @@ func TestScopeCloudflareQuery(t *testing.T) {
 		}
 		if q.String() != tt.want {
 			t.Errorf("%s:\n got %s\nwant %s", tt.in, q.String(), tt.want)
+		}
+	}
+}
+
+func TestCloudflareCalculationsGroupByService(t *testing.T) {
+	scope := cloudflareScope(t)
+	tests := []struct{ in, wantGroupBys string }{
+		{`{"view":"calculations"}`, `"groupBys":[` + serviceGroupBy + `]`},
+		{`{"view":"calculations","groupBys":[{"type":"string","value":"$metadata.service"}]}`, `"groupBys":[` + serviceGroupBy + `]`},
+		{`{"view":"calculations","groupBys":[{"type":"string","value":"$metadata.level"}]}`, `"groupBys":[{"type":"string","value":"$metadata.level"},` + serviceGroupBy + `]`},
+	}
+	for _, tt := range tests {
+		q, err := ScopeCloudflareQuery(scope, tt.in, CloudflareViewEvents, CloudflareViewCalculations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(q.String(), tt.wantGroupBys) || !strings.Contains(q.String(), `"filters":[`+scopeLeaf+`]`) {
+			t.Errorf("%s: %s", tt.in, q.String())
+		}
+	}
+	events, err := ScopeCloudflareQuery(scope, `{}`, CloudflareViewEvents)
+	if err != nil || strings.Contains(events.String(), "groupBys") {
+		t.Errorf("events query is grouped: %s, %v", events.String(), err)
+	}
+}
+
+// encoding/json matches keys case-insensitively and keeps the last duplicate. Sonda sends its own
+// canonical JSON, so Cloudflare sees exactly what was validated and wrapped.
+func TestScopeCloudflareQueryKeyVariants(t *testing.T) {
+	scope := cloudflareScope(t)
+	otherLeaf := `{"key":"$metadata.service","operation":"eq","type":"string","value":"other"}`
+	tests := []struct{ in, want string }{
+		{
+			`{"FILTERS":[` + otherLeaf + `],"FilterCombination":"or","View":"events"}`,
+			`{"view":"events","parameters":{"filterCombination":"and","filters":[` + scopeLeaf + `,{"kind":"group","filterCombination":"or","filters":[` + otherLeaf + `]}]}}`,
+		},
+		{
+			`{"filters":[],"filters":[` + otherLeaf + `]}`,
+			`{"view":"events","parameters":{"filterCombination":"and","filters":[` + scopeLeaf + `,{"kind":"group","filterCombination":"and","filters":[` + otherLeaf + `]}]}}`,
+		},
+		{
+			`{"filters":[{"key":"a","Key":"$metadata.service","operation":"eq","Value":"x","value":"other","type":"string"}]}`,
+			`{"view":"events","parameters":{"filterCombination":"and","filters":[` + scopeLeaf + `,{"kind":"group","filterCombination":"and","filters":[` + otherLeaf + `]}]}}`,
+		},
+	}
+	for _, tt := range tests {
+		q, err := ScopeCloudflareQuery(scope, tt.in, CloudflareViewEvents)
+		if err != nil {
+			t.Errorf("%s: %v", tt.in, err)
+			continue
+		}
+		if q.String() != tt.want {
+			t.Errorf("%s:\n got %s\nwant %s", tt.in, q.String(), tt.want)
+		}
+	}
+	for _, in := range []string{`{"QueryId":"x"}`, `{"DATASETS":["x"]}`, `{"Parameters":{}}`, `{"view":"events","VIEW":"traces"}`, `{"filters":[{"KIND":"group","filterCombination":"and","filters":[{"Kind":"raw","key":"a","operation":"eq","type":"string"}]}]}`} {
+		if _, err := ScopeCloudflareQuery(scope, in, CloudflareViewEvents); !isCode(err, api.CodeInvalidQuery) {
+			t.Errorf("%s: error = %v, want invalid_query", in, err)
 		}
 	}
 }
@@ -212,7 +273,7 @@ func TestCloudflareLogSearch(t *testing.T) {
 	if events.String() != wantEvents {
 		t.Errorf("events:\n got %s\nwant %s", events.String(), wantEvents)
 	}
-	wantCount := `{"view":"calculations","parameters":{"filterCombination":"and","filters":[` + scopeLeaf + `,` + group + `],` + needle + `,"calculations":[{"operator":"count"}]}}`
+	wantCount := `{"view":"calculations","parameters":{"filterCombination":"and","filters":[` + scopeLeaf + `,` + group + `],` + needle + `,"calculations":[{"operator":"count"}],"groupBys":[` + serviceGroupBy + `]}}`
 	if count.String() != wantCount {
 		t.Errorf("count:\n got %s\nwant %s", count.String(), wantCount)
 	}
@@ -254,7 +315,7 @@ func TestCloudflareTraceSearch(t *testing.T) {
 
 func TestCloudflareTraceByID(t *testing.T) {
 	q := CloudflareTraceByID(cloudflareScope(t), "0123456789abcdef0123456789abcdef")
-	want := `{"view":"events","limit":2000,"parameters":{"filterCombination":"and","filters":[{"key":"$metadata.traceId","operation":"eq","type":"string","value":"0123456789abcdef0123456789abcdef"}]}}`
+	want := `{"view":"events","limit":2000,"parameters":{"filterCombination":"and","filters":[{"key":"$metadata.traceId","operation":"eq","type":"string","value":"0123456789abcdef0123456789abcdef"},{"key":"$metadata.spanName","operation":"exists","type":"string"}]}}`
 	if q.String() != want {
 		t.Errorf("\n got %s\nwant %s", q.String(), want)
 	}
