@@ -107,8 +107,9 @@ parameters, or the same fields in POST bodies.
 
 ```bash
 go test ./...
-docker compose -f dev/docker-compose.yml up -d   # Loki on :13100, Prometheus on :19090
+docker compose -f dev/docker-compose.yml up -d   # Loki on :13100, Prometheus on :19090, Postgres on :15432
 SONDA_TEST_LOKI_URL=http://localhost:13100 go test ./internal/logql   # LogQL scoping against a real Loki
+SONDA_TEST_POSTGRES_URL=postgres://sonda:sonda@localhost:15432/sonda go test ./internal/store   # store against Postgres
 ```
 
 The design and its trade-offs are in `docs/design.md`.

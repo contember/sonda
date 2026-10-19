@@ -1,4 +1,4 @@
-# Local Loki and Prometheus for development. Seed logs with dev/seed-logs.sh.
+# Local Loki, Prometheus and Postgres for development. Seed logs with dev/seed-logs.sh.
 services:
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -12,3 +12,11 @@ services:
     command: ["-config.file=/etc/loki/local-config.yaml"]
     ports:
       - "13100:3100"
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: sonda
+      POSTGRES_PASSWORD: sonda
+      POSTGRES_DB: sonda
+    ports:
+      - "15432:5432"

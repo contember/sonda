@@ -8,9 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
-
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/identities"
 )
@@ -21,11 +18,11 @@ const identityColumns = `name, token_sha256, created_at, max_range_ms, max_log_l
 	query_timeout_ms, concurrent_queries, requests_per_minute`
 
 func (s *Store) FindByTokenHash(ctx context.Context, hash [sha256.Size]byte) (identities.Identity, error) {
-	return s.getIdentity(ctx, `SELECT `+identityColumns+` FROM identities WHERE token_sha256 = ?`, hash[:])
+	return s.getIdentity(ctx, `SELECT `+identityColumns+` FROM identities WHERE token_sha256 = $1`, hash[:])
 }
 
 func (s *Store) Get(ctx context.Context, name string) (identities.Identity, error) {
-	return s.getIdentity(ctx, `SELECT `+identityColumns+` FROM identities WHERE name = ?`, name)
+	return s.getIdentity(ctx, `SELECT `+identityColumns+` FROM identities WHERE name = $1`, name)
 }
 
 func (s *Store) getIdentity(ctx context.Context, query string, arg any) (identities.Identity, error) {
@@ -36,7 +33,7 @@ func (s *Store) getIdentity(ctx context.Context, query string, arg any) (identit
 	if err != nil {
 		return identities.Identity{}, err
 	}
-	grants, err := s.grants(ctx, `SELECT identity, service, environment, capability FROM identity_grants WHERE identity = ?`, identity.Name)
+	grants, err := s.grants(ctx, `SELECT identity, service, environment, capability FROM identity_grants WHERE identity = $1`, identity.Name)
 	identity.Grants = grants[identity.Name]
 	return identity, err
 }
@@ -73,10 +70,10 @@ func (s *Store) Create(ctx context.Context, identity identities.Identity) error 
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		o := identity.Limits
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO identities (`+identityColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO identities (`+identityColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			identity.Name, identity.TokenSHA256[:], identity.CreatedAt.UnixMilli(),
 			millis(o.MaxRange), o.MaxLogLines, o.MaxResponseBytes, millis(o.QueryTimeout), o.ConcurrentQueries, o.RequestsPerMinute)
-		if isUniqueViolation(err) {
+		if s.isUniqueViolation(err) {
 			return identities.ErrExists
 		}
 		if err != nil {
@@ -89,15 +86,15 @@ func (s *Store) Create(ctx context.Context, identity identities.Identity) error 
 func (s *Store) Update(ctx context.Context, name string, grants []identities.Grant, limits identities.LimitOverrides) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx,
-			`UPDATE identities SET max_range_ms = ?, max_log_lines = ?, max_response_bytes = ?,
-				query_timeout_ms = ?, concurrent_queries = ?, requests_per_minute = ?
-			 WHERE name = ?`,
+			`UPDATE identities SET max_range_ms = $1, max_log_lines = $2, max_response_bytes = $3,
+				query_timeout_ms = $4, concurrent_queries = $5, requests_per_minute = $6
+			 WHERE name = $7`,
 			millis(limits.MaxRange), limits.MaxLogLines, limits.MaxResponseBytes,
 			millis(limits.QueryTimeout), limits.ConcurrentQueries, limits.RequestsPerMinute, name)
 		if err := requireOneRow(result, err); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM identity_grants WHERE identity = ?`, name); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM identity_grants WHERE identity = $1`, name); err != nil {
 			return err
 		}
 		return insertGrants(ctx, tx, name, grants)
@@ -105,8 +102,8 @@ func (s *Store) Update(ctx context.Context, name string, grants []identities.Gra
 }
 
 func (s *Store) SetTokenHash(ctx context.Context, name string, hash [sha256.Size]byte) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE identities SET token_sha256 = ? WHERE name = ?`, hash[:], name)
-	if isUniqueViolation(err) {
+	result, err := s.db.ExecContext(ctx, `UPDATE identities SET token_sha256 = $1 WHERE name = $2`, hash[:], name)
+	if s.isUniqueViolation(err) {
 		return identities.ErrExists
 	}
 	return requireOneRow(result, err)
@@ -114,7 +111,7 @@ func (s *Store) SetTokenHash(ctx context.Context, name string, hash [sha256.Size
 
 // Delete removes the identity and, through the foreign key, its grants.
 func (s *Store) Delete(ctx context.Context, name string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM identities WHERE name = ?`, name)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM identities WHERE name = $1`, name)
 	return requireOneRow(result, err)
 }
 
@@ -142,7 +139,8 @@ func (s *Store) grants(ctx context.Context, query string, args ...any) (map[stri
 func insertGrants(ctx context.Context, tx *sql.Tx, name string, grants []identities.Grant) error {
 	for _, g := range grants {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO identity_grants (identity, service, environment, capability) VALUES (?, ?, ?, ?)`,
+			`INSERT INTO identity_grants (identity, service, environment, capability) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`,
 			name, g.Service, g.Environment, string(g.Capability)); err != nil {
 			return err
 		}
@@ -228,12 +226,4 @@ func requireOneRow(result sql.Result, err error) error {
 		return identities.ErrNotFound
 	}
 	return nil
-}
-
-func isUniqueViolation(err error) bool {
-	var e *sqlite.Error
-	if !errors.As(err, &e) {
-		return false
-	}
-	return e.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE || e.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY
 }

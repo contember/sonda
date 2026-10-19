@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -13,19 +12,12 @@ import (
 	"github.com/contember/sonda/internal/identities"
 )
 
-func openTestStore(t *testing.T) *Store {
-	t.Helper()
-	st, err := Open(filepath.Join(t.TempDir(), "sonda.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
+func TestIdentityLifecycle(t *testing.T) {
+	forEachDatabase(t, testIdentityLifecycle)
 }
 
-func TestIdentityLifecycle(t *testing.T) {
+func testIdentityLifecycle(t *testing.T, st *Store) {
 	ctx := context.Background()
-	st := openTestStore(t)
 	maxRange := 48 * time.Hour
 	lines := 100
 	created := identities.Identity{

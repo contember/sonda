@@ -13,14 +13,14 @@ returns compact, evidence-carrying responses.
 |---|---|---|---|
 | Interface | HTTP API + `sonda` CLI | MCP server | No context cost until used. One contract (HTTP) for agents, bots and CI. MCP can be a thin adapter later. |
 | Language | Go | TypeScript/Bun | The Prometheus PromQL parser is Go. Single static binary. |
-| Binaries | `sonda-server` and `sonda` (CLI), one Go module | One binary with subcommands | The CLI imports only the `api` package, so it does not link the parsers, connectors or SQLite. |
+| Binaries | `sonda-server` and `sonda` (CLI), one Go module | One binary with subcommands | The CLI imports only the `api` package, so it does not link the parsers, connectors or database drivers. |
 | Native queries | Allowed in v1, scoped to one service, with matcher injection | Plain passthrough; string concatenation | Passthrough leaks other services. String concatenation protects only one selector. |
 | Configuration | Sources, services and limits in one YAML file, loaded at startup | Everything in a database | Reviewable in git. These change rarely and define the security boundary (selectors). |
 | Identities | In the identity store, managed at runtime in the admin UI | In the YAML file | Tokens are created, rotated and revoked often; a restart for each change is impractical. |
-| Identity store | `identities.Store` interface, SQLite implementation | SQLite only | Another database (e.g. Postgres) can be added without touching `authz` or the UI. |
+| Identity store | `identities.Store` interface, implemented by `store` for SQLite and Postgres | SQLite only | Another database can be added without touching `authz` or the UI. |
 | Admin UI | Server-rendered `html/template` + htmx, embedded in `sonda-server` | React SPA | No JS toolchain, one binary. The UI is a few forms and tables. |
 | Provider secrets | Environment variable references in YAML | Encrypted in the database | No key management in v1. |
-| Internal storage | SQLite (`modernc.org/sqlite`, pure Go) | Postgres | No extra service to run. Holds identities, the audit log and result handles. Metadata caches live in memory. |
+| Internal storage | SQLite (`modernc.org/sqlite`, pure Go) by default; Postgres (`pgx`) when `server.database` is a `postgres://` URL | SQLite only | SQLite needs no extra service. Postgres suits deployments without a persistent volume. Both hold identities, the audit log and result handles in the same tables and run the same queries; only the schema types and the unique-violation check differ. Metadata caches live in memory. |
 | Loki/Prometheus access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `detected_fields`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
 | Range limit | Reject ranges over `max_range` with `limit_exceeded` | Silently shorten the range | A shortened range would make counts look complete when they are not. |
 | Native query capability | Same capability as the structured tools (`logs`, `metrics`) | Separate `logs:native` / `metrics:native` | Native queries are scoped the same way; cost is bounded by limits. |
@@ -113,7 +113,7 @@ shorter than 32 characters. The full example is `sonda.example.yaml`.
 ## 3. Components
 
 ```text
-cmd/sonda-server   main: load config, open SQLite, start HTTP server and admin UI
+cmd/sonda-server   main: load config, open the database, start HTTP server and admin UI
 cmd/sonda          CLI: thin HTTP client over the api package
 
 api/               request/response types shared by server and CLI (public package)
@@ -131,7 +131,7 @@ internal/connector
 internal/query     use cases: overview, errors, logs search, metrics, results
 internal/shape     grouping (Drain), redaction, truncation, series summaries, source links
 internal/audit     per-request record of service, environment and upstream queries
-internal/store     SQLite: identities (implements identities.Store), audit log, result handles
+internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles
 internal/httpapi   routing, authentication, rate and concurrency limits, audit, JSON encoding
 internal/admin     admin UI: sign-in, identity management, audit log viewer
 ```
@@ -351,7 +351,7 @@ it ignores line filters, and it needs the pattern ingester enabled.
 
 ### Result handles
 
-- Stored in SQLite: `id`, `identity`, `kind`, `created_at`, `expires_at`, payload (redacted lines
+- Stored in the database: `id`, `identity`, `kind`, `created_at`, `expires_at`, payload (redacted lines
   and their group indexes). Expired rows are deleted on the next save.
 - TTL: 30 minutes by default.
 - They replace a general query cache in v1. An investigation reuses its own results; nothing is
@@ -438,7 +438,7 @@ Rules:
   Viewer roles.
 - Provider credentials never appear in responses, errors or audit records.
 - Limits: time range, lines, response bytes, timeout, concurrency, rate.
-- Audit log in SQLite records every request, including denied ones and admin actions.
+- Audit log in the database records every request, including denied ones and admin actions.
 - The admin UI can create tokens for any configured service. Protect the admin token like a
   provider credential and expose `/admin` only on a trusted network.
 - Telemetry is untrusted: marked in `meta.untrusted`. Built-in rules redact bearer and basic
@@ -457,7 +457,7 @@ Rules:
 - General query-result cache shared across identities.
 - Multi-workspace, SSO/OIDC for the admin UI, a token management API.
 - Editing sources and services at runtime.
-- Identity stores other than SQLite (the `identities.Store` interface allows adding them).
+- Identity stores other than SQLite and Postgres (the `identities.Store` interface allows adding them).
 
 ## 13. Open questions
 

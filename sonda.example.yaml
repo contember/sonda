@@ -4,7 +4,9 @@
 
 server:
   listen: ":8080"
-  database: sonda.db # identities, audit log and result handles
+  # Identities, audit log and result handles. A SQLite file path, or a Postgres URL such as
+  # postgres://sonda@db:5432/sonda with the password in the PGPASSWORD environment variable.
+  database: sonda.db
 
 # Enables the admin UI at /admin, where agent identities and their tokens are managed.
 # Generate the token with: openssl rand -hex 32

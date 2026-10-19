@@ -18,6 +18,20 @@ jobs:
         image: grafana/loki:3.5.5
         ports:
           - 3100:3100
+      # The store tests run against SQLite and Postgres.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: sonda
+          POSTGRES_PASSWORD: sonda
+          POSTGRES_DB: sonda
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sonda"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
 
@@ -41,3 +55,4 @@ jobs:
       - run: go test ./...
         env:
           SONDA_TEST_LOKI_URL: http://localhost:3100
+          SONDA_TEST_POSTGRES_URL: postgres://sonda:sonda@localhost:5432/sonda

@@ -1,4 +1,4 @@
-// Package store keeps Sonda's own state in SQLite: identities, the audit log and result
+// Package store keeps Sonda's own state in SQLite or Postgres: identities, the audit log and result
 // handles. It holds no telemetry beyond the samples behind result handles, which expire.
 package store
 
@@ -9,79 +9,33 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/contember/sonda/internal/apierr"
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS results (
-	id         TEXT PRIMARY KEY,
-	identity   TEXT NOT NULL,
-	kind       TEXT NOT NULL,
-	created_at INTEGER NOT NULL,
-	expires_at INTEGER NOT NULL,
-	payload    BLOB NOT NULL
-);
-CREATE INDEX IF NOT EXISTS results_expires_at ON results (expires_at);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-	id             INTEGER PRIMARY KEY,
-	time           INTEGER NOT NULL,
-	identity       TEXT NOT NULL,
-	method         TEXT NOT NULL,
-	path           TEXT NOT NULL,
-	service        TEXT NOT NULL,
-	environment    TEXT NOT NULL,
-	queries        TEXT NOT NULL,
-	status         INTEGER NOT NULL,
-	error_code     TEXT NOT NULL,
-	duration_ms    INTEGER NOT NULL,
-	response_bytes INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS audit_log_time ON audit_log (time);
-CREATE INDEX IF NOT EXISTS audit_log_identity ON audit_log (identity, id);
-
-CREATE TABLE IF NOT EXISTS identities (
-	name                TEXT PRIMARY KEY,
-	token_sha256        BLOB NOT NULL UNIQUE,
-	created_at          INTEGER NOT NULL,
-	max_range_ms        INTEGER,
-	max_log_lines       INTEGER,
-	max_response_bytes  INTEGER,
-	query_timeout_ms    INTEGER,
-	concurrent_queries  INTEGER,
-	requests_per_minute INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS identity_grants (
-	identity    TEXT NOT NULL REFERENCES identities (name) ON DELETE CASCADE,
-	service     TEXT NOT NULL,
-	environment TEXT NOT NULL,
-	capability  TEXT NOT NULL,
-	PRIMARY KEY (identity, service, environment, capability)
-);
-`
-
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db                *sql.DB
+	now               func() time.Time
+	isUniqueViolation func(error) bool
 }
 
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
-	if err != nil {
-		return nil, err
+// Open connects to Postgres when database is a postgres:// or postgresql:// URL and
+// otherwise opens database as a SQLite file.
+func Open(database string) (*Store, error) {
+	if strings.HasPrefix(database, "postgres://") || strings.HasPrefix(database, "postgresql://") {
+		return openPostgres(database)
 	}
-	// SQLite allows one writer; a single connection avoids lock errors.
-	db.SetMaxOpenConns(1)
+	return openSQLite(database)
+}
+
+func newStore(db *sql.DB, schema string, isUniqueViolation func(error) bool) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("initialize database %s: %w", path, err)
+		return nil, err
 	}
-	return &Store{db: db, now: time.Now}, nil
+	return &Store{db: db, now: time.Now, isUniqueViolation: isUniqueViolation}, nil
 }
 
 func (s *Store) Close() error {
@@ -91,12 +45,12 @@ func (s *Store) Close() error {
 // SaveResult stores a payload readable only by the same identity until ttl passes.
 func (s *Store) SaveResult(ctx context.Context, identity, kind string, payload []byte, ttl time.Duration) (string, error) {
 	now := s.now()
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM results WHERE expires_at < ?`, now.Unix()); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM results WHERE expires_at < $1`, now.Unix()); err != nil {
 		return "", err
 	}
 	id := newResultID()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO results (id, identity, kind, created_at, expires_at, payload) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO results (id, identity, kind, created_at, expires_at, payload) VALUES ($1, $2, $3, $4, $5, $6)`,
 		id, identity, kind, now.Unix(), now.Add(ttl).Unix(), payload)
 	return id, err
 }
@@ -104,7 +58,7 @@ func (s *Store) SaveResult(ctx context.Context, identity, kind string, payload [
 // LoadResult returns not_found for unknown, expired and other identities' results alike.
 func (s *Store) LoadResult(ctx context.Context, identity, id string) (kind string, payload []byte, err error) {
 	err = s.db.QueryRowContext(ctx,
-		`SELECT kind, payload FROM results WHERE id = ? AND identity = ? AND expires_at >= ?`,
+		`SELECT kind, payload FROM results WHERE id = $1 AND identity = $2 AND expires_at >= $3`,
 		id, identity, s.now().Unix(),
 	).Scan(&kind, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -130,7 +84,7 @@ type AuditEntry struct {
 func (s *Store) WriteAudit(ctx context.Context, e AuditEntry) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit_log (time, identity, method, path, service, environment, queries, status, error_code, duration_ms, response_bytes)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		e.Time.UnixMilli(), e.Identity, e.Method, e.Path, e.Service, e.Environment, e.Queries,
 		e.Status, e.ErrorCode, e.Duration.Milliseconds(), e.ResponseBytes)
 	return err
@@ -161,15 +115,15 @@ func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditRecord, er
 		FROM audit_log WHERE 1 = 1`
 	var args []any
 	if f.Identity != "" {
-		query += ` AND identity = ?`
 		args = append(args, f.Identity)
+		query += fmt.Sprintf(` AND identity = $%d`, len(args))
 	}
 	if f.BeforeID > 0 {
-		query += ` AND id < ?`
 		args = append(args, f.BeforeID)
+		query += fmt.Sprintf(` AND id < $%d`, len(args))
 	}
-	query += ` ORDER BY id DESC LIMIT ?`
 	args = append(args, f.Limit)
+	query += fmt.Sprintf(` ORDER BY id DESC LIMIT $%d`, len(args))
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
