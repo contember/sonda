@@ -49,7 +49,7 @@ func TestRenderTraceSearch(t *testing.T) {
 		`# { resource.service.name = "engine-api" }`,
 		"TRACE  ROOT                      START            DURATION  MATCHED",
 		"t1     engine-api POST /graphql  " + stamp + "  412.3ms   2",
-		"t2     tenant-api                " + stamp + "  15.0ms    0",
+		"t2     tenant-api                " + stamp + "  15.0ms    -",
 	}
 
 	var out bytes.Buffer

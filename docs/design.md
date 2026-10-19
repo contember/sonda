@@ -19,10 +19,10 @@ returns compact, evidence-carrying responses.
 | Query languages | Native dialect per backend (LogQL, PromQL, TraceQL, Logs Insights, Cloudflare query JSON, structured metric JSON) plus backend-neutral `logs search` and `traces search` | One Sonda query language translated to every backend | Agents already know the native dialects. A translated language covers only the common subset; the neutral search covers the common case. `describe` reports the dialect per capability. |
 | TraceQL scoping | Own lexer `internal/traceql` | Tempo's parser | Tempo is AGPL-licensed, like Loki. Sonda is MIT. Same approach as `internal/logql`. |
 | Logs Insights scoping | Own lexer `internal/insights` and an allowlist of commands | Rely on the `logGroupIdentifiers` API parameter alone | The query text can read other log groups itself (`SOURCE`, `join`, `appendcols`). AWS does not document which wins. |
-| CloudWatch metrics | Only `MetricStat`, from JSON `{metric, stat, dimensions}` | `Expression`, `SEARCH`, Metrics Insights | They select metrics by text search or SQL across namespaces and dimensions, so a scope cannot be added to them. |
+| CloudWatch metrics | Only `MetricStat`, from JSON `{metric, stat, dimensions}` | `Expression`, `SEARCH`, Metrics Insights | They cannot be scoped (section 6). |
 | Cloudflare queries | A JSON subset of the Workers Observability query, AND-wrapped with the script filter | Passthrough of the full request body | `queryId` runs a saved query and `datasets` changes what is read; both could bypass the filters. |
 | Cloudflare metrics | Fixed catalog over GraphQL `workersInvocationsAdaptive`, query built by the server | Agent-written GraphQL | GraphQL can name any script or account. The server sets `scriptName` and `accountTag` as variables. |
-| Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | One concrete client per use case (v1) | Each capability now has several backends. The use cases stay shared; each backend binds its typed scope and client. |
+| Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
 | Trace visibility | Spans of services without a `traces` grant become stubs | Reject traces that cross services; return them in full | A trace is useful only as a whole. Stubs show where time went without revealing names, attributes or events. |
 | Configuration | Sources, services and limits in one YAML file, loaded at startup | Everything in a database | Reviewable in git. These change rarely and define the security boundary (bindings). |
 | Identities | In the identity store, managed at runtime in the admin UI | In the YAML file | Tokens are created, rotated and revoked often; a restart for each change is impractical. |
@@ -296,14 +296,16 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   `label/__name__/values` call. Cloudflare `keys` carries the script filter. CloudWatch
   `GetLogGroupFields` is called per scoped log group, `ListMetrics` with the scope's namespace
   and dimensions. Cloudflare metric names are a fixed catalog.
-- Trace-by-ID fetches are the one unscoped upstream call (section 8).
+- Lookups by ID are fetched unscoped and checked before anything is returned: a Sentry issue
+  must be of the scope's project, a trace must contain a span of the service (section 8).
+- One shared HTTP client per source (`upstream`) applies auth and extra headers, for Cloudflare
+  too. Connectors do not know how a source authenticates. The AWS connector uses the SDK with
+  the default credential chain.
 - A new backend adds a client, a `policy` scoping function and backend implementations in
   `query`. No generic plugin system.
 
 ### Loki, Prometheus and Tempo specifics
 
-- One shared HTTP client per source applies auth and extra headers. Connectors do not know how a
-  source authenticates. Cloudflare uses the same client with a bearer token.
 - Endpoints used: Prometheus `query_range`, `label/__name__/values`, `metadata`; Loki
   `query_range`, `query`, `series`, `detected_fields` (skipped on Loki versions without it);
   Tempo `api/search` (always with `start` and `end`; without them Tempo searches only recent
@@ -387,7 +389,8 @@ drop the scope. Matchers combine with AND, so:
   selector node gets the matchers.
 
 - **PromQL** is parsed with the Prometheus parser (Apache-2.0). Selectors are rewritten in the
-  AST, which is serialized back.
+  AST, which is serialized back. The parser API changes between Prometheus versions
+  (`parser.ParseExpr` → `parser.NewParser(opts).ParseExpr`), so the version is pinned.
 - **LogQL** is not parsed with Loki's parser: it is AGPL-licensed and pulls hundreds of
   packages. `internal/logql` only lexes the query. Outside strings, comments and ranges, a brace
   always opens a stream selector, so the lexer finds every selector without parsing the rest of
@@ -465,8 +468,9 @@ drop the scope. Matchers combine with AND, so:
   is sent with `dry: true`, so it is not saved in the account's query history.
 - Post-check (defense in depth). A violation drops the whole response with an `internal`
   error, which the audit record holds:
-  - Every event must have `$metadata.service` equal to the script and, when `$workers` is
-    present, also `$workers.scriptName`.
+  - An event's `$metadata.service` must equal the script. An event without it is accepted
+    only when `$workers.scriptName` equals the script. When `$workers` is present, its
+    `scriptName` must equal the script in every case.
   - Calculations (also the count of `logs search`) get a hidden group-by on
     `$metadata.service`. Every aggregate must be of the script; the group is removed from the
     result. A zero aggregate without the group is how Cloudflare reports no matches, so it is
@@ -506,8 +510,8 @@ drop the scope. Matchers combine with AND, so:
   limit. A query is also stopped when the request ends (timeout or disconnect).
 - A query with a `stats` stage returns series (by its `bin()` column, or one point at the
   range end); other queries return lines.
-- Independent layer: give Sonda's IAM role `logs:StartQuery` only on the ARNs of the configured
-  log groups. Then even a query that passed the lexer could not read other groups.
+- The IAM restriction of `logs:StartQuery` to the configured log groups adds an independent
+  layer (section 12).
 
 ### Cloudflare and CloudWatch metrics
 
@@ -550,37 +554,6 @@ returns at most 10,000 lines.
 The total of `logs search` is a Loki instant count query or `recordsMatched` of the same Logs
 Insights query, both exact. Cloudflare's is a `calculations` count with the same filters, which
 Cloudflare weights by each event's sampling rate, so it is an estimate.
-
-### Spike results (2026-10-16)
-
-Verified in a throwaway module with `prometheus/prometheus v0.315.0` and `grafana/loki/v3 v3.7.8`:
-
-| Input | Output after injecting `app="engine-api"` |
-|---|---|
-| `sum(rate(x{app="engine-api"}[5m])) or on() sum(rate(x{app="tenant-api"}[5m]))` | `… or on () sum(rate(x{app="engine-api",app="tenant-api"}[5m]))` → empty |
-| `max_over_time(rate(foo[5m])[1h:1m])` | `max_over_time(rate(foo{app="engine-api"}[5m])[1h:1m])` |
-| `sum(count_over_time({app="engine-api"}[5m])) / sum(count_over_time({app="tenant-api"} \|= "password"[5m]))` | second selector becomes `{app="tenant-api", app="engine-api"}` → empty |
-| `{app=~".+"} \| json \| level="error"` | `{app=~".+", app="engine-api"} \| json \| level="error"` |
-
-Costs:
-
-| | PromQL parser | LogQL parser (Loki) |
-|---|---|---|
-| Linked packages | 262 | 888 |
-| Spike binary size | — | 44 MB (both parsers) |
-| Extra requirements | none | Go ≥ 1.26.5; copy Loki's `replace` directives for `hashicorp/memberlist` and `grafana/regexp` |
-
-Loki pulls gRPC, OpenTelemetry, etcd and k8s client packages. This affects only `sonda-server`.
-Mitigation: pin the Loki version, keep the replace directives (commented in `go.mod`), and
-treat each Loki upgrade as a deliberate change. If the cost becomes a problem, vendor the
-`syntax` and `pattern/drain` packages alone. Final sizes: `sonda-server` 45 MB, `sonda` 10 MB.
-
-Since then, Sonda links no Loki code (Loki is AGPL-licensed, Sonda is MIT): LogQL scoping
-uses `internal/logql` and log grouping uses its own Drain implementation in `internal/shape`.
-The `replace` directives are gone.
-
-The PromQL API changed between Prometheus versions (`parser.ParseExpr` →
-`parser.NewParser(opts).ParseExpr`). Pin the version.
 
 ## 7. Agent-efficient responses
 
@@ -667,13 +640,14 @@ OTel `service.name` for Tempo and the script name for Cloudflare.
   and events are dropped. Service names stay visible by design; they show where time went.
 - In search results, `rootName` is cleared when the root service is not visible, and a matched
   span of a hidden service becomes a stub.
-- **Trace by ID is the one fetch that cannot be scoped upstream.** Tempo returns a trace by ID
-  (`/api/v2/traces/{id}`) without a service filter, and Cloudflare finds its spans with
-  `$metadata.traceId eq <id>` and `$metadata.spanName exists` alone. Sonda therefore checks the
+- **Trace by ID is fetched unscoped and checked, like a Sentry issue by ID.** Tempo returns a
+  trace by ID (`/api/v2/traces/{id}`) without a service filter, and Cloudflare finds its spans
+  with `$metadata.traceId eq <id>` and `$metadata.spanName exists` alone. Sonda checks the
   fetched spans before returning anything: the trace must contain a span of the scoped
   service, otherwise the response is `not_found` with the same message as a missing trace.
-  Visibility and stubs are applied in `shape` before the response is built. The Cloudflare
-  event post-check is skipped for this query only, because other scripts' events are expected.
+  Unlike an issue, a trace returns spans of other services on purpose, as stubs: visibility
+  and stubs are applied in `shape` before the response is built. The Cloudflare event
+  post-check is skipped for this query only, because other scripts' events are expected.
   A Cloudflare trace of 2000 or more events is `limit_exceeded`, because one fetch cannot
   return it whole.
 - Trace IDs are 16 or 32 hex characters, normalized to lower case.
@@ -742,7 +716,7 @@ sonda result res_8KcW --group 2
   `describe` shows each capability with its source type and dialect, e.g.
   `logs(cloudflare: cloudflare-query)`. `trace` prints one line per span, indented by depth;
   stubs show as `[service]  (not granted)`.
-- Exit codes: `0` success, `1` usage error, `2` not found / forbidden, `3` limit or rate limit,
+- Exit codes: `0` success, `1` usage error, `2` not found / unauthenticated, `3` limit or rate limit,
   `4` upstream error.
 - Ships with `skills/sonda/SKILL.md` that teaches agents the investigation flow: `overview` →
   `errors` → `trace` → `logs search` → drill-down, and the native dialects.
@@ -795,9 +769,11 @@ Rules:
   Analytics needs "Account Analytics Read".
 - **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
   `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
-  `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`,
-  `sts:GetCallerIdentity`, plus `kms:Decrypt` on the keys of encrypted log groups. Restrict `logs:StartQuery` to the ARNs of
-  the configured log groups. This is an independent layer under the command allowlist and the
+  `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus
+  `kms:Decrypt` on the keys of encrypted log groups. `sts:GetCallerIdentity` needs no
+  permission. With `role_arn`, the base credentials need `sts:AssumeRole` on that role.
+  Restrict `logs:StartQuery` to the ARNs of the configured log groups. Then even a query that
+  passed the command allowlist could not read other groups, independently of the
   `ListLogGroupsForQuery` post-check (section 6).
 
 ## 13. Out of scope for v1
@@ -805,7 +781,8 @@ Rules:
 - MCP adapter.
 - Datadog, Elasticsearch.
 - AWS X-Ray and Jaeger as trace backends. The `traceBackend` interface allows adding them.
-- CloudWatch `Expression`, `SEARCH` and Metrics Insights, because they cannot be scoped.
+- CloudWatch `Expression`, `SEARCH` and Metrics Insights, because they cannot be scoped
+  (section 6).
 - Cloudflare deployments as `releases`, and Workers Analytics Engine SQL.
 - TraceQL metrics (`| rate()`, `quantile_over_time`, …).
 - Correlation tools (`get_related_events`). The agent correlates using links, release versions,
@@ -826,9 +803,7 @@ Rules:
 4. How does Cloudflare combine `needle` with `filters`? Sonda assumes AND. The scope is not
    affected either way, because the script filter is in `filters` and the post-check verifies
    every event.
-5. How does a Logs Insights `SOURCE` command interact with `logGroupIdentifiers`? Moot for
-   Sonda, because `SOURCE` is rejected, but it decides how much the IAM restriction matters.
-6. Does the Cloudflare keys endpoint take the range as `from`/`to` or as `timeframe`? Sonda
+5. Does the Cloudflare keys endpoint take the range as `from`/`to` or as `timeframe`? Sonda
    sends `from`/`to`; a wrong guess affects only `logs fields`, not the scope.
 
 Resolved: native queries use the same capability as the structured tools (section 1).

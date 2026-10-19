@@ -28,7 +28,8 @@ agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus
   PromQL, TraceQL, Logs Insights, Cloudflare query JSON). Sonda adds the service scope to
   every query, so a query cannot reach another service. `describe` tells the agent which
   dialect a capability takes.
-- **Compact answers.** Log search returns an exact count and a sample grouped into patterns;
+- **Compact answers.** Log search returns an exact count (an estimate for Cloudflare) and a
+  sample grouped into patterns;
   metrics return summaries; a trace is a span tree. Large results stay on the server behind
   result handles.
 - **Audited and limited.** Every request is logged; time range, lines, response size,

@@ -328,7 +328,11 @@ func renderTraceSearch(w io.Writer, resp api.Response[api.TraceSearchResult]) {
 	fmt.Fprintln(t, "TRACE\tROOT\tSTART\tDURATION\tMATCHED")
 	for _, tr := range resp.Data.Traces {
 		root := strings.TrimSpace(tr.RootService + " " + tr.RootName)
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%d\n", tr.TraceID, root, tr.Start.Local().Format(time.Stamp), formatMs(tr.DurationMs), len(tr.Matched))
+		matched := "-"
+		if len(tr.Matched) > 0 {
+			matched = strconv.Itoa(len(tr.Matched))
+		}
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", tr.TraceID, root, tr.Start.Local().Format(time.Stamp), formatMs(tr.DurationMs), matched)
 	}
 	t.Flush()
 }
