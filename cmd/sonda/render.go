@@ -36,15 +36,31 @@ func renderService(w io.Writer, resp api.Response[api.ServiceDetail]) {
 	if svc.Repository != "" {
 		fmt.Fprintln(w, "  repository: "+svc.Repository)
 	}
+	t := table(w)
 	for _, env := range svc.Environments {
 		caps := make([]string, len(env.Capabilities))
 		for i, c := range env.Capabilities {
-			caps[i] = string(c)
+			caps[i] = formatCapability(c, env.Backends)
 		}
-		fmt.Fprintf(w, "  env %s: %s\n", env.Name, strings.Join(caps, ", "))
+		fmt.Fprintf(t, "  %s\t%s\n", env.Name, strings.Join(caps, " "))
 	}
+	t.Flush()
 	if len(svc.Signals) > 0 {
 		fmt.Fprintln(w, "  signals: "+strings.Join(svc.Signals, ", "))
+	}
+}
+
+// formatCapability renders "logs(cloudflare: cloudflare-query)", or the bare name when the server
+// reports no backend for it.
+func formatCapability(c api.Capability, backends map[api.Capability]api.BackendInfo) string {
+	b, ok := backends[c]
+	switch {
+	case !ok:
+		return string(c)
+	case b.Dialect == "":
+		return fmt.Sprintf("%s(%s)", c, b.Source)
+	default:
+		return fmt.Sprintf("%s(%s: %s)", c, b.Source, b.Dialect)
 	}
 }
 
@@ -303,4 +319,37 @@ func renderOverview(w io.Writer, resp api.Response[api.Overview]) {
 			}
 		}
 	}
+}
+
+func renderTraceSearch(w io.Writer, resp api.Response[api.TraceSearchResult]) {
+	renderMeta(w, resp.Meta)
+	fmt.Fprintf(w, "# %s\n", resp.Data.Query)
+	t := table(w)
+	fmt.Fprintln(t, "TRACE\tROOT\tSTART\tDURATION\tMATCHED")
+	for _, tr := range resp.Data.Traces {
+		root := strings.TrimSpace(tr.RootService + " " + tr.RootName)
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%d\n", tr.TraceID, root, tr.Start.Local().Format(time.Stamp), formatMs(tr.DurationMs), len(tr.Matched))
+	}
+	t.Flush()
+}
+
+func renderTrace(w io.Writer, resp api.Response[api.Trace]) {
+	renderMeta(w, resp.Meta)
+	fmt.Fprintf(w, "# trace %s: %s\n", resp.Data.TraceID, strings.Join(resp.Data.Services, ", "))
+	t := table(w)
+	for _, span := range resp.Data.Spans {
+		service, name := span.Service, span.Name
+		if !span.Granted {
+			service, name = "["+span.Service+"]", "(not granted)"
+		}
+		fmt.Fprintf(t, "%s%s\t%s\t%s\t%s\n", strings.Repeat("  ", span.Depth), service, name, formatMs(span.DurationMs), span.Status)
+	}
+	t.Flush()
+}
+
+func formatMs(ms float64) string {
+	if ms >= 1000 {
+		return strconv.FormatFloat(ms/1000, 'f', 2, 64) + "s"
+	}
+	return strconv.FormatFloat(ms, 'f', 1, 64) + "ms"
 }

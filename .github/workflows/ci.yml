@@ -52,7 +52,16 @@ jobs:
 
       - run: go build ./cmd/...
 
+      # The TraceQL scoping tests check the lexer against a real Tempo with seeded traces.
+      # Tempo needs a config file, which a service container cannot mount before checkout.
+      - name: Start Tempo
+        run: |
+          docker compose -f dev/docker-compose.yml up -d tempo
+          timeout 120 sh -c 'until curl -sf http://localhost:13200/ready; do sleep 2; done'
+          dev/seed-traces.sh
+
       - run: go test ./...
         env:
           SONDA_TEST_LOKI_URL: http://localhost:3100
+          SONDA_TEST_TEMPO_URL: http://localhost:13200
           SONDA_TEST_POSTGRES_URL: postgres://sonda:sonda@localhost:5432/sonda

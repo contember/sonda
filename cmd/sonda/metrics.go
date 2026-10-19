@@ -12,7 +12,7 @@ import (
 func (a *app) metricsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "metrics",
-		Short: "List and query Prometheus metrics of a service",
+		Short: "List and query metrics of a service",
 	}
 	cmd.AddCommand(a.metricsListCmd(), a.metricsQueryCmd())
 	return cmd
@@ -46,9 +46,12 @@ func (a *app) metricsQueryCmd() *cobra.Command {
 	var step string
 	var noPoints bool
 	cmd := &cobra.Command{
-		Use:   "query <service> <promql>",
-		Short: "Run PromQL; every selector is restricted to the service",
-		Args:  cobra.ExactArgs(2),
+		Use:   "query <service> <query>",
+		Short: "Run a native metric query restricted to the service",
+		Long: "Run a native metric query restricted to the service. The dialect depends on the source\n" +
+			"(see describe): PromQL for Prometheus, JSON for Cloudflare and CloudWatch, e.g.\n" +
+			`{"metric":"requests","by":["status"]} or {"metric":"CPUUtilization","stat":"Average"}.`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := window.window()
 			if err != nil {
