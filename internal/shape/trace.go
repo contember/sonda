@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/telemetry"
@@ -11,8 +12,8 @@ import (
 
 const maxAttributeLength = 500
 
-// TraceSummaries converts search results. Matched spans are of the scoped service; RootName is cleared
-// when visible(RootService) is false. Attribute values are redacted.
+// TraceSummaries converts search results. Matched spans of invisible services become stubs; RootName
+// is cleared when visible(RootService) is false. Names and attribute values are redacted.
 func TraceSummaries(traces []telemetry.TraceSummary, visible func(string) bool, redactor *Redactor) []api.TraceSummary {
 	summaries := make([]api.TraceSummary, len(traces))
 	for i, t := range traces {
@@ -25,10 +26,10 @@ func TraceSummaries(traces []telemetry.TraceSummary, visible func(string) bool, 
 			ErrorCount:  t.ErrorCount,
 		}
 		if visible(t.RootService) {
-			summary.RootName = t.RootName
+			summary.RootName = redactor.Redact(t.RootName)
 		}
 		for _, span := range t.Matched {
-			summary.Matched = append(summary.Matched, grantedSpan(span, 0, redactor))
+			summary.Matched = append(summary.Matched, shapeSpan(span, 0, visible, redactor))
 		}
 		summaries[i] = summary
 	}
@@ -46,11 +47,7 @@ func Trace(id string, spans []telemetry.Span, visible func(string) bool, redacto
 	}
 	trace := api.Trace{TraceID: id, Services: services(unique), Spans: make([]api.Span, len(ordered))}
 	for i, node := range ordered {
-		if visible(node.span.Service) {
-			trace.Spans[i] = grantedSpan(node.span, node.depth, redactor)
-		} else {
-			trace.Spans[i] = stubSpan(node.span, node.depth)
-		}
+		trace.Spans[i] = shapeSpan(node.span, node.depth, visible, redactor)
 	}
 	return trace, truncated
 }
@@ -130,17 +127,24 @@ func services(spans []telemetry.Span) []string {
 	return slices.Compact(names)
 }
 
+func shapeSpan(span telemetry.Span, depth int, visible func(string) bool, redactor *Redactor) api.Span {
+	if visible(span.Service) {
+		return grantedSpan(span, depth, redactor)
+	}
+	return stubSpan(span, depth)
+}
+
 func grantedSpan(span telemetry.Span, depth int, redactor *Redactor) api.Span {
 	result := stubSpan(span, depth)
 	result.Granted = true
-	result.Name = span.Name
+	result.Name = redactor.Redact(span.Name)
 	result.Kind = span.Kind
-	result.StatusMessage = redactor.Redact(span.StatusMessage)
+	result.StatusMessage = cutAttribute(redactor.Redact(span.StatusMessage))
 	result.Attributes = redactAttributes(span.Attributes, redactor)
 	for _, event := range span.Events {
 		result.Events = append(result.Events, api.SpanEvent{
 			Time:       event.Time,
-			Name:       event.Name,
+			Name:       redactor.Redact(event.Name),
 			Attributes: redactAttributes(event.Attributes, redactor),
 		})
 	}
@@ -183,7 +187,11 @@ func cutAttribute(value string) string {
 	if len(value) <= maxAttributeLength {
 		return value
 	}
-	return value[:maxAttributeLength] + "…"
+	end := maxAttributeLength
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end] + "…"
 }
 
 func milliseconds(d time.Duration) float64 {

@@ -102,32 +102,38 @@ func TestTraceOrder(t *testing.T) {
 }
 
 func TestTraceTruncation(t *testing.T) {
+	hidden := testSpan("hidden", "a", 11)
+	hidden.Service = "database"
 	spans := []telemetry.Span{
 		testSpan("root", "", 0),
 		testSpan("b", "root", 20),
 		testSpan("a", "root", 10),
-		testSpan("a1", "a", 11),
+		hidden,
 	}
 	tests := []struct {
+		name          string
 		maxSpans      int
 		want          []spanPosition
 		wantTruncated bool
 	}{
-		{4, []spanPosition{{"root", 0}, {"a", 1}, {"a1", 2}, {"b", 1}}, false},
-		{3, []spanPosition{{"root", 0}, {"a", 1}, {"a1", 2}}, true},
-		{1, []spanPosition{{"root", 0}}, true},
+		{"all spans fit", 4, []spanPosition{{"root", 0}, {"a", 1}, {"hidden", 2}, {"b", 1}}, false},
+		{"cuts a granted span", 3, []spanPosition{{"root", 0}, {"a", 1}, {"hidden", 2}}, true},
+		{"cuts a stub span", 2, []spanPosition{{"root", 0}, {"a", 1}}, true},
+		{"zero keeps no span", 0, []spanPosition{}, true},
 	}
 	for _, tt := range tests {
-		trace, truncated := Trace("t1", spans, onlyService("app"), testRedactor(t), tt.maxSpans)
-		if truncated != tt.wantTruncated {
-			t.Errorf("maxSpans %d: truncated = %v", tt.maxSpans, truncated)
-		}
-		if got := positions(trace.Spans); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("maxSpans %d: order = %v, want %v", tt.maxSpans, got, tt.want)
-		}
-		if !reflect.DeepEqual(trace.Services, []string{"app"}) {
-			t.Errorf("maxSpans %d: services = %v", tt.maxSpans, trace.Services)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			trace, truncated := Trace("t1", spans, onlyService("app"), testRedactor(t), tt.maxSpans)
+			if truncated != tt.wantTruncated {
+				t.Errorf("truncated = %v", truncated)
+			}
+			if got := positions(trace.Spans); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("order = %v, want %v", got, tt.want)
+			}
+			if !reflect.DeepEqual(trace.Services, []string{"app", "database"}) {
+				t.Errorf("services = %v", trace.Services)
+			}
+		})
 	}
 }
 
@@ -142,10 +148,10 @@ func fullSpan(id, parent, service string) telemetry.Span {
 		Start:         traceBase,
 		Duration:      1500 * time.Microsecond,
 		Status:        telemetry.StatusError,
-		StatusMessage: "failed for cust-7",
+		StatusMessage: "failed for cust-7 " + strings.Repeat("y", 600),
 		Attributes:    map[string]string{"http.url": "https://u:pw@example.com/x", "customer": "cust-7", "body": strings.Repeat("x", 600)},
 		Events: []telemetry.SpanEvent{
-			{Time: traceBase, Name: "exception", Attributes: map[string]string{"message": "token=abc123 for cust-9"}},
+			{Time: traceBase, Name: "retry cust-3", Attributes: map[string]string{"message": "token=abc123 for cust-9"}},
 		},
 	}
 }
@@ -165,19 +171,19 @@ func TestTraceGrantedAndStubSpans(t *testing.T) {
 				SpanID:        "root",
 				Service:       "app",
 				Granted:       true,
-				Name:          "GET /orders cust-7",
+				Name:          "GET /orders [REDACTED]",
 				Kind:          "server",
 				Start:         traceBase,
 				DurationMs:    1.5,
 				Status:        "error",
-				StatusMessage: "failed for [REDACTED]",
+				StatusMessage: "failed for [REDACTED] " + strings.Repeat("y", 478) + "…",
 				Attributes: map[string]string{
 					"http.url": "https://[REDACTED]@example.com/x",
 					"customer": "[REDACTED]",
 					"body":     strings.Repeat("x", 500) + "…",
 				},
 				Events: []api.SpanEvent{
-					{Time: traceBase, Name: "exception", Attributes: map[string]string{"message": "token=[REDACTED] for [REDACTED]"}},
+					{Time: traceBase, Name: "retry [REDACTED]", Attributes: map[string]string{"message": "token=[REDACTED] for [REDACTED]"}},
 				},
 			},
 			{
@@ -228,12 +234,12 @@ func TestTraceSummaries(t *testing.T) {
 		{
 			TraceID:     "visible",
 			RootService: "app",
-			RootName:    "GET /orders",
+			RootName:    "GET /orders cust-1",
 			Start:       traceBase,
 			Duration:    2250 * time.Microsecond,
 			SpanCount:   3,
 			ErrorCount:  1,
-			Matched:     []telemetry.Span{fullSpan("m1", "root", "app")},
+			Matched:     []telemetry.Span{fullSpan("m1", "root", "app"), fullSpan("m2", "root", "database")},
 		},
 		{
 			TraceID:     "hidden-root",
@@ -249,20 +255,43 @@ func TestTraceSummaries(t *testing.T) {
 	}
 
 	first := got[0]
-	if first.RootName != "GET /orders" || first.DurationMs != 2.25 || first.SpanCount != 3 || first.ErrorCount != 1 {
+	if first.RootName != "GET /orders [REDACTED]" || first.DurationMs != 2.25 || first.SpanCount != 3 || first.ErrorCount != 1 {
 		t.Errorf("first = %+v", first)
 	}
-	if len(first.Matched) != 1 {
+	if len(first.Matched) != 2 {
 		t.Fatalf("matched = %+v", first.Matched)
 	}
 	matched := first.Matched[0]
-	if !matched.Granted || matched.Depth != 0 || matched.Name == "" || matched.Attributes["customer"] != "[REDACTED]" {
+	if !matched.Granted || matched.Depth != 0 || matched.Name != "GET /orders [REDACTED]" || matched.Attributes["customer"] != "[REDACTED]" {
 		t.Errorf("matched = %+v", matched)
+	}
+	wantStub := api.Span{SpanID: "m2", ParentID: "root", Service: "database", Start: traceBase, DurationMs: 1.5, Status: "error"}
+	if !reflect.DeepEqual(first.Matched[1], wantStub) {
+		t.Errorf("matched of hidden service = %+v, want %+v", first.Matched[1], wantStub)
 	}
 
 	second := got[1]
 	if second.RootName != "" || second.RootService != "gateway" || second.DurationMs != 1000 || second.Matched != nil {
 		t.Errorf("second = %+v", second)
+	}
+}
+
+func TestCutAttribute(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"short value kept", "abc", "abc"},
+		{"value at limit kept", strings.Repeat("x", 500), strings.Repeat("x", 500)},
+		{"long value cut", strings.Repeat("x", 600), strings.Repeat("x", 500) + "…"},
+		{"cut steps back to rune start", strings.Repeat("x", 499) + "éé", strings.Repeat("x", 499) + "…"},
+		{"rune ending at limit kept whole", strings.Repeat("x", 498) + "éé", strings.Repeat("x", 498) + "é…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cutAttribute(tt.in); got != tt.want {
+				t.Errorf("cutAttribute = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
