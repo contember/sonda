@@ -18,13 +18,12 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
+	"github.com/contember/sonda/internal/insights"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/telemetry"
 )
 
 const (
-	// MaxRows is the most rows one Logs Insights query returns.
-	MaxRows     = 10000
 	stopTimeout = 5 * time.Second
 	// fieldsWindow is half of the window GetLogGroupFields samples around its time.
 	fieldsWindow = 8 * time.Minute
@@ -57,7 +56,7 @@ func (c *Client) Insights(ctx context.Context, scope authz.LogGroupScope, q poli
 		QueryLanguage:       types.QueryLanguageCwli,
 		StartTime:           sdkaws.Int64(r.From.Unix()),
 		EndTime:             sdkaws.Int64(r.To.Unix()),
-		Limit:               sdkaws.Int32(int32(min(max(limit, 1), MaxRows))),
+		Limit:               sdkaws.Int32(int32(min(max(limit, 1), insights.MaxRows))),
 	})
 	if err != nil {
 		return InsightsResult{}, c.apiError("StartQuery", err)
@@ -119,7 +118,7 @@ func (c *Client) await(ctx context.Context, id string) (*cloudwatchlogs.GetQuery
 
 // remainingPages appends the result pages after the first one to out.
 func (c *Client) remainingPages(ctx context.Context, id string, out *cloudwatchlogs.GetQueryResultsOutput) error {
-	for token := out.NextToken; token != nil && len(out.Results) < MaxRows; {
+	for token := out.NextToken; token != nil && len(out.Results) < insights.MaxRows; {
 		page, err := c.logs.GetQueryResults(ctx, &cloudwatchlogs.GetQueryResultsInput{QueryId: sdkaws.String(id), NextToken: token})
 		if err != nil {
 			return c.apiError("GetQueryResults", err)

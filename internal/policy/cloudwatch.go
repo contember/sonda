@@ -35,8 +35,20 @@ func (q InsightsQuery) String() string { return q.text }
 // Aggregates reports whether the query has a stats stage, so its rows are statistics, not events.
 func (q InsightsQuery) Aggregates() bool { return q.aggregate }
 
-// ScopeInsights rejects SOURCE wherever it is a bare word: at a stage start it replaces the
-// log groups, and inside join, subqueries and appendcols it adds others. The log groups come
+// insightsCommands are the commands that read only the rows of the query's own log groups.
+// Every other command is rejected: SOURCE, join and appendcols read other log groups, lookup
+// and cidrlookup read account-wide tables, and unmask reveals masked data.
+var insightsCommands = []string{
+	"anomaly", "dedup", "diff", "display", "fields", "filter", "filterindex", "limit", "parse",
+	"pattern", "sort", "stats", "unnest", "where",
+}
+
+// insightsBannedWords are rejected as bare words anywhere, because the first stage of a
+// subquery follows '(' and the lexer cannot tell it from an expression. unmask is also a
+// function.
+var insightsBannedWords = []string{"source", "unmask", "lookup", "cidrlookup", "join", "appendcols"}
+
+// ScopeInsights accepts a query whose stages use only allowed commands. The log groups come
 // only from the scope, which the connector passes to StartQuery.
 func ScopeInsights(scope authz.LogGroupScope, text string) (InsightsQuery, error) {
 	if utf8.RuneCountInString(text) > maxInsightsQueryLength {
@@ -46,11 +58,26 @@ func ScopeInsights(scope authz.LogGroupScope, text string) (InsightsQuery, error
 	if err != nil {
 		return InsightsQuery{}, apierr.InvalidQuery("invalid Logs Insights query: %v", err)
 	}
-	if slices.Contains(parsed.Words(), "source") {
-		return InsightsQuery{}, apierr.InvalidQuery("SOURCE is not allowed; the service's log groups are selected by Sonda (quote a field named source in backticks)")
+	for _, command := range append(parsed.Commands(), parsed.NestedCommands()...) {
+		if command == "source" {
+			return InsightsQuery{}, errSourceNotAllowed
+		}
+		if !slices.Contains(insightsCommands, command) {
+			return InsightsQuery{}, apierr.InvalidQuery("command %s is not allowed; allowed commands: %s", command, strings.Join(insightsCommands, ", "))
+		}
+	}
+	for _, word := range parsed.Words() {
+		if word == "source" {
+			return InsightsQuery{}, errSourceNotAllowed
+		}
+		if slices.Contains(insightsBannedWords, word) {
+			return InsightsQuery{}, apierr.InvalidQuery("%s is not allowed anywhere in the query; quote a field of that name in backticks", word)
+		}
 	}
 	return InsightsQuery{text: text, aggregate: slices.Contains(parsed.Commands(), "stats")}, nil
 }
+
+var errSourceNotAllowed = apierr.InvalidQuery("SOURCE is not allowed; the service's log groups are selected by Sonda (quote a field named source in backticks)")
 
 // InsightsSearch builds a query that returns the newest matching events of the scope.
 func InsightsSearch(scope authz.LogGroupScope, f LogFilter, limit int) (InsightsQuery, error) {
@@ -80,7 +107,7 @@ func InsightsSearch(scope authz.LogGroupScope, f LogFilter, limit int) (Insights
 		}
 		stages = append(stages, "filter "+field+" "+operator+" "+literal)
 	}
-	stages = append(stages, "sort @timestamp desc", "limit "+strconv.Itoa(limit))
+	stages = append(stages, "sort @timestamp desc", "limit "+strconv.Itoa(min(limit, insights.MaxRows)))
 	return ScopeInsights(scope, strings.Join(stages, " | "))
 }
 

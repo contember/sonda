@@ -75,6 +75,37 @@ func TestScopeInsightsRejectsSource(t *testing.T) {
 	}
 }
 
+func TestScopeInsightsAllowsOnlyRowCommands(t *testing.T) {
+	scope, _ := cloudWatchScopes(t)
+	tests := []struct{ in, want string }{
+		{`fields x | lookup user_data id OUTPUT name`, "command lookup is not allowed"},
+		{`fields ip | cidrlookup nets ip OUTPUT owner`, "command cidrlookup is not allowed"},
+		{`fields @message | unmask @message`, "command unmask is not allowed"},
+		{`SOURCE logGroups() | fields @message`, "SOURCE is not allowed"},
+		{`filter x = 1 | join type=inner left=a right=b where a.id=b.id (fields id)`, "command join is not allowed"},
+		{`fields svc | appendcols ( stats count(*) by svc )`, "command appendcols is not allowed"},
+		{`fields a | addtotals`, "command addtotals is not allowed"},
+		{`fields a | estimate`, "command estimate is not allowed"},
+		{`filter x in (fields x | lookup t x OUTPUT y)`, "command lookup is not allowed"},
+		{`filter x in (lookup t x OUTPUT y)`, "lookup is not allowed anywhere"},
+		{`fields unmask(@message)`, "unmask is not allowed anywhere"},
+		{`filter x in (cidrlookup t x OUTPUT y)`, "cidrlookup is not allowed anywhere"},
+	}
+	for _, tt := range tests {
+		_, err := ScopeInsights(scope, tt.in)
+		wantCloudWatchCode(t, tt.in, err, api.CodeInvalidQuery)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%q: error = %v, want containing %q", tt.in, err, tt.want)
+		}
+	}
+
+	allowed := "fields a | display a | filter a = 1 | filterIndex a = 1 | where a = 1 | parse a \"*\" as b | " +
+		"sort a | dedup a | unnest a into b | pattern @message | diff | anomaly | stats count(*) by a | limit 5"
+	if _, err := ScopeInsights(scope, allowed); err != nil {
+		t.Errorf("allowed commands: %v", err)
+	}
+}
+
 func TestScopeInsightsAccepts(t *testing.T) {
 	scope, _ := cloudWatchScopes(t)
 	tests := []struct {
@@ -141,6 +172,17 @@ func TestInsightsSearch(t *testing.T) {
 				t.Errorf("got  %s\nwant %s", q, tt.want)
 			}
 		})
+	}
+}
+
+func TestInsightsSearchCapsLimit(t *testing.T) {
+	scope, _ := cloudWatchScopes(t)
+	q, err := InsightsSearch(scope, LogFilter{}, 50000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(q.String(), "| limit 10000") {
+		t.Errorf("query = %s", q)
 	}
 }
 

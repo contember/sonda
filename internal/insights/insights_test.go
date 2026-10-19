@@ -31,6 +31,8 @@ func TestParseCommands(t *testing.T) {
 		{`fields concat(a, /x/), b`, []string{"fields"}},
 		{`filter requestId in (fields requestId | filter x = 1) | limit 3`, []string{"filter", "limit"}},
 		{`filter logGroup in ["a", "b"] and x != -1.5 and !ispresent(y)`, []string{"filter"}},
+		{`filter @message like /[a-z\]\[]+[^0-9]/`, []string{"filter"}},
+		{`parse @message /(?<path>[^ ]+) [\[]x/`, []string{"parse"}},
 	}
 	for _, tt := range tests {
 		q, err := Parse(tt.in)
@@ -76,6 +78,27 @@ func TestParseWords(t *testing.T) {
 			if slices.Contains(words, w) {
 				t.Errorf("%q: words %q contain %q", tt.in, words, w)
 			}
+		}
+	}
+}
+
+func TestParseNestedCommands(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{`filter x in (fields x | lookup t x OUTPUT y | limit 1) | limit 2`, []string{"lookup", "limit"}},
+		{`fields a | appendcols ( SOURCE lg | stats count(*) )`, []string{"stats"}},
+		{`filter x in [1, 2] | stats count(*) by bin(5m)`, nil},
+	}
+	for _, tt := range tests {
+		q, err := Parse(tt.in)
+		if err != nil {
+			t.Errorf("%q: %v", tt.in, err)
+			continue
+		}
+		if got := q.NestedCommands(); !slices.Equal(got, tt.want) {
+			t.Errorf("%q: nested commands %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -132,6 +155,13 @@ func TestParseRejects(t *testing.T) {
 		`filter x = ${y}`,
 		`filter x = {a}`,
 		`filter x \ y`,
+		`filter a in [1, /[/]x,/] | source logGroups() | filter c in [d, e like /[,/]/]`,
+		`filter x like /[/]/`,
+		`filter x like /[^/]/`,
+		`filter x like /[a/`,
+		`filter x like /[]/]/`,
+		`filter x like /[^]/]/`,
+		`filter x like /[[:alpha:]]/`,
 		"filter x = 1 # comment\r| source logGroups()",
 		"filter x = 1 # comment | source logGroups()",
 		"filter x = 1 # comment\u0085| source logGroups()",
@@ -148,8 +178,9 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
-// stripBackslashes removes every backslash. On an accepted query this keeps the structure,
-// because no escape may hide a delimiter: a lexer that ignores escapes must agree.
+// stripBackslashes removes every backslash. On an accepted query this keeps the structure when
+// regexes are read without classes, because no escape may hide a delimiter: a lexer that
+// ignores escapes must agree. With classes, an escaped ']' does matter.
 func stripBackslashes(s string) string { return strings.ReplaceAll(s, `\`, "") }
 
 func FuzzParse(f *testing.F) {
@@ -162,6 +193,9 @@ func FuzzParse(f *testing.F) {
 		"# c\nfields `source`, @`a.b` | filter x = 'y'",
 		`filter x like /a\/b/ | source logGroups() | filter y like /c/`,
 		`filter x = "a\" | source logGroups() | filter y = "b"`,
+		`filter a in [1, /[/]x,/] | source logGroups() | filter c in [d, e like /[,/]/]`,
+		`filter x like /[a-z\]]+/ | filter y in (fields y | lookup t y OUTPUT z)`,
+		`filter x like /[a-z\]\[]+[^0-9]/`,
 	} {
 		f.Add(seed)
 	}
@@ -179,7 +213,14 @@ func FuzzParse(f *testing.F) {
 				t.Fatalf("%q: command %q is not among the words %q, so a word ban would miss it", input, command, words)
 			}
 		}
-		stripped, err := Parse(stripBackslashes(input))
+		classBlind, err := parse(input, true)
+		if err != nil {
+			t.Fatalf("%q: accepted, but rejected when regexes have no character classes: %v", input, err)
+		}
+		if !slices.Equal(classBlind.Commands(), commands) || !slices.Equal(classBlind.NestedCommands(), q.NestedCommands()) || !slices.Equal(classBlind.Words(), words) {
+			t.Fatalf("%q: character classes change the structure", input)
+		}
+		stripped, err := parse(stripBackslashes(input), true)
 		if err != nil {
 			t.Fatalf("%q: accepted, but rejected without backslashes: %v", input, err)
 		}

@@ -12,14 +12,23 @@ import (
 	"unicode/utf8"
 )
 
+// MaxRows is the most rows one Logs Insights query returns.
+const MaxRows = 10000
+
 // Query is a lexed Logs Insights query.
 type Query struct {
 	commands []string
+	nested   []string
 	words    []string
 }
 
 // Commands returns the lower-cased command word of each top-level stage, in query order.
 func (q Query) Commands() []string { return append([]string(nil), q.commands...) }
+
+// NestedCommands returns the lower-cased command word of each stage that follows a '|' inside
+// parentheses or brackets, as in a subquery. The first stage of a subquery directly follows
+// '(' and cannot be told from an expression, so it is not among them.
+func (q Query) NestedCommands() []string { return append([]string(nil), q.nested...) }
 
 // Words returns every lower-cased run of ASCII letters, digits and underscores outside
 // strings, regexes, backtick-quoted names and comments, including the command words.
@@ -27,14 +36,20 @@ func (q Query) Words() []string { return append([]string(nil), q.words...) }
 
 // Parse lexes a query. It fails closed on anything it does not understand.
 func Parse(query string) (Query, error) {
+	return parse(query, false)
+}
+
+// parse with ignoreClasses reads regexes the way a lexer does that knows no character
+// classes; tests check that it agrees with Parse on every accepted query.
+func parse(query string, ignoreClasses bool) (Query, error) {
 	if !utf8.ValidString(query) {
 		return Query{}, errors.New("query is not valid UTF-8")
 	}
-	l := &lexer{text: query}
+	l := &lexer{text: query, ignoreClasses: ignoreClasses}
 	if err := l.run(); err != nil {
 		return Query{}, err
 	}
-	return Query{commands: l.commands, words: l.words}, nil
+	return Query{commands: l.commands, nested: l.nested, words: l.words}, nil
 }
 
 type tokenKind int
@@ -65,7 +80,10 @@ type lexer struct {
 	pos      int
 	brackets []byte
 	commands []string
+	nested   []string
 	words    []string
+	// ignoreClasses turns off character class tracking in regexes.
+	ignoreClasses bool
 	// history holds the last three tokens of the current stage, newest last.
 	history []token
 	// expectCommand is set at the start of every stage, top-level or nested.
@@ -194,6 +212,8 @@ func (l *lexer) commandWord() error {
 	command := strings.ToLower(word)
 	if len(l.brackets) == 0 {
 		l.commands = append(l.commands, command)
+	} else {
+		l.nested = append(l.nested, command)
 	}
 	l.words = append(l.words, command)
 	l.expectCommand = false
@@ -226,10 +246,13 @@ func (l *lexer) addWords(text string) {
 
 // literal reads a string, regex or backtick-quoted name. A backslash escapes the next
 // character, but never the closing delimiter: without that rule a lexer that ignores escapes
-// would end the literal earlier and see the rest as query text.
+// would end the literal earlier and see the rest as query text. For the same reason a regex
+// may not contain '/' inside a character class.
 func (l *lexer) literal(delimiter byte, kind tokenKind, multiline bool) error {
 	start := l.pos
 	l.pos++
+	trackClasses := kind == tokenRegex && !l.ignoreClasses
+	inClass := false
 	for {
 		if l.pos >= len(l.text) {
 			l.pos = start
@@ -237,6 +260,19 @@ func (l *lexer) literal(delimiter byte, kind tokenKind, multiline bool) error {
 		}
 		c := l.text[l.pos]
 		switch {
+		case c == delimiter && inClass:
+			return l.errorf("'/' inside a regex character class is not supported; use \\x2f")
+		case trackClasses && c == '[':
+			if inClass {
+				return l.errorf("'[' inside a regex character class is not supported; escape it")
+			}
+			if err := l.classStart(); err != nil {
+				return err
+			}
+			inClass = true
+		case inClass && c == ']':
+			l.pos++
+			inClass = false
 		case c == delimiter:
 			l.pos++
 			l.push(token{kind: kind})
@@ -259,6 +295,19 @@ func (l *lexer) literal(delimiter byte, kind tokenKind, multiline bool) error {
 			}
 		}
 	}
+}
+
+// classStart reads the '[' of a character class and an optional '^'. A class whose first
+// member is ']' is rejected, because regex flavors disagree whether that ']' closes it.
+func (l *lexer) classStart() error {
+	l.pos++
+	if l.pos < len(l.text) && l.text[l.pos] == '^' {
+		l.pos++
+	}
+	if l.pos < len(l.text) && l.text[l.pos] == ']' {
+		return l.errorf("a regex character class starting with ']' is not supported; escape it")
+	}
+	return nil
 }
 
 func (l *lexer) literalChar(kind tokenKind, multiline bool) error {
