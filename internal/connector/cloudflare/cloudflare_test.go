@@ -286,13 +286,34 @@ func TestCalculations(t *testing.T) {
 	}
 }
 
+func TestZeroMatches(t *testing.T) {
+	tests := []struct{ name, calculations string }{
+		{"no calculations", `[]`},
+		{"no aggregates", `[{"calculation":"count","aggregates":[],"series":[]}]`},
+		{"zero without service group", `[{"calculation":"count","aggregates":[{"value":0,"count":0,"sampleInterval":1}],"series":[]}]`},
+		{"zero series point without service group", `[{"calculation":"count","aggregates":[{"value":0}],"series":[{"time":"2023-11-14T22:14:00Z","data":[{"value":0,"groups":[]}]}]}]`},
+	}
+	for _, tt := range tests {
+		f := &fake{response: success(`{"calculations":` + tt.calculations + `}`)}
+		client, scope := setup(t, f)
+		_, count, _ := policy.CloudflareLogSearch(scope, policy.LogFilter{}, 10)
+		if total, err := client.Count(context.Background(), scope, count, testRange); err != nil || total != 0 {
+			t.Errorf("%s count: total %d, error %v", tt.name, total, err)
+		}
+		matrix, err := client.Calculations(context.Background(), scope, scopedQuery(t, scope, `{"view":"calculations"}`), testRange)
+		if err != nil || matrix == nil || len(matrix) != 0 {
+			t.Errorf("%s calculations: matrix %v, error %v", tt.name, matrix, err)
+		}
+	}
+}
+
 func TestCalculationsPostCheck(t *testing.T) {
 	tests := []struct{ name, calculation string }{
 		{"foreign aggregate", `{"calculation":"count","aggregates":[{"value":1,"groups":[{"key":"$metadata.service","value":"other"}]}],"series":[]}`},
-		{"aggregate without service", `{"calculation":"count","aggregates":[{"value":1}],"series":[]}`},
+		{"non-zero aggregate without service", `{"calculation":"count","aggregates":[{"value":1}],"series":[]}`},
 		{"foreign series point", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[
 			{"value":1,"groups":[{"key":"$metadata.service","value":"api-worker"}]},{"value":1,"groups":[{"key":"$metadata.service","value":"other"}]}]}]}`},
-		{"series point without service", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[{"value":1,"groups":[]}]}]}`},
+		{"non-zero series point without service", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[{"value":1,"groups":[]}]}]}`},
 	}
 	for _, tt := range tests {
 		f := &fake{response: success(`{"calculations":[` + tt.calculation + `]}`)}

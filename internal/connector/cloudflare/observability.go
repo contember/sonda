@@ -213,25 +213,44 @@ func (c *Client) calculations(ctx context.Context, scope authz.CloudflareScope, 
 	if err != nil {
 		return queryResult{}, err
 	}
-	for _, calc := range result.Calculations {
-		for i := range calc.Aggregates {
-			if calc.Aggregates[i].Groups, err = c.withoutService(scope, calc.Aggregates[i].Groups); err != nil {
-				return queryResult{}, err
-			}
+	for i := range result.Calculations {
+		calc := &result.Calculations[i]
+		if calc.Aggregates, err = c.scopedAggregates(scope, calc.Aggregates); err != nil {
+			return queryResult{}, err
 		}
-		for _, step := range calc.Series {
-			for i := range step.Data {
-				if step.Data[i].Groups, err = c.withoutService(scope, step.Data[i].Groups); err != nil {
-					return queryResult{}, err
-				}
+		for j := range calc.Series {
+			if calc.Series[j].Data, err = c.scopedAggregates(scope, calc.Series[j].Data); err != nil {
+				return queryResult{}, err
 			}
 		}
 	}
 	return result, nil
 }
 
-func (c *Client) withoutService(scope authz.CloudflareScope, groups []groupValue) ([]groupValue, error) {
-	inScope := false
+// scopedAggregates strips the service group. An aggregate without one is accepted only with
+// value 0, which is how a query without matches can come back, and is then dropped.
+func (c *Client) scopedAggregates(scope authz.CloudflareScope, aggregates []aggregate) ([]aggregate, error) {
+	kept := make([]aggregate, 0, len(aggregates))
+	for _, a := range aggregates {
+		groups, grouped, err := c.withoutService(scope, a.Groups)
+		if err != nil {
+			return nil, err
+		}
+		if !grouped {
+			if a.Value != 0 {
+				return nil, c.outsideScope()
+			}
+			continue
+		}
+		a.Groups = groups
+		kept = append(kept, a)
+	}
+	return kept, nil
+}
+
+// withoutService removes the service group and reports whether there was one.
+func (c *Client) withoutService(scope authz.CloudflareScope, groups []groupValue) ([]groupValue, bool, error) {
+	grouped := false
 	kept := make([]groupValue, 0, len(groups))
 	for _, g := range groups {
 		if g.Key != policy.CloudflareServiceKey {
@@ -239,14 +258,11 @@ func (c *Client) withoutService(scope authz.CloudflareScope, groups []groupValue
 			continue
 		}
 		if scalarText(g.Value) != scope.Script() {
-			return nil, c.outsideScope()
+			return nil, false, c.outsideScope()
 		}
-		inScope = true
+		grouped = true
 	}
-	if !inScope {
-		return nil, c.outsideScope()
-	}
-	return kept, nil
+	return kept, grouped, nil
 }
 
 func calculationLabels(name string, groups []groupValue) model.Metric {
