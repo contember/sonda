@@ -1,4 +1,5 @@
-# Local Loki, Prometheus and Postgres for development. Seed logs with dev/seed-logs.sh.
+# Local Loki, Prometheus, Tempo and Postgres for development. Seed logs with dev/seed-logs.sh
+# and traces with dev/seed-traces.sh.
 services:
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -12,6 +13,14 @@ services:
     command: ["-config.file=/etc/loki/local-config.yaml"]
     ports:
       - "13100:3100"
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+    ports:
+      - "13200:3200"
+      - "14318:4318"
   postgres:
     image: postgres:18
     environment:

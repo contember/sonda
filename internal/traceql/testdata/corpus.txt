@@ -1,0 +1,114 @@
+# TraceQL queries for the lexer tests and the Tempo oracle (tempo_test.go).
+# Each line is a tag and a query:
+#   ok       the lexer accepts it and Tempo runs it, unscoped and scoped
+#   invalid  the lexer accepts it and Tempo rejects it
+#   reject   the lexer rejects it
+# The oracle scopes queries to svc-a; the seeded traces are described in dev/seed-traces.sh.
+
+ok {}
+ok { }
+ok {true}
+ok { resource.service.name = "svc-b" }
+ok { resource.service.name != "svc-a" }
+ok { resource.service.name =~ ".*" }
+ok { .service.name = "svc-b" }
+ok { span.secret = "b-only" }
+ok { .secret =~ "b-.*" }
+ok { name = "GET /secret" }
+ok { name =~ `GET.*` }
+ok { status = error }
+ok { status != ok && kind = server }
+ok { duration > 1ms && duration < 1h }
+ok { span.http.method = "GET" || resource.service.name = "svc-b" }
+ok { (span.http.method = "GET") || (true) }
+ok { ((.secret = "b-only")) || ((true)) }
+ok { !(.secret = "x") }
+ok { .secret != nil }
+ok { span."secret" = "b-only" }
+ok { span."a}b" = "x" || true }
+ok { .a"}" = "x" } || {}
+ok { name = "}" } || { name = "{" }
+ok { name = "\"}" || true }
+ok { name = `}` } || {}
+ok { name = "x" } && { }
+ok { } && { }
+ok { } || { }
+ok { } > { }
+ok { } >> { }
+ok { } < { }
+ok { } << { }
+ok { } ~ { }
+ok { } !> { }
+ok { } !>> { }
+ok { } !< { }
+ok { } !<< { }
+ok { } !~ { }
+ok { } &> { }
+ok { } &>> { }
+ok { } &< { }
+ok { } &<< { }
+ok { } &~ { }
+ok { resource.service.name = "svc-b" } >> { resource.service.name = "svc-a" }
+ok { resource.service.name = "svc-a" } >> { resource.service.name = "svc-b" }
+ok { resource.service.name = "svc-a" } &>> { }
+ok ({ }) || ({ resource.service.name = "svc-b" })
+ok (({ } | count() > 0)) && ({ })
+ok { } | count() > 0
+ok { } | count() > 0 | by(resource.service.name)
+ok { } | by(resource.service.name)
+ok { } | by(resource.service.name) | count() > 0
+ok { } | select(span.secret, resource.service.name, name)
+ok { } >> { } | select(name)
+ok { } | coalesce()
+ok { duration > 1ms } | avg(duration) > 1ms
+ok { } | max(duration) > 10ms
+ok { } | min(duration) < 1s
+ok { } | sum(duration) > 0
+ok { } with (most_recent=true)
+ok { trace:rootService = "svc-b" }
+ok { trace:rootName = "GET /report" }
+ok { trace:duration > 1ms }
+ok { span:name = "render report" }
+ok { span:status = error }
+ok { event:name = "seed" }
+ok { event.step = 1 }
+invalid { parent.resource.service.name = "svc-b" }
+ok { rootServiceName = "svc-b" }
+ok { span.http.method = "GET" && duration > 0 } | select(span.http.method)
+
+invalid { .a = }
+invalid ({ } | count()) > 1
+invalid { } | by()
+
+reject
+reject  
+reject ()
+reject select(span.secret)
+reject by(resource.service.name)
+reject count() > 0
+reject 1 < 2
+reject ({ }) && (select(span.secret))
+reject (by(resource.service.name) | count()) > 0
+reject x (select(span.secret))
+reject .a"x"count(select(.secret))
+reject { (.a` = 1) } || { true } || { (.b`) = 1 }
+reject { .a`x` = 1 }
+reject { true } /* } */
+reject { true } // x
+reject { span.foo/*x*/ = 1 }
+reject { true } # x
+reject { name = 'x' }
+reject { name = "x" } |= '}'
+reject { { } }
+reject { } }
+reject { 
+reject { name = "x }
+reject { (true }
+reject { true) }
+reject ({ })) || { }
+reject (({ })
+reject { name = "\x" }
+reject {.a = "\q"}
+reject { } | count(
+reject { } | (count()) > 1
+reject { } \ { }
