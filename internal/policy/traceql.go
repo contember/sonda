@@ -28,7 +28,7 @@ func ScopeTraceQL(scope authz.TempoScope, query string) (TraceQL, error) {
 	if err != nil {
 		return TraceQL{}, apierr.InvalidQuery("invalid TraceQL: %v", err)
 	}
-	scoped := parsed.Rewrite(func(inner string) string { return scopeFilter(inner, condition) })
+	scoped := parsed.Rewrite(func(inner string) string { return scopeTraceQLFilter(inner, condition) })
 	if err := verifyTraceQL(scoped, condition); err != nil {
 		return TraceQL{}, err
 	}
@@ -39,7 +39,7 @@ func scopeCondition(scope authz.TempoScope) string {
 	return "resource.service.name = " + strconv.Quote(scope.ServiceName())
 }
 
-func scopeFilter(inner, condition string) string {
+func scopeTraceQLFilter(inner, condition string) string {
 	if strings.TrimSpace(inner) == "" {
 		return " " + condition + " "
 	}
@@ -47,7 +47,7 @@ func scopeFilter(inner, condition string) string {
 }
 
 // verifyTraceQL re-lexes the scoped query and checks that every filter has exactly the
-// shape scopeFilter produces, so a rewrite bug cannot silently drop the scope.
+// shape scopeTraceQLFilter produces, so a rewrite bug cannot silently drop the scope.
 func verifyTraceQL(query, condition string) error {
 	parsed, err := traceql.Parse(query)
 	if err != nil {
@@ -81,7 +81,7 @@ func isScopedFilter(filter, condition string) bool {
 var (
 	traceQLAttribute = regexp.MustCompile(`^(?:span|resource)?\.[A-Za-z0-9_.\-]+$`)
 	// traceQLStringIntrinsics are the intrinsics a where condition compares with a string.
-	traceQLStringIntrinsics = []string{"name", "statusMessage", "rootName", "rootServiceName"}
+	traceQLStringIntrinsics = []string{"name", "statusMessage", "rootServiceName"}
 )
 
 // TempoSearch builds a scoped TraceQL query from a backend-neutral trace filter. Where

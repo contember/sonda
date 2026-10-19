@@ -66,19 +66,20 @@ ok { } | min(duration) < 1s
 ok { } | sum(duration) > 0
 ok { } with (most_recent=true)
 ok { trace:rootService = "svc-b" }
-ok { trace:rootName = "GET /report" }
+ok { name = "rootName" || name = "parent" }
+ok { span:parentID != nil }
 ok { trace:duration > 1ms }
 ok { span:name = "render report" }
 ok { span:status = error }
 ok { event:name = "seed" }
 ok { event.step = 1 }
-invalid { parent.resource.service.name = "svc-b" }
 ok { rootServiceName = "svc-b" }
 ok { span.http.method = "GET" && duration > 0 } | select(span.http.method)
 
 invalid { .a = }
 invalid ({ } | count()) > 1
 invalid { } | by()
+invalid { } | ({ } | count()) > 1
 
 reject
 reject  
@@ -112,3 +113,15 @@ reject {.a = "\q"}
 reject { } | count(
 reject { } | (count()) > 1
 reject { } \ { }
+reject { trace:rootName = "GET /report" }
+reject { rootName = "GET /report" }
+reject { } | select(trace:rootName)
+reject { } | select(name, rootName)
+reject { } | by(trace:rootName)
+reject { 1rootName = "x" }
+reject { .rootName = "x" }
+reject { parent.resource.service.name = "svc-b" }
+reject { parent.span.secret = "b-only" }
+reject { parent = nil }
+reject { } | select(parent.span.secret)
+reject { } | by(parent.resource.service.name)

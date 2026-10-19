@@ -26,6 +26,8 @@ type searchTrace struct {
 	ServiceStats      map[string]serviceStats `json:"serviceStats"`
 }
 
+// searchSpanSet deliberately omits the spanset attributes: by(...) puts the grouped values
+// there, which can be values of other services' spans.
 type searchSpanSet struct {
 	Spans []searchSpan `json:"spans"`
 }

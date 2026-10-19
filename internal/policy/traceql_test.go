@@ -128,9 +128,16 @@ func TestTempoSearch(t *testing.T) {
 		}
 	}
 
-	for _, field := range []string{"http.route", "duration", "status", "span.", "event.name", "span.a$b", "@message"} {
+	for _, field := range []string{"http.route", "duration", "status", "span.", "event.name", "span.a$b", "@message", "rootName"} {
 		_, err := TempoSearch(scope, TraceFilter{Where: []Where{{Field: field, Value: "x"}}})
 		if !isCode(err, api.CodeInvalidRequest) {
+			t.Errorf("where field %q: %v", field, err)
+		}
+	}
+	// The lexer rejects these attribute names, because they contain forbidden identifiers.
+	for _, field := range []string{".rootName", "span.parent.id"} {
+		_, err := TempoSearch(scope, TraceFilter{Where: []Where{{Field: field, Value: "x"}}})
+		if !isCode(err, api.CodeInvalidQuery) {
 			t.Errorf("where field %q: %v", field, err)
 		}
 	}

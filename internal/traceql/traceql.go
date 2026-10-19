@@ -103,6 +103,8 @@ type lexer struct {
 	// after a grouping parenthesis. Tempo evaluates a pipeline that starts with by(),
 	// select() or a scalar filter on all spans, so a pipeline must start with a filter.
 	pipelineStart bool
+	// groupAfterPipe is set when the last grouping parenthesis follows a pipe.
+	groupAfterPipe bool
 }
 
 func (l *lexer) eof() bool { return l.pos >= len(l.text) }
@@ -126,6 +128,9 @@ func (l *lexer) run() error {
 		}
 		c := l.text[l.pos]
 		if l.pipelineStart && c != '{' && c != '(' {
+			if l.groupAfterPipe {
+				return l.errorf("expected a spanset filter after '|' and '('; wrap aggregates without extra parentheses, like | count() > 1")
+			}
 			return l.errorf("expected a spanset filter")
 		}
 		l.pipelineStart = false
@@ -170,7 +175,17 @@ func (l *lexer) openParen() {
 	call := inCall || l.followsCallKeyword()
 	l.parens = append(l.parens, call)
 	l.pipelineStart = !call
+	l.groupAfterPipe = !call && l.followsPipe()
 	l.pos++
+}
+
+// followsPipe reports whether the character at pos follows a single '|', not '||'.
+func (l *lexer) followsPipe() bool {
+	end := l.pos
+	for end > 0 && isSpace(rune(l.text[end-1])) {
+		end--
+	}
+	return end > 0 && l.text[end-1] == '|' && (end == 1 || l.text[end-2] != '|')
 }
 
 // followsCallKeyword reports whether the parenthesis at pos follows a call keyword that
@@ -189,6 +204,27 @@ func (l *lexer) followsCallKeyword() bool {
 		return false
 	}
 	return slices.Contains(callKeywords, l.text[start:end])
+}
+
+// forbiddenIdentifiers read data that a scoped query must not reveal. Each one is rejected
+// wherever it stands outside strings, also as part of an attribute name, to fail closed.
+var forbiddenIdentifiers = map[string]string{
+	"rootName": "it reads the root span name, which may belong to another service",
+	"parent":   "it reads the parent span, which may belong to another service",
+}
+
+// word reads a run of identifier characters. Tempo's scanner splits leading digits from an
+// identifier, so they are ignored for the check.
+func (l *lexer) word() error {
+	start := l.pos
+	for !l.eof() && isWordByte(l.text[l.pos]) {
+		l.pos++
+	}
+	identifier := strings.TrimLeft(l.text[start:l.pos], "0123456789")
+	if reason, forbidden := forbiddenIdentifiers[identifier]; forbidden {
+		return fmt.Errorf("at offset %d: %s is not supported: %s", start, identifier, reason)
+	}
+	return nil
 }
 
 func isWordByte(c byte) bool {
@@ -213,6 +249,8 @@ func (l *lexer) other() error {
 		return l.errorf("comments are not supported")
 	case c == '\\':
 		return l.errorf("unexpected '\\'")
+	case isWordByte(c):
+		return l.word()
 	}
 	_, size := utf8.DecodeRuneInString(l.text[l.pos:])
 	l.pos += size

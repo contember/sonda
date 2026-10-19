@@ -138,6 +138,21 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+func TestParseExplainsRejections(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{`{ } | (count()) > 1`, "wrap aggregates without extra parentheses"},
+		{`{ } || (count() > 1)`, "expected a spanset filter"},
+		{`{ trace:rootName = "x" }`, "rootName is not supported"},
+		{`{ } | select(parent.span.a)`, "parent is not supported"},
+	}
+	for _, tt := range tests {
+		_, err := traceql.Parse(tt.in)
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: error %v, want containing %q", tt.in, err, tt.want)
+		}
+	}
+}
+
 func TestParseAcceptsCorpus(t *testing.T) {
 	for _, in := range corpusQueries(t, "ok", "invalid") {
 		if _, err := traceql.Parse(in); err != nil {
