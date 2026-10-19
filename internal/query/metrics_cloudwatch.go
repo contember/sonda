@@ -41,9 +41,9 @@ func (b *cloudWatchMetrics) query(ctx context.Context, r api.TimeRange, text str
 		return metricQuery{}, err
 	}
 	recordQuery(ctx, b.scope.Target, q.String())
-	matrix, err := b.client.MetricData(ctx, q, r, step)
+	matrix, period, err := b.client.MetricData(ctx, q, r, step)
 	if err != nil {
 		return metricQuery{}, err
 	}
-	return metricQuery{query: q.String(), series: matrix, source: shape.CloudWatchMetricSourceRef(q.String())}, nil
+	return metricQuery{query: q.String(), series: matrix, step: period, source: shape.CloudWatchMetricSourceRef(q.String())}, nil
 }

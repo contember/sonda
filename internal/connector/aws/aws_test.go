@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"slices"
 	"strings"
@@ -536,9 +537,12 @@ func TestMetricDataPaginates(t *testing.T) {
 	}}
 	c := testClient(cfg, nil, metrics)
 	q := mustMetric(t, scope, `{"metric":"CPUUtilization","stat":"p99","dimensions":{"Engine":"aurora"}}`)
-	matrix, err := c.MetricData(context.Background(), q, testRange, 90*time.Second)
+	matrix, used, err := c.MetricData(context.Background(), q, testRange, 90*time.Second)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if used != 2*time.Minute {
+		t.Errorf("period = %s", used)
 	}
 
 	if len(metrics.dataInputs) != 2 || metrics.dataInputs[1].NextToken == nil || *metrics.dataInputs[1].NextToken != "t1" {
@@ -579,7 +583,7 @@ func TestMetricDataForbidden(t *testing.T) {
 		{MetricDataResults: []cwtypes.MetricDataResult{{Id: sdkaws.String("m0"), StatusCode: cwtypes.StatusCodeForbidden}}},
 	}}
 	c := testClient(cfg, nil, metrics)
-	_, err := c.MetricData(context.Background(), mustMetric(t, scope, `{"metric":"CPUUtilization","stat":"Average"}`), testRange, time.Minute)
+	_, _, err := c.MetricData(context.Background(), mustMetric(t, scope, `{"metric":"CPUUtilization","stat":"Average"}`), testRange, time.Minute)
 	if e, ok := apierr.As(err); !ok || e.Code != api.CodeUpstreamError {
 		t.Errorf("error = %v", err)
 	}
@@ -611,19 +615,27 @@ func TestMetricNames(t *testing.T) {
 }
 
 func TestPeriod(t *testing.T) {
+	const year = 365 * 24 * time.Hour
 	tests := []struct {
-		step time.Duration
-		want int32
+		step, rangeLength time.Duration
+		want              time.Duration
 	}{
-		{0, 60},
-		{15 * time.Second, 60},
-		{time.Minute, 60},
-		{61 * time.Second, 120},
-		{time.Hour, 3600},
+		{0, time.Hour, time.Minute},
+		{15 * time.Second, time.Hour, time.Minute},
+		{time.Minute, time.Hour, time.Minute},
+		{61 * time.Second, time.Hour, 2 * time.Minute},
+		{time.Hour, time.Hour, time.Hour},
+		{2 * time.Hour, 90*time.Minute + 30*time.Second, 90 * time.Minute},
+		{time.Hour, 30 * time.Second, time.Minute},
+		{200 * year, 200 * year, maxPeriod},
 	}
 	for _, tt := range tests {
-		if got := period(tt.step); got != tt.want {
-			t.Errorf("period(%s) = %d, want %d", tt.step, got, tt.want)
+		got := period(tt.step, tt.rangeLength)
+		if got != tt.want {
+			t.Errorf("period(%s, %s) = %s, want %s", tt.step, tt.rangeLength, got, tt.want)
+		}
+		if seconds := got / time.Second; seconds%60 != 0 || seconds > math.MaxInt32 {
+			t.Errorf("period(%s, %s) = %d s does not fit", tt.step, tt.rangeLength, seconds)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"time"
@@ -21,10 +22,11 @@ import (
 const metricQueryID = "m0"
 
 // MetricData fetches one statistic of one metric as a single series labeled with the
-// dimensions and the statistic. It never sends an Expression: metric math, SEARCH and
-// Metrics Insights can read other namespaces.
-func (c *Client) MetricData(ctx context.Context, q policy.CloudWatchMetric, r api.TimeRange, step time.Duration) (model.Matrix, error) {
+// dimensions and the statistic, and returns the period it used. It never sends an Expression:
+// metric math, SEARCH and Metrics Insights can read other namespaces.
+func (c *Client) MetricData(ctx context.Context, q policy.CloudWatchMetric, r api.TimeRange, step time.Duration) (model.Matrix, time.Duration, error) {
 	dimensions := q.Dimensions()
+	used := period(step, r.To.Sub(r.From))
 	input := &cloudwatch.GetMetricDataInput{
 		StartTime: sdkaws.Time(r.From),
 		EndTime:   sdkaws.Time(r.To),
@@ -37,7 +39,7 @@ func (c *Client) MetricData(ctx context.Context, q policy.CloudWatchMetric, r ap
 					MetricName: sdkaws.String(q.Metric()),
 					Dimensions: metricDimensions(dimensions),
 				},
-				Period: sdkaws.Int32(period(step)),
+				Period: sdkaws.Int32(int32(used / time.Second)),
 				Stat:   sdkaws.String(q.Stat()),
 			},
 			ReturnData: sdkaws.Bool(true),
@@ -52,19 +54,19 @@ func (c *Client) MetricData(ctx context.Context, q policy.CloudWatchMetric, r ap
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, c.apiError("GetMetricData", err)
+			return nil, 0, c.apiError("GetMetricData", err)
 		}
 		for _, result := range page.MetricDataResults {
 			if err := c.appendResult(stream, result); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 		}
 	}
 	if len(stream.Values) == 0 {
-		return model.Matrix{}, nil
+		return model.Matrix{}, used, nil
 	}
 	sort.Slice(stream.Values, func(i, j int) bool { return stream.Values[i].Timestamp < stream.Values[j].Timestamp })
-	return model.Matrix{stream}, nil
+	return model.Matrix{stream}, used, nil
 }
 
 func (c *Client) appendResult(stream *model.SampleStream, result types.MetricDataResult) error {
@@ -83,10 +85,14 @@ func (c *Client) appendResult(stream *model.SampleStream, result types.MetricDat
 	return nil
 }
 
-// period rounds the step up to whole minutes, the resolution every metric supports.
-func period(step time.Duration) int32 {
-	minutes := max((step+time.Minute-1)/time.Minute, 1)
-	return int32(minutes * 60)
+// maxPeriod is the longest period in whole minutes that GetMetricData's int32 seconds hold.
+const maxPeriod = math.MaxInt32 / 60 * 60 * time.Second
+
+// period rounds the step up to whole minutes, the resolution every metric supports. It is at
+// most the range rounded down to whole minutes, and at least one minute.
+func period(step, rangeLength time.Duration) time.Duration {
+	rounded := (min(step, maxPeriod) + time.Minute - 1) / time.Minute * time.Minute
+	return max(min(rounded, rangeLength.Truncate(time.Minute)), time.Minute)
 }
 
 func metricDimensions(dimensions map[string]string) []types.Dimension {
