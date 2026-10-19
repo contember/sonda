@@ -199,7 +199,8 @@ type LogSearchRequest struct {
 
 type LogSearchResult struct {
 	Query string `json:"query"`
-	// Total is the exact number of matching lines in the range.
+	// Total is the number of matching lines in the range: exact for Loki and CloudWatch, weighted
+	// by sampling for Cloudflare.
 	Total      int64 `json:"total"`
 	SampleSize int   `json:"sampleSize"`
 	// SampleRange is the time span of the sampled lines, which are the newest matches.
