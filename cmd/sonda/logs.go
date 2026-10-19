@@ -26,7 +26,8 @@ func (a *app) logsSearchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "search <service>",
 		Short: "Count matching lines and group a sample into patterns",
-		Long: "Count matching lines exactly and group a sample of the newest lines into patterns.\n" +
+		Long: "Count matching lines and group a sample of the newest lines into patterns. The count is\n" +
+			"exact for Loki and CloudWatch and an estimate for Cloudflare, which samples events.\n" +
 			"Drill into a group with: sonda result <resultId> --group <index>",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

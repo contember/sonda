@@ -1,5 +1,4 @@
-# Local Loki, Prometheus, Tempo and Postgres for development. Seed logs with dev/seed-logs.sh
-# and traces with dev/seed-traces.sh.
+# Local Loki, Prometheus, Tempo and Postgres for development. Seed traces with dev/seed-traces.sh.
 services:
   prometheus:
     image: prom/prometheus:v3.5.0

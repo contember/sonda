@@ -18,7 +18,7 @@ returns compact, evidence-carrying responses.
 | Native queries | Allowed, in each backend's own dialect, scoped to one service by `policy` | Plain passthrough; string concatenation | Passthrough leaks other services. String concatenation protects only one selector. |
 | Query languages | Native dialect per backend (LogQL, PromQL, TraceQL, Logs Insights, Cloudflare query JSON, structured metric JSON) plus backend-neutral `logs search` and `traces search` | One Sonda query language translated to every backend | Agents already know the native dialects. A translated language covers only the common subset; the neutral search covers the common case. `describe` reports the dialect per capability. |
 | TraceQL scoping | Own lexer `internal/traceql` | Tempo's parser | Tempo is AGPL-licensed, like Loki. Sonda is MIT. Same approach as `internal/logql`. |
-| Logs Insights scoping | Own lexer `internal/insights` | Rely on the `logGroupIdentifiers` API parameter alone | The query text can select log groups itself (`SOURCE`). AWS does not document which wins. |
+| Logs Insights scoping | Own lexer `internal/insights` and an allowlist of commands | Rely on the `logGroupIdentifiers` API parameter alone | The query text can read other log groups itself (`SOURCE`, `join`, `appendcols`). AWS does not document which wins. |
 | CloudWatch metrics | Only `MetricStat`, from JSON `{metric, stat, dimensions}` | `Expression`, `SEARCH`, Metrics Insights | They select metrics by text search or SQL across namespaces and dimensions, so a scope cannot be added to them. |
 | Cloudflare queries | A JSON subset of the Workers Observability query, AND-wrapped with the script filter | Passthrough of the full request body | `queryId` runs a saved query and `datasets` changes what is read; both could bypass the filters. |
 | Cloudflare metrics | Fixed catalog over GraphQL `workersInvocationsAdaptive`, query built by the server | Agent-written GraphQL | GraphQL can name any script or account. The server sets `scriptName` and `accountTag` as variables. |
@@ -69,10 +69,10 @@ Identity ──< Grant (services × environments × capabilities)
   | `errors` | `sentry` | `project` + Sentry `environment` |
   | `logs` | `loki` | `selector`, e.g. `{app="engine", namespace="prod"}` |
   | `logs` | `cloudflare` | `script` (Worker script name) |
-  | `logs` | `aws` | `log_groups`: 1 to 50 unique, exact names, no `*` |
+  | `logs` | `aws` | `log_groups`: 1 to 50 unique, exact names (not ARNs), no `*` |
   | `metrics` | `prometheus` | `selector`, e.g. `{job="engine", namespace="prod"}` |
   | `metrics` | `cloudflare` | `script` |
-  | `metrics` | `aws` | `namespace` + `dimensions` (at least one) |
+  | `metrics` | `aws` | `namespace` + `dimensions` (1 to 10) |
   | `traces` | `tempo` | `service` (`resource.service.name`) |
   | `traces` | `cloudflare` | `script` |
 
@@ -177,7 +177,8 @@ Config validation at startup fails on: unknown fields, unknown source references
 environment variables, a source type not allowed for the capability, binding fields of another
 source type, unparsable selectors or signals, selectors without an `=` or `=~` matcher that
 rejects the empty value (e.g. `{job!=""}` selects nearly everything), log group lists that are
-empty, longer than 50, duplicated or contain `*`, CloudWatch bindings without a dimension,
+empty, longer than 50, duplicated, or contain `*` or ARNs, CloudWatch bindings with no or more
+than 10 dimensions,
 signals whose form does not match the metrics backend, and an admin token shorter than 32
 characters. The full example is `sonda.example.yaml`.
 
@@ -282,7 +283,7 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | Client | Upstream calls | Input |
 |---|---|---|
 | `cloudflare` | `POST /accounts/{account}/workers/observability/telemetry/query` (events, calculations, invocations, traces), `…/telemetry/keys`, `POST /graphql` | `policy` Cloudflare query, `CloudflareScope`, `telemetry.CloudflareMetricQuery` |
-| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope` |
+| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
 
 - `policy` values (`policy.LogQL`, `policy.PromQL`, `policy.TraceQL`, the Cloudflare query,
@@ -358,9 +359,9 @@ Every native query is scoped by `policy`, in the way that the dialect allows:
 | PromQL | Scope matchers injected into every selector of the AST | Re-parse, every selector carries the matchers |
 | LogQL | Scope matchers injected into every stream selector by `internal/logql` | Re-lex, every selector carries the matchers; Loki oracle tests |
 | TraceQL | Scope condition added to every spanset filter by `internal/traceql` | Re-lex, every filter ends with the condition; Tempo oracle tests |
-| Cloudflare query | Agent filters wrapped in a group, AND-combined with the script filter | Post-check of every returned event |
-| Logs Insights | `SOURCE` rejected; log groups set by the API parameter | Post-check with `ListLogGroupsForQuery` |
-| Cloudflare metric | No agent query text: the server builds GraphQL from a catalog | — |
+| Cloudflare query | Agent filters wrapped in a group, AND-combined with the script filter | Post-check of every event, aggregate and trace |
+| Logs Insights | Allowlist of commands, `SOURCE` and other cross-group words rejected; log groups set by the API parameter | Post-check with `ListLogGroupsForQuery` |
+| Cloudflare metric | No agent query text: the server builds GraphQL from a catalog | Post-check of every row's script |
 | CloudWatch metric | No agent query text: `MetricStat` with the scope's namespace and dimensions | — |
 
 Anything a scoping lexer or decoder does not understand is rejected with `invalid_query`, so
@@ -409,11 +410,15 @@ drop the scope. Matchers combine with AND, so:
 
 - TraceQL is not parsed with Tempo's parser, for the same reason as LogQL: Tempo is
   AGPL-licensed. `internal/traceql` only lexes the query, in the style of `internal/logql`.
-  Outside strings, a `{` always opens a spanset filter; pipeline stages such as `by(…)` and
-  `select(…)` use parentheses.
-- Lexical rules: `"…"` strings with Go escapes and backquoted raw strings. Rejected: unbalanced
-  braces, parentheses or quotes, a `{` inside a filter, invalid UTF-8, NUL, and `//`, `/*` or
-  `#` outside strings. TraceQL has no comments, so these can only be an attempt to hide text.
+  Outside strings, a `{` always opens a spanset filter.
+- A pipeline must start with a filter. The query start, and every `(` that is not a call
+  (`by(…)`, `select(…)`, `count()`, …), must lead to a `{`, because a pipeline without a filter
+  reads spans of all services.
+- `rootName` and `parent` are rejected anywhere outside strings: they read the root span or the
+  parent span, which may belong to another service.
+- Lexical rules: `"…"` strings with Go escapes, and backquoted raw strings only after
+  whitespace or an operator. Rejected: comments (`//`, `/* */`, `#`), single-quoted literals,
+  unbalanced braces, parentheses or quotes, a `{` inside a filter, invalid UTF-8 and NUL.
 - Rewrite: each filter `{X}` becomes `{ (X) && resource.service.name = "<service>" }`, and an
   empty `{}` becomes `{ resource.service.name = "<service>" }`. Everything outside the filters
   is kept byte for byte. The result is re-lexed, and every filter must end with the scope
@@ -424,23 +429,24 @@ drop the scope. Matchers combine with AND, so:
 - Tempo validates the rest when it runs the query; its 400 errors become `invalid_query`.
   TraceQL metrics (`| rate()`, …) are not supported by the search endpoint and fail the same way.
 - The lexer's security property: every spanset filter Tempo evaluates carries the scope
-  condition. `internal/traceql` tests check it against a running Tempo with traces of two
-  services, one of them crossing both. A corpus of tricky queries (structural operators,
-  pipelines, `select`/`by`, strings with braces, raw strings, empty filters,
-  `trace:rootService`, nested parentheses) must return only spans of the scoped service, and
-  traces of the other service alone must never appear. The tests run when
-  `SONDA_TEST_TEMPO_URL` is set; CI runs them against Tempo. A fuzz target
+  condition. Tempo has no formatter endpoint, so the oracle in `internal/traceql` checks
+  results: it runs against Tempo with traces of two services from `dev/seed-traces.sh`, some
+  crossing both. A corpus of tricky queries (structural operators, pipelines, `select`/`by`,
+  strings with braces, raw strings, empty filters, nested parentheses) must match only spans of
+  the scoped service, and traces of the other service alone must never appear. The tests run
+  when `SONDA_TEST_TEMPO_URL` is set; CI runs them against Tempo 2.10.8. A fuzz target
   (`go test ./internal/traceql -fuzz FuzzScope`) checks that every output re-lexes and carries
   the condition.
 
 ### Cloudflare Workers Observability
 
 - The agent writes a JSON subset of the query body: `view`, `filters`, `filterCombination`,
-  `needle`, `calculations`, `groupBys`, `havings`, `orderBy`, `limit`. It is decoded into typed
-  structs with unknown fields disallowed, so `queryId`, `datasets`, `timeframe`, `parameters`,
-  `offset` and any other key are `invalid_query`. Exactly one JSON value is accepted.
-- `view` defaults to `events`. Logs accept `events`, `calculations` and `invocations`; traces
-  accept `traces`.
+  `needle`, `calculations`, `groupBys`, `havings`, `orderBy`, `limit` (at most 2000). It is
+  decoded into typed structs with unknown fields disallowed, so `queryId`, `datasets`,
+  `timeframe`, `parameters`, `offset` and any other key are `invalid_query`. Exactly one JSON
+  value is accepted.
+- `view` defaults to `events` for logs and `traces` for traces. Logs accept `events`,
+  `calculations` and `invocations`; traces accept `traces`.
 - Filter leaves take an operation from an allowlist and a `type` of `string`, `number` or
   `boolean`. Groups (`kind: group`) nest at most 3 levels, because Cloudflare allows 4 and the
   wrapper adds one.
@@ -455,48 +461,73 @@ drop the scope. Matchers combine with AND, so:
 
   The group is omitted when the agent gave no filters. `needle`, calculations, group-bys,
   havings and the order pass through. `parameters` is always sent, `queryId` is a random
-  `sonda-…` ID, `datasets` is never sent, and the timeframe comes from the range.
-- Post-check (defense in depth): every returned event must belong to the script. Otherwise the
-  whole response is dropped with an `internal` error, which the audit record holds.
+  `sonda-…` ID, `datasets` is never sent, and the timeframe comes from the range. Every query
+  is sent with `dry: true`, so it is not saved in the account's query history.
+- Post-check (defense in depth). A violation drops the whole response with an `internal`
+  error, which the audit record holds:
+  - Every event must have `$metadata.service` equal to the script and, when `$workers` is
+    present, also `$workers.scriptName`.
+  - Calculations (also the count of `logs search`) get a hidden group-by on
+    `$metadata.service`. Every aggregate must be of the script; the group is removed from the
+    result. A zero aggregate without the group is how Cloudflare reports no matches, so it is
+    accepted and dropped.
+  - Every trace summary must list the script among its services.
 - The keys call (`logs fields`) carries the same script filter.
+- Calculations return series; events and invocations return lines.
 
 ### CloudWatch Logs Insights
 
 - `queryLanguage` is always `CWLI`. OpenSearch PPL and SQL can name log groups in the query
-  text, so they are not accepted.
-- `internal/insights` splits the query into stages. It understands `"…"` and `'…'` strings with
-  backslash escapes, backquoted field names, regex literals `/…/` where a regex can appear,
-  `#` comments and `|` at top level. When it cannot decide whether a `/` starts a regex, it
-  rejects the query. It also rejects unbalanced quotes or parentheses, invalid UTF-8 and NUL.
-- A stage whose command is `SOURCE` (any case) is `invalid_query`. `SOURCE logGroups()` would
-  select the whole account, and AWS does not document how it combines with the API parameter.
-  Queries are limited to 10,000 characters.
+  text, so they are not accepted. Queries are limited to 10,000 characters.
+- `internal/insights` splits the query into stages and collects its bare words. AWS publishes
+  no grammar, so the lexer accepts only input on which every plausible reading of the
+  delimiters agrees. It understands `"…"` and `'…'` strings, backquoted field names, regex
+  literals `/…/`, `#` comments and `|` stages, also nested in parentheses. It rejects:
+  - `/` as division, and any `/` it cannot read as a regex;
+  - escaped closing delimiters in strings, names and regexes;
+  - `/` or `[` inside a regex character class, and POSIX classes;
+  - non-ASCII characters outside literals, unbalanced quotes or parentheses, invalid UTF-8, NUL.
+- Every stage command, nested stages included, must be in an allowlist: `anomaly`, `dedup`,
+  `diff`, `display`, `fields`, `filter`, `filterindex`, `limit`, `parse`, `pattern`, `sort`,
+  `stats`, `unnest`, `where`. The bare words `source`, `join`, `appendcols` (read other log
+  groups), `lookup`, `cidrlookup` (read account-wide tables) and `unmask` (reveals masked
+  data) are rejected anywhere; a field of that name is written in backticks.
+- Known gap: the first stage of a subquery directly follows `(` and cannot be told from an
+  expression, so an unknown future command there is not caught by the allowlist. The
+  post-check below covers it.
 - The server sets `logGroupIdentifiers` to the binding's log groups.
 - Post-check: after the query completes, `ListLogGroupsForQuery` must return only the scope's
-  log groups. Otherwise no row is returned and the request fails with `internal`.
+  log groups. An ARN must also name the source's region and the account of Sonda's
+  credentials (from STS `GetCallerIdentity`). Otherwise no row is returned and the request
+  fails with `internal`.
 - Scan limit: Logs Insights is billed by scanned bytes. While polling, a query that has scanned
   more than the source's `max_scan_bytes` is stopped (`StopQuery`) and the request fails with
   `limit_exceeded`. The check runs on each poll, so a query can scan a little more than the
   limit. A query is also stopped when the request ends (timeout or disconnect).
+- A query with a `stats` stage returns series (by its `bin()` column, or one point at the
+  range end); other queries return lines.
 - Independent layer: give Sonda's IAM role `logs:StartQuery` only on the ARNs of the configured
-  log groups. Then even a `SOURCE` that passed the lexer could not read other groups.
+  log groups. Then even a query that passed the lexer could not read other groups.
 
 ### Cloudflare and CloudWatch metrics
 
 Neither accepts query text from the agent:
 
 - Cloudflare: `{metric, by}`. `metric` is one of `requests`, `errors`, `subrequests`,
-  `cpu_time_p50`, `cpu_time_p99`, `duration_p50`, `duration_p99`; `by` is from `status`,
-  `scriptVersion`. The server builds the GraphQL query over `workersInvocationsAdaptive` with
-  `accountTag` and `scriptName` as variables. The step selects the coarsest time dimension not
-  longer than the step (minute, fifteen minutes, hour).
+  `cpu_time_p50`, `cpu_time_p99` (CPU time, ms), `duration_p50`, `duration_p99` (request
+  duration, ms); `by` is from `status`, `scriptVersion`. The server builds the GraphQL query
+  over `workersInvocationsAdaptive` with `accountTag`, `scriptName` and the range as
+  variables, and checks the `scriptName` of every returned row. The time bucket is the finest
+  of minute, 15 minutes, hour or day that is at least the step; the response reports it as the
+  step. More than 10,000 rows (buckets × dimension values) is `limit_exceeded`.
 - CloudWatch: `{metric, stat, dimensions}`. `stat` is `SampleCount`, `Average`, `Sum`,
   `Minimum`, `Maximum` or a percentile (`p99`, `p99.9`). The namespace and the scope dimensions
   come from the binding. An agent dimension with a scope key and a different value is
-  `invalid_query`; others are added. Sonda sends one `MetricStat` with the period equal to the
-  step, rounded up to a multiple of 60 seconds. `Expression` is never sent: metric math,
-  `SEARCH` and Metrics Insights select metrics across namespaces and dimensions, and no
-  dimension can be added to them to restrict the result.
+  `invalid_query`; others are added, up to 30 in all. Sonda sends one `MetricStat`. Its period
+  is the step rounded up to whole minutes and capped at the range; the response reports it as
+  the step. `Expression` is never sent: metric math, `SEARCH` and Metrics Insights select
+  metrics across namespaces and dimensions, and no dimension can be added to them to restrict
+  the result.
 
 ### Backend-neutral search
 
@@ -506,14 +537,19 @@ are always quoted or sent as JSON values, never pasted into query text.
 | Filter | Loki | Cloudflare | CloudWatch | Tempo |
 |---|---|---|---|---|
 | `contains` | `\|= "…"` | `needle`; further values as `$metadata.message includes` leaves | `filter @message like "…"` | — |
-| `where k=v` / `k!=v` | `\| k="v"` (label names only) | `eq` / `neq` string leaves | `filter k = "v"` / `!=` | `k = "v"` / `!=`; `k` is a TraceQL attribute (`.k`, `span.k`, `resource.k`) or intrinsic |
+| `where k=v` / `k!=v` | `\| k="v"` (label names only) | `eq` / `neq` string leaves | `filter k = "v"` / `!=` | `k = "v"` / `!=`; `k` is an attribute (`.k`, `span.k`, `resource.k`), `name`, `statusMessage` or `rootServiceName` |
 | `pipeline` | LogQL pipeline | `invalid_request` | `invalid_request` | — |
 | `minDuration`, `maxDuration` | — | `$metadata.duration` `gte` / `lte` | — | `duration >=` / `<=` |
-| `errors` | — | error leaf | — | `status = error` |
+| `errors` | — | `$metadata.error exists` | — | `status = error` |
 | `name` | — | `$metadata.spanName includes` | — | `name =~ ".*<quoted>.*"` |
 
-The exact total of `logs search` is a Loki instant count query, a Cloudflare `calculations`
-count with the same filters, or `recordsMatched` of the same Logs Insights query.
+Logs Insights strings cannot hold escaped quotes, so a CloudWatch value is quoted with the quote
+kind it does not contain; a value with both kinds is `invalid_request`. A Logs Insights search
+returns at most 10,000 lines.
+
+The total of `logs search` is a Loki instant count query or `recordsMatched` of the same Logs
+Insights query, both exact. Cloudflare's is a `calculations` count with the same filters, which
+Cloudflare weights by each event's sampling rate, so it is an estimate.
 
 ### Spike results (2026-10-16)
 
@@ -579,7 +615,8 @@ Every response uses one envelope:
 
 ### Log search
 
-1. Exact total of the matching lines in the range (section 6, backend-neutral search).
+1. Total of the matching lines in the range: exact for Loki and CloudWatch, an estimate for
+   Cloudflare (section 6, backend-neutral search).
 2. Sample: fetch up to `max_log_lines` of the newest matching lines. `sampleRange` reports the
    time span they cover.
 3. Redact the lines, then group them into patterns with Drain (`internal/shape/drain.go`). A
@@ -620,26 +657,31 @@ OTel `service.name` for Tempo and the script name for Cloudflare.
 | `GET /v1/services/{s}/traces/{id}` | One trace as a span tree |
 
 - Search and query return at most `limit` traces (default 20, maximum 50) and mark the
-  response `truncated` when more matched. Matched spans are of the scoped service only.
+  response `truncated` when more matched. Matched spans are of the scoped service; Tempo
+  reports no service per matched span, and every filter is scoped. Cloudflare returns no
+  matched spans, and names the root service only when the trace involves one service.
 - **Visibility.** `authz.TraceVisibility` decides which backend service names an identity sees
   in full: the names of trace bindings on the same source, in every service and environment the
   identity has a `traces` grant for. A span of any other service becomes a stub: span and
   parent ID, depth, service, start, duration and status. Name, kind, status message, attributes
   and events are dropped. Service names stay visible by design; they show where time went.
-- In search results, `rootName` is cleared when the root service is not visible.
+- In search results, `rootName` is cleared when the root service is not visible, and a matched
+  span of a hidden service becomes a stub.
 - **Trace by ID is the one fetch that cannot be scoped upstream.** Tempo returns a trace by ID
-  (`/api/v2/traces/{id}`) without a service filter, and Cloudflare finds it with
-  `$metadata.traceId eq <id>` alone. Sonda therefore checks the fetched spans before returning
-  anything: the trace must contain a span of the scoped service, otherwise the response is
-  `not_found` with the same message as a missing trace. Visibility and stubs are applied in
-  `shape` before the response is built. The Cloudflare event post-check is skipped for this
-  query only, because other scripts' events are expected.
+  (`/api/v2/traces/{id}`) without a service filter, and Cloudflare finds its spans with
+  `$metadata.traceId eq <id>` and `$metadata.spanName exists` alone. Sonda therefore checks the
+  fetched spans before returning anything: the trace must contain a span of the scoped
+  service, otherwise the response is `not_found` with the same message as a missing trace.
+  Visibility and stubs are applied in `shape` before the response is built. The Cloudflare
+  event post-check is skipped for this query only, because other scripts' events are expected.
+  A Cloudflare trace of 2000 or more events is `limit_exceeded`, because one fetch cannot
+  return it whole.
 - Trace IDs are 16 or 32 hex characters, normalized to lower case.
 - The tree is ordered depth-first from the roots; spans whose parent is missing become roots;
   children are ordered by start time. A trace response holds at most 300 spans and is marked
   `truncated` beyond that.
-- Attribute values, event attribute values and status messages of visible spans are redacted.
-  Attribute values are cut to 500 characters.
+- Span names, root names, status messages, event names, and attribute and event attribute
+  values of visible spans are redacted. Attribute values are cut to 500 characters.
 - `meta.untrusted` lists service names, span names, status messages, attributes and events.
 
 ## 9. HTTP API
@@ -737,9 +779,9 @@ Rules:
   provider credential and expose `/admin` only on a trusted network.
 - Telemetry is untrusted: marked in `meta.untrusted`. Built-in rules redact bearer and basic
   tokens, URL credentials, AWS keys, JWTs, private keys and `password=`-style fields in log
-  lines, Sentry titles, messages and tags, and span attributes, events and status messages;
-  `redact` in the config adds patterns. Redaction reduces risk; it is not a guarantee. Stack
-  frames, metric labels and span names are not redacted.
+  lines, Sentry titles, messages and tags, and span names, attributes, events and status
+  messages; `redact` in the config adds patterns. Redaction reduces risk; it is not a
+  guarantee. Stack frames and metric labels are not redacted.
 - Expensive expressions inside a query (e.g. `rate(x[90d])`) are not detected by Sonda. Upstream
   limits in Prometheus, Loki and Tempo remain necessary.
 - Source headers such as `X-Scope-OrgID` are sent as configured. Sonda does not check their
@@ -753,9 +795,9 @@ Rules:
   Analytics needs "Account Analytics Read".
 - **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
   `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
-  `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus
-  `kms:Decrypt` on the keys of encrypted log groups. Restrict `logs:StartQuery` to the ARNs of
-  the configured log groups. This is an independent layer under the `SOURCE` rejection and the
+  `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`,
+  `sts:GetCallerIdentity`, plus `kms:Decrypt` on the keys of encrypted log groups. Restrict `logs:StartQuery` to the ARNs of
+  the configured log groups. This is an independent layer under the command allowlist and the
   `ListLogGroupsForQuery` post-check (section 6).
 
 ## 13. Out of scope for v1
@@ -786,6 +828,8 @@ Rules:
    every event.
 5. How does a Logs Insights `SOURCE` command interact with `logGroupIdentifiers`? Moot for
    Sonda, because `SOURCE` is rejected, but it decides how much the IAM restriction matters.
+6. Does the Cloudflare keys endpoint take the range as `from`/`to` or as `timeframe`? Sonda
+   sends `from`/`to`; a wrong guess affects only `logs fields`, not the scope.
 
 Resolved: native queries use the same capability as the structured tools (section 1).
 `overview` ranks issues by event count in the range and marks issues first seen in the range

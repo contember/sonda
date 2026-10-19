@@ -81,8 +81,8 @@ parts that matter for security:
   - Loki and Prometheus `selector`: must contain an `=` or `=~` matcher that rejects the empty
     value, and the labels must really identify the service in your data.
   - Cloudflare `script`: the Worker script name.
-  - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns.
-  - CloudWatch metrics `namespace` and `dimensions`: at least one dimension.
+  - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns or ARNs.
+  - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
 - **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`) for service
   environments. Anything else is not found. A `traces` grant also decides which spans of a
@@ -171,7 +171,7 @@ parameters, or the same fields in POST bodies.
 
 ```bash
 go test ./...
-docker compose -f dev/docker-compose.yml up -d   # Loki on :13100, Prometheus on :19090, Tempo on :13200, Postgres on :15432
+docker compose -f dev/docker-compose.yml up -d   # Loki :13100, Prometheus :19090, Tempo :13200 (OTLP :14318), Postgres :15432
 SONDA_TEST_LOKI_URL=http://localhost:13100 go test ./internal/logql   # LogQL scoping against a real Loki
 dev/seed-traces.sh                               # traces of two services in the local Tempo
 SONDA_TEST_TEMPO_URL=http://localhost:13200 go test ./internal/traceql   # TraceQL scoping against a real Tempo

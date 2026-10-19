@@ -45,7 +45,7 @@ func (a *app) tracesSearchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&maxDuration, "max-duration", "", "only spans at most this long, e.g. 2s")
 	cmd.Flags().BoolVar(&errorsOnly, "errors", false, "only traces with an error span of the service")
 	cmd.Flags().StringVar(&name, "name", "", "span name must contain this text")
-	cmd.Flags().StringArrayVar(&where, "where", nil, "span attribute condition, field=value or field!=value (repeatable)")
+	cmd.Flags().StringArrayVar(&where, "where", nil, "span condition, field=value or field!=value; for Tempo a TraceQL attribute like span.http.route (repeatable)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "maximum traces (default 20)")
 	return cmd
 }
@@ -81,7 +81,7 @@ func (a *app) traceCmd() *cobra.Command {
 		Short: "Show a trace that contains a span of the service as a span tree",
 		Long: "Show a trace that contains a span of the service as a span tree.\n" +
 			"Spans of services you have no traces grant for show only service, timing and status.\n" +
-			"The range must cover the trace; widen --since for older traces.",
+			"A trace outside the range is not found; widen --since for older traces.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			params, err := window.query()

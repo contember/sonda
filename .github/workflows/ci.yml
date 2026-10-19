@@ -54,11 +54,12 @@ jobs:
 
       # The TraceQL scoping tests check the lexer against a real Tempo with seeded traces.
       # Tempo needs a config file, which a service container cannot mount before checkout.
-      - name: Start Tempo
+      - name: Start and seed Tempo
         run: |
           docker compose -f dev/docker-compose.yml up -d tempo
           timeout 120 sh -c 'until curl -sf http://localhost:13200/ready; do sleep 2; done'
           dev/seed-traces.sh
+          timeout 60 sh -c 'until curl -sfG --data-urlencode "q={ resource.service.name = \"svc-b\" }" http://localhost:13200/api/search | grep -q traceID; do sleep 2; done'
 
       - run: go test ./...
         env:
