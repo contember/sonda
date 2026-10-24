@@ -1,0 +1,387 @@
+{
+	"query": "mutation($migrations: [Migration!]!) { migrate(migrations: $migrations) { ok error { code developerMessage } } }",
+	"variables": {
+		"migrations": [
+			{
+				"formatVersion": 6,
+				"version": "2026-10-24-120000",
+				"name": "2026-10-24-120000-init",
+				"modifications": [
+					{
+						"modification": "createEnum",
+						"enumName": "ArticleStatus",
+						"values": [
+							"draft",
+							"published"
+						]
+					},
+					{
+						"modification": "createEntity",
+						"entity": {
+							"name": "Author",
+							"primary": "id",
+							"primaryColumn": "id",
+							"unique": [],
+							"indexes": [],
+							"fields": {
+								"id": {
+									"name": "id",
+									"columnName": "id",
+									"nullable": false,
+									"type": "Uuid",
+									"columnType": "uuid"
+								}
+							},
+							"tableName": "author",
+							"eventLog": {
+								"enabled": true
+							}
+						}
+					},
+					{
+						"modification": "createEntity",
+						"entity": {
+							"name": "Article",
+							"primary": "id",
+							"primaryColumn": "id",
+							"unique": [],
+							"indexes": [],
+							"fields": {
+								"id": {
+									"name": "id",
+									"columnName": "id",
+									"nullable": false,
+									"type": "Uuid",
+									"columnType": "uuid"
+								}
+							},
+							"tableName": "article",
+							"eventLog": {
+								"enabled": true
+							}
+						}
+					},
+					{
+						"modification": "createEntity",
+						"entity": {
+							"name": "Tag",
+							"primary": "id",
+							"primaryColumn": "id",
+							"unique": [],
+							"indexes": [],
+							"fields": {
+								"id": {
+									"name": "id",
+									"columnName": "id",
+									"nullable": false,
+									"type": "Uuid",
+									"columnType": "uuid"
+								}
+							},
+							"tableName": "tag",
+							"eventLog": {
+								"enabled": true
+							}
+						}
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Author",
+						"field": {
+							"name": "name",
+							"columnName": "name",
+							"nullable": false,
+							"type": "String",
+							"columnType": "text"
+						}
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Author",
+						"field": {
+							"name": "email",
+							"columnName": "email",
+							"nullable": false,
+							"type": "String",
+							"columnType": "text"
+						}
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Article",
+						"field": {
+							"name": "title",
+							"columnName": "title",
+							"nullable": false,
+							"type": "String",
+							"columnType": "text"
+						}
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Article",
+						"field": {
+							"name": "published",
+							"columnName": "published",
+							"nullable": false,
+							"default": false,
+							"type": "Bool",
+							"columnType": "boolean"
+						},
+						"fillValue": false,
+						"valueMigrationStrategy": "using"
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Article",
+						"field": {
+							"name": "status",
+							"columnName": "status",
+							"nullable": false,
+							"default": "draft",
+							"type": "Enum",
+							"columnType": "ArticleStatus"
+						},
+						"fillValue": "draft",
+						"valueMigrationStrategy": "using"
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Article",
+						"field": {
+							"name": "secretNote",
+							"columnName": "secret_note",
+							"nullable": true,
+							"type": "String",
+							"columnType": "text"
+						}
+					},
+					{
+						"modification": "createColumn",
+						"entityName": "Tag",
+						"field": {
+							"name": "name",
+							"columnName": "name",
+							"nullable": false,
+							"type": "String",
+							"columnType": "text"
+						}
+					},
+					{
+						"modification": "createRelation",
+						"entityName": "Article",
+						"owningSide": {
+							"name": "author",
+							"inversedBy": "articles",
+							"nullable": true,
+							"type": "ManyHasOne",
+							"target": "Author",
+							"joiningColumn": {
+								"columnName": "author_id",
+								"onDelete": "set null"
+							}
+						},
+						"inverseSide": {
+							"name": "articles",
+							"ownedBy": "author",
+							"type": "OneHasMany",
+							"target": "Article"
+						}
+					},
+					{
+						"modification": "createRelation",
+						"entityName": "Article",
+						"owningSide": {
+							"type": "ManyHasMany",
+							"name": "tags",
+							"inversedBy": "articles",
+							"target": "Tag",
+							"joiningTable": {
+								"tableName": "article_tags",
+								"joiningColumn": {
+									"columnName": "article_id",
+									"onDelete": "cascade"
+								},
+								"inverseJoiningColumn": {
+									"columnName": "tag_id",
+									"onDelete": "cascade"
+								},
+								"eventLog": {
+									"enabled": true
+								}
+							}
+						},
+						"inverseSide": {
+							"name": "articles",
+							"ownedBy": "tags",
+							"target": "Article",
+							"type": "ManyHasMany"
+						}
+					},
+					{
+						"modification": "createUniqueConstraint",
+						"entityName": "Author",
+						"unique": {
+							"fields": [
+								"email"
+							]
+						}
+					},
+					{
+						"modification": "createUniqueConstraint",
+						"entityName": "Tag",
+						"unique": {
+							"fields": [
+								"name"
+							]
+						}
+					},
+					{
+						"modification": "patchAclSchema",
+						"patch": [
+							{
+								"op": "add",
+								"path": "/roles/sonda_reader",
+								"value": {
+									"variables": {},
+									"stages": "*",
+									"entities": {
+										"Author": {
+											"predicates": {},
+											"operations": {
+												"read": {
+													"id": true,
+													"name": true,
+													"email": true,
+													"articles": true
+												}
+											}
+										},
+										"Article": {
+											"predicates": {
+												"published": {
+													"published": {
+														"eq": true
+													}
+												}
+											},
+											"operations": {
+												"read": {
+													"id": "published",
+													"title": "published",
+													"published": "published",
+													"status": "published",
+													"author": "published",
+													"tags": "published",
+													"secretNote": "published"
+												}
+											}
+										},
+										"Tag": {
+											"predicates": {},
+											"operations": {
+												"read": {
+													"id": true,
+													"name": true,
+													"articles": true
+												}
+											}
+										}
+									}
+								}
+							},
+							{
+								"op": "add",
+								"path": "/roles/writer",
+								"value": {
+									"variables": {},
+									"stages": "*",
+									"entities": {
+										"Author": {
+											"predicates": {},
+											"operations": {
+												"read": {
+													"id": true,
+													"name": true,
+													"email": true,
+													"articles": true
+												},
+												"create": {
+													"id": true,
+													"name": true,
+													"email": true,
+													"articles": true
+												},
+												"update": {
+													"id": true,
+													"name": true,
+													"email": true,
+													"articles": true
+												},
+												"delete": true
+											}
+										},
+										"Article": {
+											"predicates": {},
+											"operations": {
+												"read": {
+													"id": true,
+													"title": true,
+													"published": true,
+													"status": true,
+													"author": true,
+													"tags": true,
+													"secretNote": true
+												},
+												"create": {
+													"id": true,
+													"title": true,
+													"published": true,
+													"status": true,
+													"author": true,
+													"tags": true,
+													"secretNote": true
+												},
+												"update": {
+													"id": true,
+													"title": true,
+													"published": true,
+													"status": true,
+													"author": true,
+													"tags": true,
+													"secretNote": true
+												},
+												"delete": true
+											}
+										},
+										"Tag": {
+											"predicates": {},
+											"operations": {
+												"read": {
+													"id": true,
+													"name": true,
+													"articles": true
+												},
+												"create": {
+													"id": true,
+													"name": true,
+													"articles": true
+												},
+												"update": {
+													"id": true,
+													"name": true,
+													"articles": true
+												},
+												"delete": true
+											}
+										}
+									}
+								}
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+}

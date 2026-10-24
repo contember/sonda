@@ -22,6 +22,7 @@ type Service struct {
 	connectors Connectors
 	store      *store.Store
 	redactor   *shape.Redactor
+	schemas    *schemaCache
 	now        func() time.Time
 }
 
@@ -30,7 +31,7 @@ func New(cfg *config.Config, authorizer *authz.Authorizer, connectors Connectors
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, authz: authorizer, connectors: connectors, store: st, redactor: redactor, now: time.Now}, nil
+	return &Service{cfg: cfg, authz: authorizer, connectors: connectors, store: st, redactor: redactor, schemas: newSchemaCache(time.Now), now: time.Now}, nil
 }
 
 func recordQuery(ctx context.Context, target authz.Target, query string) {

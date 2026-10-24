@@ -49,6 +49,8 @@ func New(q *query.Service, authorizer *authz.Authorizer, st *store.Store, log *s
 	mux.Handle("GET /v1/services/{service}/traces/{id}", s.handle(s.getTrace))
 	mux.Handle("GET /v1/services/{service}/workloads", s.handle(s.workloads))
 	mux.Handle("GET /v1/services/{service}/alerts", s.handle(s.alerts))
+	mux.Handle("GET /v1/services/{service}/data/schema", s.handle(s.dataSchema))
+	mux.Handle("POST /v1/services/{service}/data/query", s.handle(s.queryData))
 	mux.Handle("GET /v1/results/{id}", s.handle(s.result))
 	return mux
 }

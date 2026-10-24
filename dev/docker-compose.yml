@@ -1,4 +1,6 @@
-# Local Loki, Prometheus, Tempo and Postgres for development. Seed traces with dev/seed-traces.sh.
+# Local Loki, Prometheus, Tempo, Postgres and a Contember engine for development.
+# Seed traces with dev/seed-traces.sh. Seed the Contember project and API keys with
+# dev/seed-contember.sh (engine on :14000, dev root token 0000000000000000000000000000000000000000).
 services:
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -28,3 +30,35 @@ services:
       POSTGRES_DB: sonda
     ports:
       - "15432:5432"
+  contember-postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: contember
+      POSTGRES_PASSWORD: contember
+      POSTGRES_DB: contember
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "contember"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  contember:
+    image: contember/engine:2.0.8
+    environment:
+      NODE_ENV: production
+      CONTEMBER_PORT: 4000
+      CONTEMBER_MONITORING_PORT: 4001
+      CONTEMBER_ROOT_EMAIL: admin@localhost
+      CONTEMBER_ROOT_PASSWORD: admin@localhost
+      CONTEMBER_ROOT_TOKEN: "0000000000000000000000000000000000000000"
+      CONTEMBER_LOGIN_TOKEN: "1111111111111111111111111111111111111111"
+      CONTEMBER_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      DEFAULT_DB_HOST: contember-postgres
+      DEFAULT_DB_PORT: "5432"
+      DEFAULT_DB_USER: contember
+      DEFAULT_DB_PASSWORD: contember
+      TENANT_DB_NAME: tenant
+    ports:
+      - "14000:4000"
+    depends_on:
+      contember-postgres:
+        condition: service_healthy

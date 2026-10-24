@@ -12,6 +12,7 @@ import (
 	"github.com/contember/sonda/internal/connector/aws"
 	"github.com/contember/sonda/internal/connector/awsauth"
 	"github.com/contember/sonda/internal/connector/cloudflare"
+	"github.com/contember/sonda/internal/connector/contember"
 	"github.com/contember/sonda/internal/connector/kubernetes"
 	"github.com/contember/sonda/internal/connector/loki"
 	"github.com/contember/sonda/internal/connector/prometheus"
@@ -33,7 +34,8 @@ type Connectors struct {
 	Kubernetes map[string]*kubernetes.Client
 	Vercel     map[string]*vercel.Client
 	// Alerting holds a client for every Prometheus and Grafana source.
-	Alerting map[string]*alerting.Client
+	Alerting  map[string]*alerting.Client
+	Contember map[string]*contember.Client
 }
 
 // NewConnectors builds the clients. identity is Sonda's own identity, nil without the identity
@@ -49,6 +51,7 @@ func NewConnectors(cfg *config.Config, identity *issuer.Issuer) (Connectors, err
 		Kubernetes: map[string]*kubernetes.Client{},
 		Vercel:     map[string]*vercel.Client{},
 		Alerting:   map[string]*alerting.Client{},
+		Contember:  map[string]*contember.Client{},
 	}
 	// One AWS configuration per aws source, shared by its CloudWatch client and by the sources
 	// that authenticate to EKS with it, so they share one credential cache.
@@ -103,6 +106,8 @@ func (c Connectors) add(name string, src *config.Source, client *http.Client) er
 		c.Alerting[name] = alerting.New(src, client)
 	case config.SourceVercel:
 		c.Vercel[name] = vercel.New(src, client)
+	case config.SourceContember:
+		c.Contember[name] = contember.New(src, client)
 	default:
 		return fmt.Errorf("source %s: unsupported type %s", name, src.Type)
 	}
