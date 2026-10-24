@@ -163,8 +163,9 @@ func (v *validator) config(raw rawConfig) *Config {
 		Services: map[string]*Service{},
 		Redact:   raw.Redact,
 	}
-	if u, err := url.Parse(cfg.Server.Database); err == nil && u.User != nil {
-		if _, hasPassword := u.User.Password(); hasPassword {
+	if u, err := url.Parse(cfg.Server.Database); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		password, _ := u.User.Password()
+		if password != "" || u.Query().Has("password") {
 			v.warn("server.database contains a password written in the config file; set it in PGPASSWORD instead")
 		}
 	}
@@ -175,7 +176,7 @@ func (v *validator) config(raw rawConfig) *Config {
 		v.url("grafana.url", raw.Grafana.URL)
 		// The URL is copied into Explore links returned to agents, so it must not carry
 		// credentials.
-		if u, err := url.Parse(raw.Grafana.URL); err == nil && (u.User != nil || u.RawQuery != "") {
+		if u, err := url.Parse(raw.Grafana.URL); err == nil && (u.User != nil || u.RawQuery != "" || u.ForceQuery) {
 			v.fail("grafana.url must be scheme://host[:port][/path] without credentials or a query: it is copied into links returned to agents")
 		}
 		cfg.Grafana = &Grafana{URL: raw.Grafana.URL}
@@ -259,7 +260,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	src.Auth = v.auth(path+".auth", raw.Auth)
 	for header, value := range raw.Headers {
 		if sensitiveHeader(header) {
-			src.Headers[header] = v.secret(path+".headers."+header, value)
+			src.Headers[header] = v.secretHeader(path+".headers."+header, value)
 		} else {
 			src.Headers[header] = v.expand(path+".headers."+header, value)
 		}
@@ -762,21 +763,33 @@ func (v *validator) expand(path, raw string) string {
 	})
 }
 
-// secret expands a credential and warns when any part of it is written into the file instead
-// of referenced: config files end up in repositories, backups and support tickets. An
-// authorization scheme before a reference, as in "Bearer ${TOKEN}", is not a credential.
+// secret expands a credential (a token, password or the admin token) and warns unless it is
+// exactly one ${NAME} reference: config files end up in repositories, backups and support
+// tickets. Sonda adds the authorization scheme itself, so a "Bearer " prefix gets its own hint.
 func (v *validator) secret(path, raw string) string {
-	literal := strings.TrimSpace(envReference.ReplaceAllString(raw, ""))
-	for _, scheme := range []string{"Bearer", "Basic", "Token", "Bot"} {
-		if strings.EqualFold(literal, scheme) {
-			literal = ""
-		}
-	}
-	if literal != "" {
+	switch {
+	case raw == "" || wholeReference.MatchString(raw):
+	case authScheme.MatchString(raw):
+		v.warn("%s starts with an authorization scheme; give only the credential, Sonda adds the scheme", path)
+	case envReference.MatchString(raw):
+		v.warn("%s is partly written in the config file; make it a single \"${NAME}\" reference", path)
+	default:
 		v.warn("%s is written in the config file; reference an environment variable instead, e.g. \"${NAME}\" (or NAME_FILE)", path)
 	}
 	return v.expand(path, raw)
 }
+
+// secretHeader expands a credential header. Header values often wrap the credential, as in
+// "Token token=${T}" or "session=${S}", so any reference is accepted; a value without one
+// warns.
+func (v *validator) secretHeader(path, raw string) string {
+	if raw != "" && !envReference.MatchString(raw) {
+		v.warn("%s is written in the config file; reference an environment variable instead, e.g. \"${NAME}\" (or NAME_FILE)", path)
+	}
+	return v.expand(path, raw)
+}
+
+var authScheme = regexp.MustCompile(`(?i)^(bearer|basic|token|bot)\s+\$\{`)
 
 // sensitiveHeader reports headers that usually carry credentials, such as Authorization,
 // Proxy-Authorization, Cookie, X-Api-Key, X-Auth-Token or X-Sentry-Auth. Words are matched

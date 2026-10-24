@@ -149,34 +149,58 @@ func TestGrafanaURLRefusesQuery(t *testing.T) {
 func TestPartlyLiteralCredentialsWarn(t *testing.T) {
 	vars := validEnv()
 	vars["T"], vars["P"] = "t", "p"
-	tests := map[string]bool{
-		`token: "${SENTRY_TOKEN}"`:     false,
-		`token: "lit${T}"`:             true,
-		`token: "Bearer ${T}"`:         false,
-		`token: "${T}${SENTRY_TOKEN}"`: false,
-		`token: "${T} extra"`:          true,
-	}
-	for replacement, warn := range tests {
-		input := strings.Replace(validConfig, `token: "${SENTRY_TOKEN}"`, replacement, 1)
+	warnings := func(t *testing.T, input string) string {
+		t.Helper()
 		cfg, err := Parse([]byte(input), env(vars))
 		if err != nil {
-			t.Fatalf("%s: %v", replacement, err)
+			t.Fatal(err)
 		}
-		if got := strings.Contains(strings.Join(cfg.Warnings, "\n"), "sources.sentry.auth.token is written"); got != warn {
-			t.Errorf("%s: warned = %v, want %v", replacement, got, warn)
+		return strings.Join(cfg.Warnings, "\n")
+	}
+	tokens := map[string]string{
+		`token: "${SENTRY_TOKEN}"`: "",
+		`token: "lit${T}"`:         "sources.sentry.auth.token is partly written",
+		`token: "${T} extra"`:      "sources.sentry.auth.token is partly written",
+		`token: "Bearer ${T}"`:     "sources.sentry.auth.token starts with an authorization scheme",
+	}
+	for replacement, want := range tokens {
+		got := warnings(t, strings.Replace(validConfig, `token: "${SENTRY_TOKEN}"`, replacement, 1))
+		if want == "" && got != "" || want != "" && !strings.Contains(got, want) {
+			t.Errorf("%s: warnings %q, want %q", replacement, got, want)
 		}
 	}
-	input := strings.Replace(validConfig, "url: http://loki:3100", `url: "http://u:pw${P}@loki:3100"`, 1)
-	cfg, err := Parse([]byte(input), env(vars))
-	if err != nil {
-		t.Fatal(err)
+	// Header values may wrap a reference in any form; only a value without one warns.
+	headers := map[string]bool{
+		`Cookie: "session=${T}"`:                  false,
+		`Authorization: "Token token=${T}"`:       false,
+		`X-Sentry-Auth: "Sentry sentry_key=${T}"`: false,
+		`X-Api-Key: "${T}:${P}"`:                  false,
+		`Authorization: "Bearer written"`:         true,
 	}
-	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "sources.loki.url contains a password") {
-		t.Errorf("partly literal URL password did not warn: %v", cfg.Warnings)
+	for header, warn := range headers {
+		got := warnings(t, strings.Replace(validConfig, "X-Scope-OrgID: prod", "X-Scope-OrgID: prod, "+header, 1))
+		if strings.Contains(got, "is written in the config file") != warn {
+			t.Errorf("%s: warnings %q, want warning %v", header, got, warn)
+		}
 	}
-	input = "server:\n  database: postgres://sonda:pw@db/sonda\n" + validConfig
-	if cfg, err = Parse([]byte(input), env(validEnv())); err != nil || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "server.database contains a password") {
-		t.Errorf("database password: err = %v, warnings = %v", err, cfg)
+	got := warnings(t, strings.Replace(validConfig, "url: http://loki:3100", `url: "http://u:pw${P}@loki:3100"`, 1))
+	if !strings.Contains(got, "sources.loki.url contains a password") {
+		t.Errorf("partly literal URL password did not warn: %q", got)
+	}
+	databases := map[string]bool{
+		"postgres://sonda:pw@db/sonda":           true,
+		"postgres://sonda@db/sonda?password=pw":  true,
+		"postgresql://sonda:pw@db/sonda":         true,
+		"postgres://sonda@db/sonda":              false,
+		"postgres://sonda:@db/sonda":             false,
+		"/var/lib/sonda.db":                      false,
+		"file:sonda.db?cache=shared&password=no": false,
+	}
+	for database, warn := range databases {
+		got := warnings(t, "server:\n  database: \""+database+"\"\n"+validConfig)
+		if strings.Contains(got, "server.database contains a password") != warn || strings.Contains(got, "pw") {
+			t.Errorf("%s: warnings %q, want warning %v", database, got, warn)
+		}
 	}
 }
 
