@@ -132,6 +132,8 @@ func Parse(data []byte, lookupEnv func(string) (string, bool)) (*Config, error) 
 	if err := errors.Join(v.errs...); err != nil {
 		return nil, err
 	}
+	// Sources and services are maps; sorting keeps the output stable between runs.
+	slices.Sort(v.warnings)
 	cfg.Warnings = v.warnings
 	return cfg, nil
 }
@@ -672,24 +674,38 @@ func (v *validator) positive(path string, raw *int, target *int) {
 }
 
 // url checks an expanded URL. The error does not repeat the value: it can hold credentials
-// from the environment or a secret file. A fragment is refused, because an unescaped '#' in a
-// userinfo password would otherwise be parsed as one and part of the password as the host.
+// from the environment or a secret file. An unescaped '/', '?' or '#' in a userinfo password
+// ends the authority early and turns the start of the password into a host and port, so a URL
+// with '@' outside its userinfo, or with a fragment, is refused.
 func (v *validator) url(path, raw string) {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Fragment != "" || strings.Contains(raw, "#") {
-		v.fail("%s: invalid URL, expected http(s)://host[:port][/path] without a fragment", path)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		v.fail("%s: invalid URL, expected http(s)://host[:port][/path]", path)
+		return
+	}
+	if u.Fragment != "" || strings.Contains(raw, "#") || (u.User == nil && strings.Contains(raw, "@")) {
+		v.fail("%s: invalid URL; percent-encode '@', '/', '?' and '#' in a username or password, and leave out the fragment", path)
 	}
 }
 
-// urlCredentials warns about a password written into a URL in the file.
+// urlCredentials warns about a password written into a URL in the file. A password that is
+// itself an environment reference is fine; the rest of the URL may use references too.
 func (v *validator) urlCredentials(path, raw string) {
-	if envReference.MatchString(raw) {
+	_, rest, ok := strings.Cut(raw, "://")
+	if !ok {
 		return
 	}
-	if u, err := url.Parse(raw); err == nil && u.User != nil {
-		if _, hasPassword := u.User.Password(); hasPassword {
-			v.warn("%s contains a password written in the config file; use auth with an environment variable instead", path)
-		}
+	authority := rest
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority = rest[:i]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return
+	}
+	_, password, hasPassword := strings.Cut(authority[:at], ":")
+	if hasPassword && password != "" && !envReference.MatchString(password) {
+		v.warn("%s contains a password written in the config file; use auth with an environment variable instead", path)
 	}
 }
 

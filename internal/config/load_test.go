@@ -150,10 +150,25 @@ func TestURLChecks(t *testing.T) {
 	if got := strings.Join(cfg.Warnings, "\n"); !strings.Contains(got, "sources.loki.url contains a password") || strings.Contains(got, "pw") {
 		t.Errorf("warnings = %q", got)
 	}
-	input = strings.Replace(validConfig, "url: http://loki:3100", "url: http://user:12#34@loki:3100", 1)
-	_, err = Parse([]byte(input), env(validEnv()))
-	if err == nil || !strings.Contains(err.Error(), "sources.loki.url: invalid URL") || strings.Contains(err.Error(), "12#34") {
-		t.Errorf("error = %v", err)
+	for _, bad := range []string{"http://user:12#34@loki:3100", "http://user:123/abc@loki:3100", "http://user:123?x=1@loki:3100"} {
+		input = strings.Replace(validConfig, "url: http://loki:3100", "url: "+bad, 1)
+		_, err = Parse([]byte(input), env(validEnv()))
+		if err == nil || !strings.Contains(err.Error(), "sources.loki.url: invalid URL") || strings.Contains(err.Error(), "123") || strings.Contains(err.Error(), "12#") {
+			t.Errorf("%s: error = %v", bad, err)
+		}
+	}
+	// A literal password next to a host from the environment still warns; a referenced one does not.
+	vars := validEnv()
+	vars["LOKI_HOST"], vars["LOKI_PASS"] = "loki:3100", "pw"
+	for url, warn := range map[string]bool{"https://user:hunter2@${LOKI_HOST}": true, "https://user:${LOKI_PASS}@${LOKI_HOST}": false} {
+		input = strings.Replace(validConfig, "url: http://loki:3100", `url: "`+url+`"`, 1)
+		cfg, err := Parse([]byte(input), env(vars))
+		if err != nil {
+			t.Fatalf("%s: %v", url, err)
+		}
+		if got := strings.Contains(strings.Join(cfg.Warnings, "\n"), "sources.loki.url contains a password"); got != warn {
+			t.Errorf("%s: warned = %v, want %v", url, got, warn)
+		}
 	}
 }
 
