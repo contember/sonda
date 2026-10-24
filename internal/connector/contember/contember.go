@@ -5,10 +5,12 @@ package contember
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
@@ -66,6 +68,14 @@ type response struct {
 // errors of Sonda's own schema queries are upstream errors.
 func (c *Client) post(ctx context.Context, scope authz.ContemberScope, query string, agentQuery bool) (json.RawMessage, error) {
 	status, body, err := upstream.PostJSON(ctx, c.http, c.source.Name, c.ContentURL(scope), map[string]string{"query": query})
+	var tooLarge *upstream.TooLargeError
+	if errors.As(err, &tooLarge) {
+		// Only the agent's own query can be made smaller.
+		if agentQuery && status >= 200 && status < 300 {
+			return nil, apierr.New(api.CodeLimitExceeded, "%s; lower the limits", tooLarge.Error())
+		}
+		return nil, apierr.Upstream("%s", tooLarge.Error())
+	}
 	if err != nil {
 		return nil, err
 	}

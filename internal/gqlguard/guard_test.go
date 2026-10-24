@@ -290,6 +290,24 @@ func TestCheckRejectsInlinedVariableBlowupQuickly(t *testing.T) {
 	}
 }
 
+// A fragment with a large literal argument, spread many times, is capped while printing.
+func TestCheckRejectsFragmentLiteralBlowupQuickly(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	order := strings.TrimSuffix(strings.Repeat("{id: asc}, ", 1000), ", ")
+	query := `fragment F on Author { articles(limit: 1, orderBy: [` + order + `]) { id } } { listAuthor(limit: 1) { ` + strings.Repeat("...F ", 40) + `} }`
+	rules := testRules()
+	rules.MaxBytes = 16 << 10
+	start := time.Now()
+	_, err := Check(s, query, nil, rules)
+	var rejected *Error
+	if !errors.As(err, &rejected) || !rejected.Limit {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Errorf("rejection took %s", elapsed)
+	}
+}
+
 func TestCheckAllowList(t *testing.T) {
 	s := loadFixture(t, "contember_reader.json")
 	rules := testRules()
