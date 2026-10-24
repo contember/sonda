@@ -56,9 +56,13 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	// Only grants of configured capabilities count; the others have no effect.
 	granted := map[string]map[string]bool{}
 	for _, identity := range list {
 		for _, g := range identity.Grants {
+			if !h.configured(g) {
+				continue
+			}
 			target := g.Service + "\x00" + g.Environment
 			if granted[target] == nil {
 				granted[target] = map[string]bool{}

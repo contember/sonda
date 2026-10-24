@@ -253,3 +253,22 @@ func TestServicesPageHidesCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	stale := identities.Grant{Service: "api", Environment: "production", Capability: api.CapabilityTraces}
+	if err := env.store.Create(ctx, identities.Identity{Name: "stale", TokenSHA256: [32]byte{1}, Grants: []identities.Grant{stale}}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := env.client.Get(env.server.URL + "/admin/services")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), `<span class="subtle">0</span>`) {
+		t.Errorf("a stale grant was counted:\n%s", raw)
+	}
+}

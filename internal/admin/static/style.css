@@ -399,3 +399,20 @@ details summary { cursor: pointer; color: var(--text-muted); font-size: var(--te
 .login-card .brand { justify-content: center; margin-bottom: 16px; }
 
 .form > .card { margin-bottom: 0; }
+
+/* Environment cells that span the rows of their capabilities. */
+th.env {
+  height: auto;
+  padding: 6px 12px;
+  vertical-align: top;
+  white-space: nowrap;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+td.env-count { vertical-align: top; border-left: 1px solid var(--border); }
+tbody tr:hover > th.env { background: var(--surface); }
+tbody tr:last-child > th.env { border-bottom: 0; }

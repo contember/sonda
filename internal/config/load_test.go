@@ -98,6 +98,65 @@ func TestSecretFromFile(t *testing.T) {
 	}
 }
 
+func TestSecretFilePrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentry_token")
+	if err := os.WriteFile(path, []byte("from-file\r\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		vars map[string]string
+		want string
+	}{
+		{"value wins over file", map[string]string{"SENTRY_TOKEN": "from-env", "SENTRY_TOKEN_FILE": path}, "from-env"},
+		{"empty value falls back to file", map[string]string{"SENTRY_TOKEN": "", "SENTRY_TOKEN_FILE": path}, "from-file"},
+		{"file only", map[string]string{"SENTRY_TOKEN_FILE": path}, "from-file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vars := validEnv()
+			delete(vars, "SENTRY_TOKEN")
+			for k, v := range tt.vars {
+				vars[k] = v
+			}
+			cfg, err := Parse([]byte(validConfig), env(vars))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Sources["sentry"].Auth.Token; got != tt.want {
+				t.Errorf("token = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSensitiveHeader(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Authorization": true, "Proxy-Authorization": true, "Cookie": true, "X-Api-Key": true,
+		"X-Auth-Token": true, "X-Sentry-Auth": true, "X-Scope-OrgID": false, "Monkey": false, "Accept": false,
+	} {
+		if got := sensitiveHeader(name); got != want {
+			t.Errorf("sensitiveHeader(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestURLChecks(t *testing.T) {
+	input := strings.Replace(validConfig, "url: http://loki:3100", "url: http://user:pw@loki:3100", 1)
+	cfg, err := Parse([]byte(input), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Warnings, "\n"); !strings.Contains(got, "sources.loki.url contains a password") || strings.Contains(got, "pw") {
+		t.Errorf("warnings = %q", got)
+	}
+	input = strings.Replace(validConfig, "url: http://loki:3100", "url: http://user:12#34@loki:3100", 1)
+	_, err = Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "sources.loki.url: invalid URL") || strings.Contains(err.Error(), "12#34") {
+		t.Errorf("error = %v", err)
+	}
+}
+
 func TestWarnsAboutCredentialsInFile(t *testing.T) {
 	cfg, err := Parse([]byte(validConfig), env(validEnv()))
 	if err != nil {

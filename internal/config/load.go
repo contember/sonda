@@ -243,6 +243,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare or aws, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
+	v.urlCredentials(path+".url", raw.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
 	for header, value := range raw.Headers {
 		if sensitiveHeader(header) {
@@ -670,30 +671,50 @@ func (v *validator) positive(path string, raw *int, target *int) {
 	*target = *raw
 }
 
+// url checks an expanded URL. The error does not repeat the value: it can hold credentials
+// from the environment or a secret file. A fragment is refused, because an unescaped '#' in a
+// userinfo password would otherwise be parsed as one and part of the password as the host.
 func (v *validator) url(path, raw string) {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		v.fail("%s: invalid URL %q", path, raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Fragment != "" || strings.Contains(raw, "#") {
+		v.fail("%s: invalid URL, expected http(s)://host[:port][/path] without a fragment", path)
+	}
+}
+
+// urlCredentials warns about a password written into a URL in the file.
+func (v *validator) urlCredentials(path, raw string) {
+	if envReference.MatchString(raw) {
+		return
+	}
+	if u, err := url.Parse(raw); err == nil && u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			v.warn("%s contains a password written in the config file; use auth with an environment variable instead", path)
+		}
 	}
 }
 
 var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// expand resolves ${NAME} references. When NAME is not set but NAME_FILE is, the value is
-// read from that file, as with Docker and Kubernetes secrets; a trailing newline is dropped.
+// expand resolves ${NAME} references. When NAME is unset or empty and NAME_FILE is set, the
+// value is read from that file, as with Docker and Kubernetes secrets; trailing newlines are
+// dropped. An empty NAME counts as unset because compose files often pass NAME through empty.
 func (v *validator) expand(path, raw string) string {
 	return envReference.ReplaceAllStringFunc(raw, func(ref string) string {
 		name := envReference.FindStringSubmatch(ref)[1]
-		if value, ok := v.lookupEnv(name); ok {
+		value, set := v.lookupEnv(name)
+		if value != "" {
 			return value
 		}
-		if file, ok := v.lookupEnv(name + "_FILE"); ok {
+		if file, ok := v.lookupEnv(name + "_FILE"); ok && file != "" {
 			data, err := v.readFile(file)
 			if err != nil {
 				v.fail("%s: read %s_FILE: %v", path, name, err)
 				return ""
 			}
 			return strings.TrimRight(string(data), "\r\n")
+		}
+		if set {
+			return ""
 		}
 		v.fail("%s: environment variable %s is not set (nor %s_FILE)", path, name, name)
 		return ""
@@ -709,11 +730,23 @@ func (v *validator) secret(path, raw string) string {
 	return v.expand(path, raw)
 }
 
-// sensitiveHeader reports headers that usually carry credentials.
+// sensitiveHeader reports headers that usually carry credentials, such as Authorization,
+// Proxy-Authorization, Cookie, X-Api-Key, X-Auth-Token or X-Sentry-Auth. Words are matched
+// as '-' or '_' separated segments, so X-Scope-OrgID or Monkey do not match.
 func sensitiveHeader(name string) bool {
 	lower := strings.ToLower(name)
-	return lower == "authorization" || strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
-		strings.Contains(lower, "password") || strings.HasSuffix(lower, "key") || strings.Contains(lower, "api-key")
+	for _, word := range []string{"token", "secret", "password", "apikey", "credential"} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	for _, segment := range strings.FieldsFunc(lower, func(r rune) bool { return r == '-' || r == '_' }) {
+		switch segment {
+		case "authorization", "auth", "cookie", "key", "signature":
+			return true
+		}
+	}
+	return false
 }
 
 func parseLogSelector(selector string) ([]*labels.Matcher, error) {

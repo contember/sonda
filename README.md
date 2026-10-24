@@ -108,9 +108,10 @@ parts that matter for security:
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
-  chain. `${NAME}` reads the variable `NAME`; when it is unset and `NAME_FILE` is set, the value
-  is read from that file (Docker and Kubernetes secrets). A credential written directly into
-  the file works, but `check` and `serve` warn about it. Use read-only tokens and roles; the Security section of `docs/design.md` lists the
+  chain. `${NAME}` reads the variable `NAME`; when it is unset or empty and `NAME_FILE` is set, the
+  value is read from that file (Docker and Kubernetes secrets). A token, password, admin token,
+  credential header (`Authorization`, `Cookie`, `X-Api-Key`…) or URL password written directly
+  into the file works, but `check` and `serve` warn about it. Use read-only tokens and roles; the Security section of `docs/design.md` lists the
   Cloudflare permission and the AWS IAM actions.
 - **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
   `/admin` only on a trusted network.
