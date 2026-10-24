@@ -109,6 +109,17 @@ func TestContemberReader(t *testing.T) {
 	}
 }
 
+func TestContemberDeniedRelationHidesInverseSide(t *testing.T) {
+	url, project, reader, _ := contemberEnv(t)
+	s, identity := contemberService(t, url, project, reader, `[Article.author]`)
+	_, err := s.QueryData(context.Background(), identity, "blog", api.DataQueryRequest{
+		Query: `{ listAuthor(limit: 1, filter: {articles: {title: {contains: "a"}}}) { name } }`,
+	})
+	if e, ok := apierr.As(err); !ok || e.Code != api.CodeInvalidQuery || !strings.Contains(e.Message, "Author.articles is not allowed") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestContemberCheckFindings(t *testing.T) {
 	url, project, reader, _ := contemberEnv(t)
 	s, _ := contemberService(t, url, project, reader, `[Author.mail]`)

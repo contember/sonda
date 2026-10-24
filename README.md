@@ -164,7 +164,7 @@ services:
           project: shop                 # Contember project slug
           stage: live                   # default
           entities: [Order, Product]    # optional allow list; empty = everything the role reads
-          deny_fields: ["*.email", Customer.phone]
+          deny_fields: ["*.email", Customer.phone]   # a denied relation hides both its sides
 
 limits:
   data_max_rows: 500                    # rows a query can return, nested lists multiplied

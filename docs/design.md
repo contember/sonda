@@ -592,7 +592,9 @@ query in three steps:
   - A denied field is rejected in a selection and as a key of `filter`, `by` and `orderBy`,
     through relations and `and`/`or`/`not`. Otherwise filtering, unique lookups, ordering or
     `totalCount` could test the values of a hidden field. A denied relation also blocks its
-    derived fields.
+    derived fields and its other side (`Article.author` denies `Author.articles`), read from
+    the relation model of the Content API's `schema` root field, which Sonda loads with the
+    schema. Without that model no query runs.
   - Every `list<E>` and has-many relation needs `limit`, every paginate field `first`, as an
     integer after variables are inlined. Rows are budgeted: each list adds the product of the
     limits on its path, and the sum must stay within `data_max_rows` (default 500). Aliases

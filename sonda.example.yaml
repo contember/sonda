@@ -112,7 +112,8 @@ services:
 
   # Read-only application data from a Contember project (the "data" capability). The
   # source's API key must belong to a role that can only read; Sonda refuses a key that can
-  # write. entities is an optional allow list, deny_fields hides fields also from filters.
+  # write. entities is an optional allow list, deny_fields hides fields also from filters;
+  # a denied relation is hidden on both sides.
   # shop-api:
   #   environments:
   #     production:

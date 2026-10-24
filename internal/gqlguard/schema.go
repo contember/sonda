@@ -25,6 +25,9 @@ type Schema struct {
 	edges       map[string]string // edge type → entity
 	pageInfo    string
 	write       []string
+	// inverse maps "Entity.relation" to the other side of the relation, "Target.field".
+	// It is nil until AddRelations runs.
+	inverse map[string]string
 }
 
 type entity struct {
@@ -192,6 +195,68 @@ func (e *entity) derivedBase(name string, connection bool) string {
 	return best
 }
 
+// AddRelations reads the relation model from the Content API's schema root field:
+//
+//	query { schema { entities { name fields { name ... on _Relation { targetEntity ownedBy inversedBy } } } } }
+//
+// A relation can be read from both sides, so a denied relation also denies its other side.
+func (s *Schema) AddRelations(data []byte) error {
+	var envelope struct {
+		Data *relationModel `json:"data"`
+		relationModel
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return fmt.Errorf("invalid relation model JSON: %w", err)
+	}
+	model := &envelope.relationModel
+	if envelope.Data != nil {
+		model = envelope.Data
+	}
+	if model.Schema == nil {
+		return errors.New("relation model has no schema field")
+	}
+	s.inverse = map[string]string{}
+	for _, e := range model.Schema.Entities {
+		for _, f := range e.Fields {
+			other := f.OwnedBy
+			if other == "" {
+				other = f.InversedBy
+			}
+			if f.TargetEntity != "" && other != "" {
+				s.inverse[e.Name+"."+f.Name] = f.TargetEntity + "." + other
+			}
+		}
+	}
+	return nil
+}
+
+type relationModel struct {
+	Schema *struct {
+		Entities []struct {
+			Name   string `json:"name"`
+			Fields []struct {
+				Name         string `json:"name"`
+				TargetEntity string `json:"targetEntity"`
+				OwnedBy      string `json:"ownedBy"`
+				InversedBy   string `json:"inversedBy"`
+			} `json:"fields"`
+		} `json:"entities"`
+	} `json:"schema"`
+}
+
+// denied applies the rules to a field and, for a relation, to its other side.
+func (s *Schema) denied(rules Rules, entity, field string) bool {
+	if rules.denied(entity, field) {
+		return true
+	}
+	other, ok := s.inverse[entity+"."+field]
+	if !ok {
+		return false
+	}
+	target, name, _ := strings.Cut(other, ".")
+	return rules.denied(target, name)
+}
+
 func (s *Schema) isLeaf(name string) bool {
 	def := s.ast.Types[name]
 	return def != nil && (def.Kind == ast.Scalar || def.Kind == ast.Enum)
@@ -257,7 +322,7 @@ func (s *Schema) Visible(rules Rules) ([]Entity, map[string][]string) {
 		e := s.entities[name]
 		out := Entity{Name: name}
 		for _, field := range e.fields {
-			if rules.denied(name, field) {
+			if s.denied(rules, name, field) {
 				continue
 			}
 			if r, ok := e.relations[field]; ok {
@@ -279,7 +344,7 @@ func (s *Schema) Visible(rules Rules) ([]Entity, map[string][]string) {
 		}
 		for _, key := range e.unique {
 			r, isRelation := e.relations[key]
-			if !rules.denied(name, key) && (!isRelation || rules.allowed(r.target)) {
+			if !s.denied(rules, name, key) && (!isRelation || rules.allowed(r.target)) {
 				out.Unique = append(out.Unique, key)
 			}
 		}

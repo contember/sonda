@@ -35,6 +35,14 @@ func (c *Client) Introspect(ctx context.Context, scope authz.ContemberScope) ([]
 	return data, nil
 }
 
+// Relations returns the relation model of the project stage as the role sees it, from the
+// Content API's schema root field.
+func (c *Client) Relations(ctx context.Context, scope authz.ContemberScope) ([]byte, error) {
+	return c.post(ctx, scope, relationsQuery)
+}
+
+const relationsQuery = `query { schema { entities { name fields { name ... on _Relation { targetEntity ownedBy inversedBy } } } } }`
+
 // Query runs a checked query and returns its data object.
 func (c *Client) Query(ctx context.Context, q policy.ContemberGraphQL) (json.RawMessage, error) {
 	return c.post(ctx, q.Scope(), q.String())

@@ -34,6 +34,13 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
+	relations, err := os.ReadFile("../gqlguard/testdata/contember_reader_relations.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.AddRelations(relations); err != nil {
+		t.Fatal(err)
+	}
 	// One 2 KB variable used in 20 fields: small input, large normalized query.
 	var fields strings.Builder
 	for i := range 20 {

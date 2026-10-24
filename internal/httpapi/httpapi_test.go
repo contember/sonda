@@ -79,6 +79,11 @@ func (u *upstreams) handler() http.Handler {
 				_, _ = w.Write(data)
 				return
 			}
+			if strings.Contains(body.Query, "_Relation") {
+				data, _ := os.ReadFile(filepath.Join("..", "gqlguard", "testdata", strings.TrimSuffix(fixture, ".json")+"_relations.json"))
+				_, _ = w.Write(data)
+				return
+			}
 			u.record(body.Query)
 			fmt.Fprint(w, `{"data":{"listArticle":[{"title":"Hello","secret":"password=hunter2"}]},"extensions":{"dbQueries":["select"]}}`)
 		})

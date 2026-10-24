@@ -1,0 +1,77 @@
+{
+    "data": {
+        "schema": {
+            "entities": [
+                {
+                    "name": "Author",
+                    "fields": [
+                        {
+                            "name": "id"
+                        },
+                        {
+                            "name": "name"
+                        },
+                        {
+                            "name": "email"
+                        },
+                        {
+                            "name": "articles",
+                            "targetEntity": "Article",
+                            "ownedBy": "author",
+                            "inversedBy": null
+                        }
+                    ]
+                },
+                {
+                    "name": "Article",
+                    "fields": [
+                        {
+                            "name": "id"
+                        },
+                        {
+                            "name": "title"
+                        },
+                        {
+                            "name": "published"
+                        },
+                        {
+                            "name": "status"
+                        },
+                        {
+                            "name": "secretNote"
+                        },
+                        {
+                            "name": "author",
+                            "targetEntity": "Author",
+                            "ownedBy": null,
+                            "inversedBy": "articles"
+                        },
+                        {
+                            "name": "tags",
+                            "targetEntity": "Tag",
+                            "ownedBy": null,
+                            "inversedBy": "articles"
+                        }
+                    ]
+                },
+                {
+                    "name": "Tag",
+                    "fields": [
+                        {
+                            "name": "id"
+                        },
+                        {
+                            "name": "name"
+                        },
+                        {
+                            "name": "articles",
+                            "targetEntity": "Article",
+                            "ownedBy": "tags",
+                            "inversedBy": null
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

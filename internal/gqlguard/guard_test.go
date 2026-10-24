@@ -20,6 +20,13 @@ func loadFixture(t *testing.T, name string) *Schema {
 	if err != nil {
 		t.Fatal(err)
 	}
+	relations, err := os.ReadFile("testdata/" + strings.TrimSuffix(name, ".json") + "_relations.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddRelations(relations); err != nil {
+		t.Fatal(err)
+	}
 	return s
 }
 
@@ -293,6 +300,50 @@ func TestDeniedRelationBlocksDerivedFields(t *testing.T) {
 	}
 }
 
+// A relation can be read from both sides, so denying one side denies the other.
+func TestDeniedRelationBlocksInverseSide(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	rules := testRules()
+	rules.Denied = func(entity, field string) bool { return entity == "Article" && field == "author" }
+	for _, q := range []string{
+		`{ listArticle(limit: 1) { author { name } } }`,
+		`{ listAuthor(limit: 10) { name articles(limit: 10) { id title } } }`,
+		`{ listAuthor(limit: 1, filter: {articles: {id: {eq: "x"}}}) { name } }`,
+		`{ getAuthor(by: {articles: {id: "x"}}) { name } }`,
+		`{ getAuthor(by: {id: "x"}) { paginateArticles(first: 1) { pageInfo { totalCount } } } }`,
+		`{ getAuthor(by: {id: "x"}) { articlesBy(by: {id: "y"}) { id } } }`,
+	} {
+		if _, err := Check(s, q, nil, rules); err == nil || !strings.Contains(err.Error(), "is not allowed") {
+			t.Errorf("%s: err = %v", q, err)
+		}
+	}
+	entities, _ := s.Visible(rules)
+	for _, e := range entities {
+		for _, f := range e.Fields {
+			if (e.Name == "Author" && f.Name == "articles") || (e.Name == "Article" && f.Name == "author") {
+				t.Errorf("%s.%s is visible", e.Name, f.Name)
+			}
+		}
+	}
+	if _, err := Check(s, `{ listArticle(limit: 1) { tags(limit: 1) { name } } }`, nil, rules); err != nil {
+		t.Errorf("unrelated relation rejected: %v", err)
+	}
+}
+
+func TestCheckNeedsRelationModel(t *testing.T) {
+	data, err := os.ReadFile("testdata/contember_reader.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadIntrospection(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(s, `{ listTag(limit: 1) { id } }`, nil, testRules()); err == nil {
+		t.Fatal("checked without the relation model")
+	}
+}
+
 // FuzzCheck checks that every accepted query re-validates and is stable under normalization.
 func FuzzCheck(f *testing.F) {
 	for _, seed := range []string{
@@ -308,6 +359,13 @@ func FuzzCheck(f *testing.F) {
 	}
 	s, err := LoadIntrospection(data)
 	if err != nil {
+		f.Fatal(err)
+	}
+	relations, err := os.ReadFile("testdata/contember_reader_relations.json")
+	if err != nil {
+		f.Fatal(err)
+	}
+	if err := s.AddRelations(relations); err != nil {
 		f.Fatal(err)
 	}
 	f.Fuzz(func(t *testing.T, query string) {
