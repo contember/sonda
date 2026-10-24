@@ -82,6 +82,9 @@ sources. The implementation addresses:
 - Later review rounds: the normalized query is size-limited too (inlined variables could
   multiply it), startup checks run per binding in parallel, and a denied relation also
   denies its other side, so `Article.author` cannot be read back through `Author.articles`.
+- Round 6: the size cap on the normalized query is enforced while variables are inlined,
+  so a large variable repeated in a list cannot make Sonda build and validate megabytes of
+  text first; an upstream response over 32 MB is `limit_exceeded`, not invalid JSON.
 - No per-identity overrides for the data limits (they would need a store migration), no
   result handles for GraphQL trees (`limit_exceeded` instead), `check` stays offline unless
   `--online` is given.

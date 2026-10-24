@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
 )
@@ -93,5 +95,16 @@ func TestEKSAuth(t *testing.T) {
 	}
 	if !strings.Contains(wrapped.Error(), "AccessDenied") {
 		t.Errorf("credential failure lost its cause: %v", wrapped)
+	}
+}
+
+func TestPostJSONRejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte(" "), maxBodyBytes+1))
+	}))
+	defer srv.Close()
+	_, _, err := PostJSON(context.Background(), srv.Client(), "test", srv.URL, map[string]string{})
+	if e, ok := apierr.As(err); !ok || e.Code != api.CodeLimitExceeded {
+		t.Fatalf("err = %v", err)
 	}
 }

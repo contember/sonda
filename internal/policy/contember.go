@@ -38,6 +38,7 @@ func DataRules(scope authz.ContemberScope, limits config.Limits) gqlguard.Rules 
 		MaxDepth:  limits.DataMaxDepth,
 		MaxFields: limits.DataMaxFields,
 		MaxOffset: maxDataOffset,
+		MaxBytes:  limits.DataMaxQueryBytes,
 	}
 }
 
@@ -51,6 +52,9 @@ func ScopeContemberGraphQL(scope authz.ContemberScope, schema *gqlguard.Schema, 
 	if err != nil {
 		var rejected *gqlguard.Error
 		if errors.As(err, &rejected) {
+			if rejected.Limit {
+				return ContemberGraphQL{}, apierr.New(api.CodeLimitExceeded, "%s", rejected.Message)
+			}
 			return ContemberGraphQL{}, apierr.InvalidQuery("%s", rejected.Message)
 		}
 		return ContemberGraphQL{}, err

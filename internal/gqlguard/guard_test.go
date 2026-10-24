@@ -1,6 +1,7 @@
 package gqlguard
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -261,6 +262,31 @@ func TestCheckRejectsLargeQueryQuickly(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Errorf("rejection took %s", elapsed)
+	}
+}
+
+// One large variable repeated in a list value must stop at the byte cap while printing,
+// not after the whole text is built and validated again.
+func TestCheckRejectsInlinedVariableBlowupQuickly(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	refs := strings.TrimSuffix(strings.Repeat("$v,", 2000), ",")
+	query := `query($v: String!) { listArticle(limit: 1, filter: {title: {in: [` + refs + `]}}) { id } }`
+	vars := []byte(`{"v": "` + strings.Repeat("x", 8000) + `"}`)
+	rules := testRules()
+	rules.MaxBytes = 16 << 10
+	start := time.Now()
+	_, err := Check(s, query, vars, rules)
+	var rejected *Error
+	if !errors.As(err, &rejected) || !rejected.Limit {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Errorf("rejection took %s", elapsed)
+	}
+	// A default value repeated the same way is capped too.
+	query = `query($v: String = "` + strings.Repeat("x", 8000) + `") { listArticle(limit: 1, filter: {title: {in: [$v, $v, $v]}}) { id } }`
+	if _, err := Check(s, query, nil, rules); !errors.As(err, &rejected) || !rejected.Limit {
+		t.Fatalf("default value: err = %v", err)
 	}
 }
 
