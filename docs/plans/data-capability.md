@@ -87,6 +87,9 @@ sources. The implementation addresses:
   text first; an upstream response over 32 MB is `limit_exceeded`, not invalid JSON.
 - Round 7: the same cap covers literals repeated through fragments, and an oversized
   response to Sonda's own schema queries is an upstream error, since the agent cannot fix it.
+- Round 8: an agent query's response is read only up to twice `max_response_bytes`, so
+  aliasing a text column hundreds of times cannot make Sonda read and redact 30 MB; the
+  README tells operators to revoke `data` grants before rolling back to an older version.
 - No per-identity overrides for the data limits (they would need a store migration), no
   result handles for GraphQL trees (`limit_exceeded` instead), `check` stays offline unless
   `--online` is given.

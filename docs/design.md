@@ -619,7 +619,9 @@ Responses: `data` holds the GraphQL data object with every string redacted, keys
 order; response `extensions` are dropped, because a Contember engine in debug mode puts SQL
 with bound values there. GraphQL errors of the agent's query become `invalid_query`; errors of
 Sonda's own schema queries, and Contember 401/403/404 and 5xx, become `upstream_error`. There are no result handles: a response above `max_response_bytes`
-fails with `limit_exceeded`, and the agent lowers its limits. `meta.untrusted` marks
+fails with `limit_exceeded`, and the agent lowers its limits. Sonda reads at most twice
+`max_response_bytes` of the upstream response before failing, so a wide query does not make
+it read and redact megabytes it would refuse anyway. `meta.untrusted` marks
 `data.data`. The normalized query is returned once, in `data.query`; the source entry
 carries only the kind.
 

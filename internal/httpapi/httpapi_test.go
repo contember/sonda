@@ -85,6 +85,11 @@ func (u *upstreams) handler() http.Handler {
 				return
 			}
 			u.record(body.Query)
+			if strings.Contains(body.Query, "limit: 500") {
+				// A response far above max_response_bytes.
+				fmt.Fprint(w, `{"data":{"listArticle":[`+strings.Repeat(`{"title":"`+strings.Repeat("x", 1000)+`"},`, 500)+`{}]}}`)
+				return
+			}
 			fmt.Fprint(w, `{"data":{"listArticle":[{"title":"Hello","secret":"password=hunter2"}]},"extensions":{"dbQueries":["select"]}}`)
 		})
 	}
@@ -462,6 +467,17 @@ func TestDataQueryIsNormalizedAndRedacted(t *testing.T) {
 	}
 	if len(resp.Meta.Untrusted) == 0 {
 		t.Error("data not marked untrusted")
+	}
+}
+
+func TestDataQueryRefusesOversizedResponse(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.ErrorResponse
+	env.call(t, "agent-token", "POST", "/v1/services/shop/data/query", api.DataQueryRequest{
+		Query: `{ listArticle(limit: 500) { title } }`,
+	}, &resp)
+	if resp.Error.Code != api.CodeLimitExceeded || !strings.Contains(resp.Error.Message, "select fewer fields") {
+		t.Fatalf("error %+v", resp.Error)
 	}
 }
 

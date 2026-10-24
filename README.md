@@ -180,6 +180,10 @@ because a typo would leave a field readable. `sonda-server check --online` repor
 warns about readable fields that look like personal data. Query results and the audited query text
 can contain personal data; treat the audit log accordingly.
 
+An older Sonda does not know the `data` grant. Before rolling back to a version without it,
+revoke `data` in the admin UI (or `DELETE FROM identity_grants WHERE capability = 'data'`);
+otherwise identities that hold it cannot sign in and the identity list fails to load.
+
 ## Admin UI
 
 Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.

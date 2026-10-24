@@ -106,8 +106,12 @@ func truncate(s string, n int) string {
 }
 
 // PostJSON sends body as JSON and returns the status and the body of the response, so the
-// caller can read errors that come with a non-2xx status (GraphQL does that).
-func PostJSON(ctx context.Context, client *http.Client, source, url string, body any) (int, []byte, error) {
+// caller can read errors that come with a non-2xx status (GraphQL does that). A body over
+// limit bytes (32 MB when limit is 0 or larger) is a TooLargeError.
+func PostJSON(ctx context.Context, client *http.Client, source, url string, body any, limit int) (int, []byte, error) {
+	if limit <= 0 || limit > maxBodyBytes {
+		limit = maxBodyBytes
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return 0, nil, err
@@ -123,26 +127,27 @@ func PostJSON(ctx context.Context, client *http.Client, source, url string, body
 		return 0, nil, Wrap(source, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return 0, nil, Wrap(source, err)
 	}
 	// A cut body would only fail as invalid JSON, so it is reported as too large.
-	if len(data) > maxBodyBytes {
-		return resp.StatusCode, nil, &TooLargeError{Source: source, Status: resp.StatusCode}
+	if len(data) > limit {
+		return resp.StatusCode, nil, &TooLargeError{Source: source, Status: resp.StatusCode, Limit: limit}
 	}
 	return resp.StatusCode, data, nil
 }
 
-// TooLargeError is a response body over the 32 MB read cap. The caller decides whether the
+// TooLargeError is a response body over the read limit. The caller decides whether the
 // agent can fix it by asking for less.
 type TooLargeError struct {
 	Source string
 	Status int
+	Limit  int
 }
 
 func (e *TooLargeError) Error() string {
-	return fmt.Sprintf("source %s returned more than %d MB (HTTP %d)", e.Source, maxBodyBytes>>20, e.Status)
+	return fmt.Sprintf("source %s returned more than %d bytes (HTTP %d)", e.Source, e.Limit, e.Status)
 }
 
 // NewStatusError builds the error of a non-2xx response with a shortened body.
