@@ -133,8 +133,50 @@ func TestSecretFilePrecedence(t *testing.T) {
 func TestGrafanaURLRefusesCredentials(t *testing.T) {
 	input := validConfig + "grafana:\n  url: https://admin:grafpw@grafana.example.com\n"
 	_, err := Parse([]byte(input), env(validEnv()))
-	if err == nil || !strings.Contains(err.Error(), "grafana.url must not contain a username or password") || strings.Contains(err.Error(), "grafpw") {
+	if err == nil || !strings.Contains(err.Error(), "grafana.url must be scheme://host[:port][/path] without credentials or a query") || strings.Contains(err.Error(), "grafpw") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+func TestGrafanaURLRefusesQuery(t *testing.T) {
+	input := validConfig + "grafana:\n  url: https://grafana.example.com/?auth_token=abc\n"
+	_, err := Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "grafana.url must be") || strings.Contains(err.Error(), "abc") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestPartlyLiteralCredentialsWarn(t *testing.T) {
+	vars := validEnv()
+	vars["T"], vars["P"] = "t", "p"
+	tests := map[string]bool{
+		`token: "${SENTRY_TOKEN}"`:     false,
+		`token: "lit${T}"`:             true,
+		`token: "Bearer ${T}"`:         false,
+		`token: "${T}${SENTRY_TOKEN}"`: false,
+		`token: "${T} extra"`:          true,
+	}
+	for replacement, warn := range tests {
+		input := strings.Replace(validConfig, `token: "${SENTRY_TOKEN}"`, replacement, 1)
+		cfg, err := Parse([]byte(input), env(vars))
+		if err != nil {
+			t.Fatalf("%s: %v", replacement, err)
+		}
+		if got := strings.Contains(strings.Join(cfg.Warnings, "\n"), "sources.sentry.auth.token is written"); got != warn {
+			t.Errorf("%s: warned = %v, want %v", replacement, got, warn)
+		}
+	}
+	input := strings.Replace(validConfig, "url: http://loki:3100", `url: "http://u:pw${P}@loki:3100"`, 1)
+	cfg, err := Parse([]byte(input), env(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "sources.loki.url contains a password") {
+		t.Errorf("partly literal URL password did not warn: %v", cfg.Warnings)
+	}
+	input = "server:\n  database: postgres://sonda:pw@db/sonda\n" + validConfig
+	if cfg, err = Parse([]byte(input), env(validEnv())); err != nil || !strings.Contains(strings.Join(cfg.Warnings, "\n"), "server.database contains a password") {
+		t.Errorf("database password: err = %v, warnings = %v", err, cfg)
 	}
 }
 

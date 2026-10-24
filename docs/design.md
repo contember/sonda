@@ -173,14 +173,18 @@ limits:
   requests_per_minute: 60
 ```
 
-Config validation at startup fails on: unknown fields, unknown source references, unset
-environment variables, a source type not allowed for the capability, binding fields of another
+Config validation at startup fails on: unknown fields, unknown source references, environment
+variables that are unset (an empty or unset `NAME` falls back to the file named by `NAME_FILE`;
+an unreadable file fails), source URLs with a fragment or with `@` after the authority (an
+unencoded password), a `grafana.url` with credentials or a query, a source type not allowed for the capability, binding fields of another
 source type, unparsable selectors or signals, selectors without an `=` or `=~` matcher that
 rejects the empty value (e.g. `{job!=""}` selects nearly everything), log group lists that are
 empty, longer than 50, duplicated, or contain `*` or ARNs, CloudWatch bindings with no or more
 than 10 dimensions,
 signals whose form does not match the metrics backend, and an admin token shorter than 32
-characters. The full example is `sonda.example.yaml`.
+characters. Credentials written into the file instead of referenced (tokens, passwords, the
+admin token, credential headers, URL passwords, a password in `server.database`) only warn:
+`check` prints the warnings and `serve` logs them. The full example is `sonda.example.yaml`.
 
 ## 3. Components
 

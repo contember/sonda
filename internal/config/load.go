@@ -163,6 +163,11 @@ func (v *validator) config(raw rawConfig) *Config {
 		Services: map[string]*Service{},
 		Redact:   raw.Redact,
 	}
+	if u, err := url.Parse(cfg.Server.Database); err == nil && u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			v.warn("server.database contains a password written in the config file; set it in PGPASSWORD instead")
+		}
+	}
 	if raw.Admin != nil {
 		cfg.Admin = v.admin(*raw.Admin)
 	}
@@ -170,8 +175,8 @@ func (v *validator) config(raw rawConfig) *Config {
 		v.url("grafana.url", raw.Grafana.URL)
 		// The URL is copied into Explore links returned to agents, so it must not carry
 		// credentials.
-		if u, err := url.Parse(raw.Grafana.URL); err == nil && u.User != nil {
-			v.fail("grafana.url must not contain a username or password: it is copied into links returned to agents")
+		if u, err := url.Parse(raw.Grafana.URL); err == nil && (u.User != nil || u.RawQuery != "") {
+			v.fail("grafana.url must be scheme://host[:port][/path] without credentials or a query: it is copied into links returned to agents")
 		}
 		cfg.Grafana = &Grafana{URL: raw.Grafana.URL}
 	}
@@ -693,39 +698,43 @@ func (v *validator) url(path, raw string) {
 		v.fail("%s: invalid URL, expected http(s)://host[:port][/path]%s", path, hint)
 		return
 	}
-	afterAuthority := ""
-	if _, rest, ok := strings.Cut(raw, "://"); ok {
-		if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-			afterAuthority = rest[i:]
-		}
-	}
-	if u.Fragment != "" || strings.Contains(raw, "#") || strings.Contains(afterAuthority, "@") {
+	_, afterAuthority := splitAuthority(raw)
+	if strings.Contains(raw, "#") || strings.Contains(afterAuthority, "@") {
 		v.fail("%s: invalid URL%s", path, encodeHint)
 	}
 }
 
-// urlCredentials warns about a password written into a URL in the file. A password that is
-// itself an environment reference is fine; the rest of the URL may use references too.
-func (v *validator) urlCredentials(path, raw string) {
-	_, rest, ok := strings.Cut(raw, "://")
+// splitAuthority splits a URL after its scheme into the authority and the rest, the way
+// net/url does: the authority ends at the first '/', '?' or '#'.
+func splitAuthority(raw string) (authority, rest string) {
+	_, afterScheme, ok := strings.Cut(raw, "://")
 	if !ok {
-		return
+		return "", ""
 	}
-	authority := rest
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		authority = rest[:i]
+	if i := strings.IndexAny(afterScheme, "/?#"); i >= 0 {
+		return afterScheme[:i], afterScheme[i:]
 	}
+	return afterScheme, ""
+}
+
+// urlCredentials warns about a password written into a URL in the file. A password that is
+// exactly one environment reference is fine; the rest of the URL may use references too.
+func (v *validator) urlCredentials(path, raw string) {
+	authority, _ := splitAuthority(raw)
 	at := strings.LastIndex(authority, "@")
 	if at < 0 {
 		return
 	}
 	_, password, hasPassword := strings.Cut(authority[:at], ":")
-	if hasPassword && password != "" && !envReference.MatchString(password) {
+	if hasPassword && password != "" && !wholeReference.MatchString(password) {
 		v.warn("%s contains a password written in the config file; use auth with an environment variable instead", path)
 	}
 }
 
-var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+var (
+	envReference   = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	wholeReference = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+)
 
 // expand resolves ${NAME} references. When NAME is unset or empty and NAME_FILE is set, the
 // value is read from that file, as with Docker and Kubernetes secrets; trailing newlines are
@@ -753,10 +762,17 @@ func (v *validator) expand(path, raw string) string {
 	})
 }
 
-// secret expands a credential and warns when it is written into the file instead of
-// referenced: config files end up in repositories, backups and support tickets.
+// secret expands a credential and warns when any part of it is written into the file instead
+// of referenced: config files end up in repositories, backups and support tickets. An
+// authorization scheme before a reference, as in "Bearer ${TOKEN}", is not a credential.
 func (v *validator) secret(path, raw string) string {
-	if raw != "" && !envReference.MatchString(raw) {
+	literal := strings.TrimSpace(envReference.ReplaceAllString(raw, ""))
+	for _, scheme := range []string{"Bearer", "Basic", "Token", "Bot"} {
+		if strings.EqualFold(literal, scheme) {
+			literal = ""
+		}
+	}
+	if literal != "" {
 		v.warn("%s is written in the config file; reference an environment variable instead, e.g. \"${NAME}\" (or NAME_FILE)", path)
 	}
 	return v.expand(path, raw)
