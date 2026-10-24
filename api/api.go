@@ -447,7 +447,9 @@ type DataQueryResult struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// DataSchema describes the entities an identity may read through the data endpoints.
+// DataSchema describes the entities an identity may read through the data endpoints. When
+// the full schema would not fit the response limit, entities carry only their names and
+// meta.truncated is set; ask again for chosen entities.
 type DataSchema struct {
 	Entities []DataEntity `json:"entities"`
 	// Enums maps enum names used by the fields to their values.

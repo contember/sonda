@@ -615,8 +615,8 @@ tests run against a Contember engine with a read-only and a write role when
 
 Responses: `data` holds the GraphQL data object with every string redacted, keys in query
 order; response `extensions` are dropped, because a Contember engine in debug mode puts SQL
-with bound values there. GraphQL errors become `invalid_query`, Contember 401/403/404 and 5xx
-become `upstream_error`. There are no result handles: a response above `max_response_bytes`
+with bound values there. GraphQL errors of the agent's query become `invalid_query`; errors of
+Sonda's own schema queries, and Contember 401/403/404 and 5xx, become `upstream_error`. There are no result handles: a response above `max_response_bytes`
 fails with `limit_exceeded`, and the agent lowers its limits. `meta.untrusted` marks
 `data.data`. The normalized query is returned once, in `data.query`; the source entry
 carries only the kind.
@@ -774,7 +774,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `POST /v1/services/{s}/traces/search` | `traces` | Duration, error, name and attribute filters → trace summaries |
 | `POST /v1/services/{s}/traces/query` | `traces` | Native query in the backend's dialect (scoped) → trace summaries |
 | `/v1/services/{s}/traces/{id}` | `traces` | Span tree; spans of services without a grant are stubs |
-| `/v1/services/{s}/data/schema` | `data` | Entities, fields with types, relations with target and cardinality, unique fields and enums, without denied fields and entities |
+| `/v1/services/{s}/data/schema` | `data` | Entities, fields with types, relations with target and cardinality, unique fields and enums, without denied fields and entities. `entity` (repeatable) selects entities; a schema above 3/4 of `max_response_bytes` comes back as entity names only, marked `truncated` |
 | `POST /v1/services/{s}/data/query` | `data` | `{env, query, variables}` → normalized query, row bound and redacted data |
 | `/v1/results/{id}` | owner | Page through or drill into a stored result |
 

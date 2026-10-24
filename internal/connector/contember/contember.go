@@ -28,7 +28,7 @@ func New(src *config.Source) *Client {
 // Introspect returns the introspection result of the project stage as the API key's role
 // sees it.
 func (c *Client) Introspect(ctx context.Context, scope authz.ContemberScope) ([]byte, error) {
-	data, err := c.post(ctx, scope, introspectionQuery)
+	data, err := c.post(ctx, scope, introspectionQuery, false)
 	if err != nil {
 		return nil, err
 	}
@@ -38,14 +38,14 @@ func (c *Client) Introspect(ctx context.Context, scope authz.ContemberScope) ([]
 // Relations returns the relation model of the project stage as the role sees it, from the
 // Content API's schema root field.
 func (c *Client) Relations(ctx context.Context, scope authz.ContemberScope) ([]byte, error) {
-	return c.post(ctx, scope, relationsQuery)
+	return c.post(ctx, scope, relationsQuery, false)
 }
 
 const relationsQuery = `query { schema { entities { name fields { name ... on _Relation { targetEntity ownedBy inversedBy } } } } }`
 
 // Query runs a checked query and returns its data object.
 func (c *Client) Query(ctx context.Context, q policy.ContemberGraphQL) (json.RawMessage, error) {
-	return c.post(ctx, q.Scope(), q.String())
+	return c.post(ctx, q.Scope(), q.String(), true)
 }
 
 // ContentURL is the Content API endpoint of a project stage.
@@ -62,7 +62,9 @@ type response struct {
 
 // post sends the query without variables: policy inlines them. Response extensions are
 // dropped, because a debug engine puts SQL with bound values there.
-func (c *Client) post(ctx context.Context, scope authz.ContemberScope, query string) (json.RawMessage, error) {
+// agentQuery reports GraphQL errors as invalid_query, because the agent can fix its query;
+// errors of Sonda's own schema queries are upstream errors.
+func (c *Client) post(ctx context.Context, scope authz.ContemberScope, query string, agentQuery bool) (json.RawMessage, error) {
 	status, body, err := upstream.PostJSON(ctx, c.http, c.source.Name, c.ContentURL(scope), map[string]string{"query": query})
 	if err != nil {
 		return nil, err
@@ -86,6 +88,9 @@ func (c *Client) post(ctx context.Context, scope authz.ContemberScope, query str
 		messages := make([]string, 0, min(len(resp.Errors), 3))
 		for _, e := range resp.Errors[:min(len(resp.Errors), 3)] {
 			messages = append(messages, truncate(e.Message, 300))
+		}
+		if !agentQuery {
+			return nil, apierr.Upstream("source %s rejected the schema query: %s", c.source.Name, strings.Join(messages, "; "))
 		}
 		return nil, apierr.InvalidQuery("Contember rejected the query: %s", strings.Join(messages, "; "))
 	}

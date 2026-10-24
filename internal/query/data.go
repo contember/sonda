@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +58,10 @@ func (s *Service) dataScope(identity *authz.Identity, service, env string) (auth
 }
 
 // DataSchema describes the entities and fields the identity may read in the environment.
-func (s *Service) DataSchema(ctx context.Context, identity *authz.Identity, service, env string) (api.Response[api.DataSchema], error) {
+//
+// only limits the result to the named entities. Without it, a schema that would not fit in
+// 3/4 of max_response_bytes comes back as entity names only, marked truncated.
+func (s *Service) DataSchema(ctx context.Context, identity *authz.Identity, service, env string, only []string) (api.Response[api.DataSchema], error) {
 	scope, backend, err := s.dataScope(identity, service, env)
 	if err != nil {
 		return api.Response[api.DataSchema]{}, err
@@ -67,6 +71,17 @@ func (s *Service) DataSchema(ctx context.Context, identity *authz.Identity, serv
 		return api.Response[api.DataSchema]{}, err
 	}
 	entities, enums := schema.Visible(rules)
+	if len(only) > 0 {
+		var selected []gqlguard.Entity
+		for _, name := range only {
+			i := slices.IndexFunc(entities, func(e gqlguard.Entity) bool { return e.Name == name })
+			if i < 0 {
+				return api.Response[api.DataSchema]{}, apierr.NotFound("entity %q not found", name)
+			}
+			selected = append(selected, entities[i])
+		}
+		entities, enums = selected, usedEnums(selected, enums)
+	}
 	result := api.DataSchema{Entities: make([]api.DataEntity, 0, len(entities))}
 	if len(enums) > 0 {
 		result.Enums = enums
@@ -78,7 +93,30 @@ func (s *Service) DataSchema(ctx context.Context, identity *authz.Identity, serv
 		}
 		result.Entities = append(result.Entities, entity)
 	}
-	return api.Response[api.DataSchema]{Data: result, Meta: api.Meta{Service: scope.Service(), Environment: scope.Environment()}}, nil
+	meta := api.Meta{Service: scope.Service(), Environment: scope.Environment()}
+	if len(only) == 0 {
+		if encoded, err := json.Marshal(result); err == nil && len(encoded) > identity.Limits.MaxResponseBytes*3/4 {
+			names := api.DataSchema{Entities: make([]api.DataEntity, len(result.Entities))}
+			for i, e := range result.Entities {
+				names.Entities[i] = api.DataEntity{Name: e.Name}
+			}
+			result, meta.Truncated = names, true
+		}
+	}
+	return api.Response[api.DataSchema]{Data: result, Meta: meta}, nil
+}
+
+// usedEnums keeps the enums that the fields of the entities use.
+func usedEnums(entities []gqlguard.Entity, enums map[string][]string) map[string][]string {
+	used := map[string][]string{}
+	for _, e := range entities {
+		for _, f := range e.Fields {
+			if values, ok := enums[f.Type]; ok {
+				used[f.Type] = values
+			}
+		}
+	}
+	return used
 }
 
 // QueryData runs a read-only GraphQL query in the dialect of the service's data source.

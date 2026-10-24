@@ -147,7 +147,7 @@ func (s *Server) releases(r *http.Request) (any, error) {
 }
 
 func (s *Server) dataSchema(r *http.Request) (any, error) {
-	return s.query.DataSchema(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"))
+	return s.query.DataSchema(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"), r.URL.Query()["entity"])
 }
 
 func (s *Server) queryData(r *http.Request) (any, error) {
