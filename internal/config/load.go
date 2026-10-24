@@ -675,16 +675,27 @@ func (v *validator) positive(path string, raw *int, target *int) {
 
 // url checks an expanded URL. The error does not repeat the value: it can hold credentials
 // from the environment or a secret file. An unescaped '/', '?' or '#' in a userinfo password
-// ends the authority early and turns the start of the password into a host and port, so a URL
-// with '@' outside its userinfo, or with a fragment, is refused.
+// ends the authority early and turns part of the password into the host, so a URL with '@'
+// after its authority, or with a fragment, is refused.
 func (v *validator) url(path, raw string) {
+	const encodeHint = "; percent-encode '@' (also in the path or query), '/', '?' and '#' in a username or password, and leave out the fragment"
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		v.fail("%s: invalid URL, expected http(s)://host[:port][/path]", path)
+		hint := ""
+		if strings.Contains(raw, "@") {
+			hint = encodeHint
+		}
+		v.fail("%s: invalid URL, expected http(s)://host[:port][/path]%s", path, hint)
 		return
 	}
-	if u.Fragment != "" || strings.Contains(raw, "#") || (u.User == nil && strings.Contains(raw, "@")) {
-		v.fail("%s: invalid URL; percent-encode '@', '/', '?' and '#' in a username or password, and leave out the fragment", path)
+	afterAuthority := ""
+	if _, rest, ok := strings.Cut(raw, "://"); ok {
+		if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+			afterAuthority = rest[i:]
+		}
+	}
+	if u.Fragment != "" || strings.Contains(raw, "#") || strings.Contains(afterAuthority, "@") {
+		v.fail("%s: invalid URL%s", path, encodeHint)
 	}
 }
 
