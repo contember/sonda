@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,224 @@ func TestParseValid(t *testing.T) {
 	}
 	if got := len(cfg.Services["api"].Environments["production"].Logs.Selector.Matchers); got != 1 {
 		t.Errorf("log matchers = %d", got)
+	}
+}
+
+func TestSecretFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentry_token")
+	if err := os.WriteFile(path, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	vars := validEnv()
+	delete(vars, "SENTRY_TOKEN")
+	vars["SENTRY_TOKEN_FILE"] = path
+	cfg, err := Parse([]byte(validConfig), env(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sources["sentry"].Auth.Token; got != "from-file" {
+		t.Errorf("token = %q", got)
+	}
+
+	vars["SENTRY_TOKEN_FILE"] = filepath.Join(t.TempDir(), "missing")
+	if _, err := Parse([]byte(validConfig), env(vars)); err == nil || !strings.Contains(err.Error(), "read SENTRY_TOKEN_FILE") {
+		t.Errorf("missing file: error = %v", err)
+	}
+}
+
+func TestSecretFilePrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentry_token")
+	if err := os.WriteFile(path, []byte("from-file\r\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		vars map[string]string
+		want string
+	}{
+		{"value wins over file", map[string]string{"SENTRY_TOKEN": "from-env", "SENTRY_TOKEN_FILE": path}, "from-env"},
+		{"empty value falls back to file", map[string]string{"SENTRY_TOKEN": "", "SENTRY_TOKEN_FILE": path}, "from-file"},
+		{"file only", map[string]string{"SENTRY_TOKEN_FILE": path}, "from-file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vars := validEnv()
+			delete(vars, "SENTRY_TOKEN")
+			for k, v := range tt.vars {
+				vars[k] = v
+			}
+			cfg, err := Parse([]byte(validConfig), env(vars))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Sources["sentry"].Auth.Token; got != tt.want {
+				t.Errorf("token = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGrafanaURLRefusesCredentials(t *testing.T) {
+	input := validConfig + "grafana:\n  url: https://admin:grafpw@grafana.example.com\n"
+	_, err := Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "grafana.url must be scheme://host[:port][/path] without credentials or a query") || strings.Contains(err.Error(), "grafpw") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestGrafanaURLRefusesQuery(t *testing.T) {
+	input := validConfig + "grafana:\n  url: https://grafana.example.com/?auth_token=abc\n"
+	_, err := Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "grafana.url must be") || strings.Contains(err.Error(), "abc") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestPartlyLiteralCredentialsWarn(t *testing.T) {
+	vars := validEnv()
+	vars["T"], vars["P"] = "t", "p"
+	warnings := func(t *testing.T, input string) string {
+		t.Helper()
+		cfg, err := Parse([]byte(input), env(vars))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(cfg.Warnings, "\n")
+	}
+	tokens := map[string]string{
+		`token: "${SENTRY_TOKEN}"`: "",
+		`token: "lit${T}"`:         "sources.sentry.auth.token is partly written",
+		`token: "${T} extra"`:      "sources.sentry.auth.token is partly written",
+		`token: "Bearer ${T}"`:     "sources.sentry.auth.token starts with an authorization scheme",
+	}
+	for replacement, want := range tokens {
+		got := warnings(t, strings.Replace(validConfig, `token: "${SENTRY_TOKEN}"`, replacement, 1))
+		if want == "" && got != "" || want != "" && !strings.Contains(got, want) {
+			t.Errorf("%s: warnings %q, want %q", replacement, got, want)
+		}
+	}
+	// The scheme hint is only for auth.token; elsewhere a prefix is just partly literal.
+	got := warnings(t, strings.Replace(validConfig, `token: "${ADMIN_TOKEN}"`, `token: "Bearer ${ADMIN_TOKEN}"`, 1))
+	if !strings.Contains(got, "admin.token is partly written") || strings.Contains(got, "authorization scheme") {
+		t.Errorf("admin.token: warnings %q", got)
+	}
+	basic := strings.Replace(validConfig, "    url: http://prometheus:9090", "    url: http://prometheus:9090\n    auth: { type: basic, username: \"123\", password: \"Basic ${P}\" }", 1)
+	got = warnings(t, basic)
+	if !strings.Contains(got, "sources.prom.auth.password is partly written") || strings.Contains(got, "authorization scheme") {
+		t.Errorf("auth.password: warnings %q", got)
+	}
+	// Header values may wrap a reference in any form; only a value without one warns.
+	headers := map[string]bool{
+		`Cookie: "session=${T}"`:                  false,
+		`Authorization: "Token token=${T}"`:       false,
+		`X-Sentry-Auth: "Sentry sentry_key=${T}"`: false,
+		`X-Api-Key: "${T}:${P}"`:                  false,
+		`Authorization: "Bearer written"`:         true,
+	}
+	for header, warn := range headers {
+		got := warnings(t, strings.Replace(validConfig, "X-Scope-OrgID: prod", "X-Scope-OrgID: prod, "+header, 1))
+		if warn && !strings.Contains(got, "is written in the config file") || !warn && got != "" {
+			t.Errorf("%s: warnings %q, want warning %v", header, got, warn)
+		}
+	}
+	got = warnings(t, strings.Replace(validConfig, "url: http://loki:3100", `url: "http://u:pw${P}@loki:3100"`, 1))
+	if !strings.Contains(got, "sources.loki.url contains a password") {
+		t.Errorf("partly literal URL password did not warn: %q", got)
+	}
+	databases := map[string]bool{
+		"postgres://sonda:pw@db/sonda":           true,
+		"postgres://sonda@db/sonda?password=pw":  true,
+		"postgresql://sonda:pw@db/sonda":         true,
+		"postgres://sonda@db/sonda":              false,
+		"postgres://sonda:@db/sonda":             false,
+		"/var/lib/sonda.db":                      false,
+		"file:sonda.db?cache=shared&password=no": false,
+	}
+	for database, warn := range databases {
+		got := warnings(t, "server:\n  database: \""+database+"\"\n"+validConfig)
+		if strings.Contains(got, "server.database contains a password") != warn || strings.Contains(got, "pw") {
+			t.Errorf("%s: warnings %q, want warning %v", database, got, warn)
+		}
+	}
+}
+
+func TestRepositoryRefusesCredentials(t *testing.T) {
+	input := strings.Replace(validConfig, "  api:\n", "  api:\n    repository: https://bob:ghp_secret@github.com/acme/api\n", 1)
+	_, err := Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "services.api.repository must not contain") || strings.Contains(err.Error(), "ghp_secret") {
+		t.Errorf("error = %v", err)
+	}
+	input = strings.Replace(validConfig, "  api:\n", "  api:\n    repository: github.com/acme/api\n", 1)
+	if _, err := Parse([]byte(input), env(validEnv())); err != nil {
+		t.Errorf("plain repository: %v", err)
+	}
+}
+
+func TestSensitiveHeader(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Authorization": true, "Proxy-Authorization": true, "Cookie": true, "X-Api-Key": true,
+		"X-Auth-Token": true, "X-Sentry-Auth": true, "X-Scope-OrgID": false, "Monkey": false, "Accept": false,
+	} {
+		if got := sensitiveHeader(name); got != want {
+			t.Errorf("sensitiveHeader(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestURLChecks(t *testing.T) {
+	input := strings.Replace(validConfig, "url: http://loki:3100", "url: http://user:pw@loki:3100", 1)
+	cfg, err := Parse([]byte(input), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Warnings, "\n"); !strings.Contains(got, "sources.loki.url contains a password") || strings.Contains(got, "pw") {
+		t.Errorf("warnings = %q", got)
+	}
+	for _, bad := range []string{"http://user:12#34@loki:3100", "http://user:123/abc@loki:3100", "http://user:123?x=1@loki:3100", "http://u:a@bb/c@loki:3100", "http://u:a@bb?c@loki:3100", "http://u:ab/cd@loki:3100"} {
+		input = strings.Replace(validConfig, "url: http://loki:3100", `url: "`+bad+`"`, 1)
+		_, err = Parse([]byte(input), env(validEnv()))
+		if err == nil || !strings.Contains(err.Error(), "sources.loki.url: invalid URL") || !strings.Contains(err.Error(), "percent-encode") ||
+			strings.Contains(err.Error(), "123") || strings.Contains(err.Error(), "12#") || strings.Contains(err.Error(), "bb") || strings.Contains(err.Error(), "ab/") {
+			t.Errorf("%s: error = %v", bad, err)
+		}
+	}
+	// A literal password next to a host from the environment still warns; a referenced one does not.
+	vars := validEnv()
+	vars["LOKI_HOST"], vars["LOKI_PASS"] = "loki:3100", "pw"
+	for url, warn := range map[string]bool{"https://user:hunter2@${LOKI_HOST}": true, "https://user:${LOKI_PASS}@${LOKI_HOST}": false} {
+		input = strings.Replace(validConfig, "url: http://loki:3100", `url: "`+url+`"`, 1)
+		cfg, err := Parse([]byte(input), env(vars))
+		if err != nil {
+			t.Fatalf("%s: %v", url, err)
+		}
+		if got := strings.Contains(strings.Join(cfg.Warnings, "\n"), "sources.loki.url contains a password"); got != warn {
+			t.Errorf("%s: warned = %v, want %v", url, got, warn)
+		}
+	}
+}
+
+func TestWarnsAboutCredentialsInFile(t *testing.T) {
+	cfg, err := Parse([]byte(validConfig), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings for referenced credentials: %v", cfg.Warnings)
+	}
+	input := strings.Replace(validConfig, `token: "${SENTRY_TOKEN}"`, `token: written-here`, 1)
+	input = strings.Replace(input, `X-Scope-OrgID: prod`, `X-Scope-OrgID: prod, X-Api-Key: written-too`, 1)
+	cfg, err = Parse([]byte(input), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(cfg.Warnings, "\n")
+	for _, want := range []string{"sources.sentry.auth.token is written in the config file", "sources.loki.headers.X-Api-Key is written in the config file"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warnings lack %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "X-Scope-OrgID") || strings.Contains(got, "written-here") {
+		t.Errorf("unexpected warning content:\n%s", got)
 	}
 }
 

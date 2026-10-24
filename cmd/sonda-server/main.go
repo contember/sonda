@@ -45,8 +45,12 @@ func main() {
 			Short: "Validate the configuration file",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				if _, err := config.LoadFile(configPath); err != nil {
+				cfg, err := config.LoadFile(configPath)
+				if err != nil {
 					return err
+				}
+				for _, warning := range cfg.Warnings {
+					fmt.Fprintln(cmd.ErrOrStderr(), "warning:", warning)
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), "configuration is valid")
 				return nil
@@ -67,6 +71,9 @@ func serve(ctx context.Context, configPath string) error {
 	cfg, err := config.LoadFile(configPath)
 	if err != nil {
 		return err
+	}
+	for _, warning := range cfg.Warnings {
+		log.Warn("config: " + warning)
 	}
 	connectors, err := query.NewConnectors(cfg)
 	if err != nil {

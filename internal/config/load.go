@@ -127,21 +127,30 @@ func Parse(data []byte, lookupEnv func(string) (string, bool)) (*Config, error) 
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	v := &validator{lookupEnv: lookupEnv}
+	v := &validator{lookupEnv: lookupEnv, readFile: os.ReadFile}
 	cfg := v.config(raw)
 	if err := errors.Join(v.errs...); err != nil {
 		return nil, err
 	}
+	// Sources and services are maps; sorting keeps the output stable between runs.
+	slices.Sort(v.warnings)
+	cfg.Warnings = v.warnings
 	return cfg, nil
 }
 
 type validator struct {
 	lookupEnv func(string) (string, bool)
+	readFile  func(string) ([]byte, error)
 	errs      []error
+	warnings  []string
 }
 
 func (v *validator) fail(format string, args ...any) {
 	v.errs = append(v.errs, fmt.Errorf(format, args...))
+}
+
+func (v *validator) warn(format string, args ...any) {
+	v.warnings = append(v.warnings, fmt.Sprintf(format, args...))
 }
 
 func (v *validator) config(raw rawConfig) *Config {
@@ -154,11 +163,22 @@ func (v *validator) config(raw rawConfig) *Config {
 		Services: map[string]*Service{},
 		Redact:   raw.Redact,
 	}
+	if u, err := url.Parse(cfg.Server.Database); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		password, _ := u.User.Password()
+		if password != "" || u.Query().Has("password") {
+			v.warn("server.database contains a password written in the config file; set it in PGPASSWORD instead")
+		}
+	}
 	if raw.Admin != nil {
 		cfg.Admin = v.admin(*raw.Admin)
 	}
 	if raw.Grafana != nil {
 		v.url("grafana.url", raw.Grafana.URL)
+		// The URL is copied into Explore links returned to agents, so it must not carry
+		// credentials.
+		if u, err := url.Parse(raw.Grafana.URL); err == nil && (u.User != nil || u.RawQuery != "" || u.ForceQuery) {
+			v.fail("grafana.url must be scheme://host[:port][/path] without credentials or a query: it is copied into links returned to agents")
+		}
 		cfg.Grafana = &Grafana{URL: raw.Grafana.URL}
 	}
 	for _, pattern := range raw.Redact {
@@ -180,7 +200,7 @@ func (v *validator) config(raw rawConfig) *Config {
 const minAdminTokenLength = 32
 
 func (v *validator) admin(raw rawAdmin) *Admin {
-	token := v.expand("admin.token", raw.Token)
+	token := v.secret("admin.token", raw.Token)
 	if len(token) < minAdminTokenLength {
 		v.fail("admin.token must have at least %d characters (generate one with `openssl rand -hex 32`)", minAdminTokenLength)
 	}
@@ -236,9 +256,14 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare or aws, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
+	v.urlCredentials(path+".url", raw.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
 	for header, value := range raw.Headers {
-		src.Headers[header] = v.expand(path+".headers."+header, value)
+		if sensitiveHeader(header) {
+			src.Headers[header] = v.secretHeader(path+".headers."+header, value)
+		} else {
+			src.Headers[header] = v.expand(path+".headers."+header, value)
+		}
 	}
 	return src
 }
@@ -283,9 +308,9 @@ func (v *validator) onlyFor(path string, set bool, sourceType, allowed SourceTyp
 func (v *validator) auth(path string, raw rawAuth) Auth {
 	auth := Auth{
 		Type:     AuthType(valueOr(raw.Type, string(AuthNone))),
-		Token:    v.expand(path+".token", raw.Token),
+		Token:    v.secret(path+".token", raw.Token),
 		Username: v.expand(path+".username", raw.Username),
-		Password: v.expand(path+".password", raw.Password),
+		Password: v.secret(path+".password", raw.Password),
 	}
 	switch auth.Type {
 	case AuthNone:
@@ -313,6 +338,10 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 		Description:  raw.Description,
 		Repository:   raw.Repository,
 		Environments: map[string]*Environment{},
+	}
+	// The repository is returned to agents and linked in the admin UI.
+	if u, err := url.Parse(raw.Repository); err == nil && u.User != nil {
+		v.fail("%s.repository must not contain a username or password: it is returned to agents", path)
 	}
 	if len(raw.Environments) == 0 {
 		v.fail("%s.environments: at least one environment is required", path)
@@ -659,24 +688,131 @@ func (v *validator) positive(path string, raw *int, target *int) {
 	*target = *raw
 }
 
+// url checks an expanded URL. The error does not repeat the value: it can hold credentials
+// from the environment or a secret file. An unescaped '/', '?' or '#' in a userinfo password
+// ends the authority early and turns part of the password into the host, so a URL with '@'
+// after its authority, or with a fragment, is refused.
 func (v *validator) url(path, raw string) {
+	const encodeHint = "; percent-encode '@' (also in the path or query), '/', '?' and '#' in a username or password, and leave out the fragment"
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		v.fail("%s: invalid URL %q", path, raw)
+		hint := ""
+		if strings.Contains(raw, "@") {
+			hint = encodeHint
+		}
+		v.fail("%s: invalid URL, expected http(s)://host[:port][/path]%s", path, hint)
+		return
+	}
+	_, afterAuthority := splitAuthority(raw)
+	if strings.Contains(raw, "#") || strings.Contains(afterAuthority, "@") {
+		v.fail("%s: invalid URL%s", path, encodeHint)
 	}
 }
 
-var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+// splitAuthority splits a URL after its scheme into the authority and the rest, the way
+// net/url does: the authority ends at the first '/', '?' or '#'.
+func splitAuthority(raw string) (authority, rest string) {
+	_, afterScheme, ok := strings.Cut(raw, "://")
+	if !ok {
+		return "", ""
+	}
+	if i := strings.IndexAny(afterScheme, "/?#"); i >= 0 {
+		return afterScheme[:i], afterScheme[i:]
+	}
+	return afterScheme, ""
+}
 
+// urlCredentials warns about a password written into a URL in the file. A password that is
+// exactly one environment reference is fine; the rest of the URL may use references too.
+func (v *validator) urlCredentials(path, raw string) {
+	authority, _ := splitAuthority(raw)
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return
+	}
+	_, password, hasPassword := strings.Cut(authority[:at], ":")
+	if hasPassword && password != "" && !wholeReference.MatchString(password) {
+		v.warn("%s contains a password written in the config file; use auth with an environment variable instead", path)
+	}
+}
+
+var (
+	envReference   = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+	wholeReference = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+)
+
+// expand resolves ${NAME} references. When NAME is unset or empty and NAME_FILE is set, the
+// value is read from that file, as with Docker and Kubernetes secrets; trailing newlines are
+// dropped. An empty NAME counts as unset because compose files often pass NAME through empty.
 func (v *validator) expand(path, raw string) string {
 	return envReference.ReplaceAllStringFunc(raw, func(ref string) string {
 		name := envReference.FindStringSubmatch(ref)[1]
-		value, ok := v.lookupEnv(name)
-		if !ok {
-			v.fail("%s: environment variable %s is not set", path, name)
+		value, set := v.lookupEnv(name)
+		if value != "" {
+			return value
 		}
-		return value
+		if file, ok := v.lookupEnv(name + "_FILE"); ok && file != "" {
+			data, err := v.readFile(file)
+			if err != nil {
+				v.fail("%s: read %s_FILE: %v", path, name, err)
+				return ""
+			}
+			return strings.TrimRight(string(data), "\r\n")
+		}
+		if set {
+			return ""
+		}
+		v.fail("%s: environment variable %s is not set (nor %s_FILE)", path, name, name)
+		return ""
 	})
+}
+
+// secret expands a credential (a token, password or the admin token) and warns unless it is
+// exactly one ${NAME} reference: config files end up in repositories, backups and support
+// tickets. A scheme prefix in auth.token gets its own hint, because Sonda sends
+// "Authorization: Bearer <token>" and the scheme would appear twice.
+func (v *validator) secret(path, raw string) string {
+	switch {
+	case raw == "" || wholeReference.MatchString(raw):
+	case strings.HasSuffix(path, ".auth.token") && authScheme.MatchString(raw):
+		v.warn("%s starts with an authorization scheme; Sonda sends \"Authorization: Bearer <token>\", so give only the token, or use auth type none with headers.Authorization for another scheme", path)
+	case envReference.MatchString(raw):
+		v.warn("%s is partly written in the config file; make it a single \"${NAME}\" reference", path)
+	default:
+		v.warn("%s is written in the config file; reference an environment variable instead, e.g. \"${NAME}\" (or NAME_FILE)", path)
+	}
+	return v.expand(path, raw)
+}
+
+// secretHeader expands a credential header. Header values often wrap the credential, as in
+// "Token token=${T}" or "session=${S}", so any reference is accepted; a value without one
+// warns.
+func (v *validator) secretHeader(path, raw string) string {
+	if raw != "" && !envReference.MatchString(raw) {
+		v.warn("%s is written in the config file; reference an environment variable instead, e.g. \"${NAME}\" (or NAME_FILE)", path)
+	}
+	return v.expand(path, raw)
+}
+
+var authScheme = regexp.MustCompile(`(?i)^(bearer|basic|token|bot)\s+\$\{`)
+
+// sensitiveHeader reports headers that usually carry credentials, such as Authorization,
+// Proxy-Authorization, Cookie, X-Api-Key, X-Auth-Token or X-Sentry-Auth. Words are matched
+// as '-' or '_' separated segments, so X-Scope-OrgID or Monkey do not match.
+func sensitiveHeader(name string) bool {
+	lower := strings.ToLower(name)
+	for _, word := range []string{"token", "secret", "password", "apikey", "credential"} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	for _, segment := range strings.FieldsFunc(lower, func(r rune) bool { return r == '-' || r == '_' }) {
+		switch segment {
+		case "authorization", "auth", "cookie", "key", "signature":
+			return true
+		}
+	}
+	return false
 }
 
 func parseLogSelector(selector string) ([]*labels.Matcher, error) {

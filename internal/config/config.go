@@ -18,6 +18,9 @@ type Config struct {
 	Services map[string]*Service
 	Limits   Limits
 	Redact   []string
+	// Warnings are problems that do not stop the server, such as a credential written into
+	// the file. check and serve print them.
+	Warnings []string
 }
 
 type Server struct {

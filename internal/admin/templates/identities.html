@@ -1,7 +1,7 @@
+{{define "actions"}}<a class="button" href="/admin/identities/new">New identity</a>{{end}}
 {{define "content"}}
-<p class="actions"><a class="button" href="/admin/identities/new">New identity</a></p>
 {{if .}}
-<div class="scroll">
+<div class="table-wrap">
 <table>
   <thead>
     <tr><th>Name</th><th>Grants</th><th>Limit overrides</th><th>Created (UTC)</th><th></th></tr>
@@ -9,17 +9,25 @@
   <tbody>
   {{range .}}
     <tr>
-      <td><a href="/admin/identities/{{.Name}}">{{.Name}}</a></td>
-      <td>{{range .Grants}}<div>{{.}}</div>{{else}}<span class="muted">none</span>{{end}}</td>
-      <td>{{range .Limits}}<div>{{.}}</div>{{else}}<span class="muted">server defaults</span>{{end}}</td>
-      <td class="nowrap">{{time .CreatedAt}}</td>
-      <td><a href="/admin/audit?identity={{.Name}}">Audit</a></td>
+      <td class="nowrap"><a href="/admin/identities/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+      <td>
+        <div class="stack">
+        {{range .Grants}}
+          <div><span class="muted nowrap">{{.Target}}</span> <span class="pills pills-inline">{{range .Capabilities}}<span class="pill pill-accent">{{.}}</span>{{end}}</span></div>
+        {{else}}<span class="subtle">none</span>{{end}}
+        </div>
+      </td>
+      <td>{{range .Limits}}<div><code>{{.}}</code></div>{{else}}<span class="subtle">server defaults</span>{{end}}</td>
+      <td class="nowrap muted">{{time .CreatedAt}}</td>
+      <td class="end"><a class="button button-ghost button-sm" href="/admin/audit?identity={{.Name}}">Audit</a></td>
     </tr>
   {{end}}
   </tbody>
 </table>
 </div>
 {{else}}
-<p class="muted">No identities yet. Create one to give an agent a token.</p>
+<div class="empty">
+  <p>No identities yet. Create one to give an agent a token.</p>
+</div>
 {{end}}
 {{end}}

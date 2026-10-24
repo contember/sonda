@@ -1,69 +1,94 @@
 {{define "content"}}
-<form method="post" action="{{if .IsNew}}/admin/identities{{else}}/admin/identities/{{.Name}}{{end}}">
+<form class="form" method="post" action="{{if .IsNew}}/admin/identities{{else}}/admin/identities/{{.Name}}{{end}}">
   {{if .IsNew}}
-  <label class="field">Name
-    <input name="name" value="{{.Name}}" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" autocomplete="off">
-    <small>Lowercase letters, digits, '.', '_' and '-'. Shown in the audit log.</small>
-  </label>
+  <section class="card">
+    <div class="card-header"><h2 class="card-title">Identity</h2></div>
+    <div class="card-body">
+      <label class="field narrow">
+        <span class="field-label">Name</span>
+        <input class="input" name="name" value="{{.Name}}" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" autocomplete="off">
+        <span class="field-hint">Lowercase letters, digits, '.', '_' and '-'. Shown in the audit log.</span>
+      </label>
+    </div>
+  </section>
   {{end}}
 
-  <h2>Grants</h2>
-  {{if .Matrix}}
-  <div class="scroll">
-  <table class="matrix">
-    <thead>
-      <tr><th>Service</th><th>Environment</th>{{range .Capabilities}}<th class="check">{{.}}</th>{{end}}</tr>
-    </thead>
-    <tbody>
-    {{range .Matrix}}
-      <tr>
-        <td>{{.Service}}</td>
-        <td>{{.Environment}}</td>
-        {{$row := .}}
-        {{range $i, $cell := .Cells}}
-        <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="muted" title="Not configured for this environment">–</span>{{end}}</td>
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Grants</h2>
+      <span class="field-hint">A dash means the capability is not configured for that environment.</span>
+    </div>
+    {{if .Stale}}
+    <div class="card-body">
+      <div class="alert alert-warning">
+        These stored grants refer to services or capabilities that are no longer in the configuration. They have no effect, and saving removes them:
+        <ul>{{range .Stale}}<li>{{.}}</li>{{end}}</ul>
+      </div>
+    </div>
+    {{end}}
+    {{if .Matrix}}
+    <div class="table-wrap">
+    <table class="matrix">
+      <thead>
+        <tr><th>Service</th><th>Environment</th>{{range .Capabilities}}<th class="check">{{.}}</th>{{end}}</tr>
+      </thead>
+      <tbody>
+      {{range .Matrix}}
+        <tr>
+          <td class="nowrap"><strong>{{.Service}}</strong></td>
+          <td class="nowrap">{{.Environment}}</td>
+          {{$row := .}}
+          {{range $i, $cell := .Cells}}
+          <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="subtle" title="Not configured for this environment">–</span>{{end}}</td>
+          {{end}}
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}
+    <div class="card-body"><p class="muted">The configuration has no services.</p></div>
+    {{end}}
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Limits</h2>
+      <span class="field-hint">An empty field uses the server default, shown in grey.</span>
+    </div>
+    <div class="card-body">
+      <div class="fields">
+        {{range .Limits}}
+        <label class="field">
+          <span class="field-label">{{.Label}}</span>
+          <input class="input" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Default}}">
+        </label>
         {{end}}
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
-  </div>
-  {{else}}
-  <p class="muted">The configuration has no services.</p>
-  {{end}}
-  {{if .Stale}}
-  <div class="warning">
-    <p>These stored grants refer to services or capabilities that are no longer in the configuration. They have no effect, and saving removes them:</p>
-    <ul>{{range .Stale}}<li>{{.}}</li>{{end}}</ul>
-  </div>
-  {{end}}
+      </div>
+    </div>
+  </section>
 
-  <h2>Limits</h2>
-  <p class="muted">An empty field uses the server default, shown in grey.</p>
-  <div class="limits">
-    {{range .Limits}}
-    <label class="field">{{.Label}}
-      <input name="{{.Name}}" value="{{.Value}}" placeholder="{{.Default}}">
-    </label>
-    {{end}}
+  <div class="actions">
+    <button type="submit" class="button">{{if .IsNew}}Create and show token{{else}}Save{{end}}</button>
+    <a class="button button-secondary" href="/admin/identities">Cancel</a>
   </div>
-
-  <p class="actions">
-    <button type="submit">{{if .IsNew}}Create and show token{{else}}Save{{end}}</button>
-    <a href="/admin/identities">Cancel</a>
-  </p>
 </form>
 
 {{if not .IsNew}}
-<h2>Token</h2>
-<form method="post" action="/admin/identities/{{.Name}}/token" hx-confirm="Rotate the token of {{.Name}}? The current token stops working immediately.">
-  <p>Rotating creates a new token. The current token stops working immediately.</p>
-  <button type="submit">Rotate token</button>
-</form>
-
-<h2>Delete</h2>
-<form method="post" action="/admin/identities/{{.Name}}/delete" hx-confirm="Delete {{.Name}}? Its token stops working immediately.">
-  <button type="submit" class="danger">Delete identity</button>
-</form>
+<h2>Token and access</h2>
+<section class="card">
+  <div class="card-header"><h3 class="card-title">Rotate token</h3></div>
+  <form class="card-body" method="post" action="/admin/identities/{{.Name}}/token" hx-confirm="Rotate the token of {{.Name}}? The current token stops working immediately.">
+    <p class="muted">Rotating creates a new token. The current token stops working immediately.</p>
+    <div class="actions"><button type="submit" class="button button-secondary">Rotate token</button></div>
+  </form>
+</section>
+<section class="card card-danger">
+  <div class="card-header"><h3 class="card-title">Delete identity</h3></div>
+  <form class="card-body" method="post" action="/admin/identities/{{.Name}}/delete" hx-confirm="Delete {{.Name}}? Its token stops working immediately.">
+    <p class="muted">The identity and its grants are removed. Its token stops working immediately; the audit log keeps its entries.</p>
+    <div class="actions"><button type="submit" class="button button-danger">Delete identity</button></div>
+  </form>
+</section>
 {{end}}
 {{end}}

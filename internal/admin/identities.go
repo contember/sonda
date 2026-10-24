@@ -22,8 +22,14 @@ var capabilities = []api.Capability{api.CapabilityErrors, api.CapabilityLogs, ap
 type identityRow struct {
 	Name      string
 	CreatedAt time.Time
-	Grants    []string
+	Grants    []grantSummary
 	Limits    []string
+}
+
+// grantSummary is the capabilities an identity has in one service environment.
+type grantSummary struct {
+	Target       string
+	Capabilities []string
 }
 
 func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +47,7 @@ func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
 			Limits:    summarizeLimits(identity.Limits),
 		})
 	}
-	h.render(w, http.StatusOK, "identities", view{Title: "Identities", Nav: "identities", Data: rows})
+	h.render(w, http.StatusOK, "identities", view{Title: "Identities", Lead: "Agents and the services they may query. Changes apply to the next request.", Nav: "identities", Data: rows})
 }
 
 // identityForm is the model of the create and edit page.
@@ -76,7 +82,7 @@ type limitField struct {
 
 func (h *Handler) newIdentity(w http.ResponseWriter, _ *http.Request) {
 	form := h.identityForm(true, "", nil, identities.LimitOverrides{})
-	h.render(w, http.StatusOK, "identity", view{Title: "New identity", Nav: "identities", Data: form})
+	h.render(w, http.StatusOK, "identity", view{Title: "New identity", Back: "/admin/identities", Nav: "identities", Data: form})
 }
 
 func (h *Handler) createIdentity(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +126,7 @@ func (h *Handler) editIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	form := h.identityForm(false, identity.Name, identity.Grants, identity.Limits)
-	h.render(w, http.StatusOK, "identity", view{Title: identity.Name, Nav: "identities", Data: form})
+	h.render(w, http.StatusOK, "identity", view{Title: identity.Name, Back: "/admin/identities", Nav: "identities", Data: form})
 }
 
 func (h *Handler) updateIdentity(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +191,7 @@ func (h *Handler) renderToken(w http.ResponseWriter, r *http.Request, name, toke
 	page := tokenPage{Name: name, Token: token, URL: scheme + "://" + r.Host}
 	// Keep the form's URL; the POST-only action URL would fail on reload.
 	w.Header().Set("HX-Push-Url", "false")
-	h.render(w, http.StatusOK, "token", view{Title: "Token for " + name, Nav: "identities", Data: page})
+	h.render(w, http.StatusOK, "token", view{Title: "Token for " + name, Back: "/admin/identities", Nav: "identities", Data: page})
 }
 
 func (h *Handler) renderFormError(w http.ResponseWriter, form identityForm, err error) {
@@ -193,7 +199,7 @@ func (h *Handler) renderFormError(w http.ResponseWriter, form identityForm, err 
 	if form.IsNew {
 		title = "New identity"
 	}
-	h.render(w, http.StatusUnprocessableEntity, "identity", view{Title: title, Nav: "identities", Error: err.Error(), Data: form})
+	h.render(w, http.StatusUnprocessableEntity, "identity", view{Title: title, Back: "/admin/identities", Nav: "identities", Error: err.Error(), Data: form})
 }
 
 func (h *Handler) identityForm(isNew bool, name string, grants []identities.Grant, limits identities.LimitOverrides) identityForm {
@@ -333,16 +339,17 @@ func formatInt(n *int) string {
 	return strconv.Itoa(*n)
 }
 
-// summarizeGrants groups grants by service environment, e.g. "api / production: errors, logs".
-func summarizeGrants(grants []identities.Grant) []string {
+// summarizeGrants groups grants by service environment, e.g. "api / production" with
+// errors and logs.
+func summarizeGrants(grants []identities.Grant) []grantSummary {
 	byTarget := map[string][]string{}
 	for _, g := range grants {
 		target := g.Service + " / " + g.Environment
 		byTarget[target] = append(byTarget[target], string(g.Capability))
 	}
-	summary := make([]string, 0, len(byTarget))
+	summary := make([]grantSummary, 0, len(byTarget))
 	for _, target := range sortedKeys(byTarget) {
-		summary = append(summary, target+": "+strings.Join(byTarget[target], ", "))
+		summary = append(summary, grantSummary{Target: target, Capabilities: byTarget[target]})
 	}
 	return summary
 }

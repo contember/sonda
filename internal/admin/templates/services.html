@@ -1,0 +1,70 @@
+{{define "content"}}
+{{if .Services}}
+{{range .Services}}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">{{.Name}}</h2>
+    <span class="field-hint">
+      {{- with .Description}}{{.}}{{end -}}
+      {{- if .RepositoryURL}}{{if .Description}} · {{end}}<a href="{{.RepositoryURL}}" rel="noreferrer">{{.Repository}}</a>{{else if .Repository}}{{if .Description}} · {{end}}{{.Repository}}{{end -}}
+    </span>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Environment</th><th>Capability</th><th>Source</th><th>Scope</th><th class="end">Identities</th></tr>
+    </thead>
+    {{range .Environments}}
+    <tbody>
+      {{$env := .}}
+      {{$rows := len .Bindings}}
+      {{range $i, $b := .Bindings}}
+      <tr>
+        {{if eq $i 0}}<th scope="row" rowspan="{{$rows}}" class="env">{{$env.Name}}</th>{{end}}
+        <td><span class="pill pill-accent">{{$b.Capability}}</span></td>
+        <td class="nowrap">{{$b.Source}} <span class="pill">{{$b.SourceType}}</span></td>
+        <td class="wrap"><code>{{$b.Scope}}</code></td>
+        {{if eq $i 0}}<td class="end env-count" rowspan="{{$rows}}">{{if $env.Identities}}{{$env.Identities}}{{else}}<span class="subtle">0</span>{{end}}</td>{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+    {{end}}
+  </table>
+  </div>
+  {{if .Signals}}
+  <div class="card-body">
+    <span class="field-hint">Signals:</span>
+    <span class="pills pills-inline">{{range .Signals}}<span class="pill">{{.}}</span>{{end}}</span>
+  </div>
+  {{end}}
+</section>
+{{end}}
+{{else}}
+<div class="empty"><p>The configuration has no services.</p></div>
+{{end}}
+
+<h2>Sources</h2>
+{{if .Sources}}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Name</th><th>Type</th><th>Endpoint</th><th>Auth</th><th>Headers</th><th>Used by</th></tr>
+  </thead>
+  <tbody>
+  {{range .Sources}}
+    <tr>
+      <td class="nowrap"><strong>{{.Name}}</strong></td>
+      <td><span class="pill">{{.Type}}</span></td>
+      <td class="wrap"><code>{{.Host}}</code></td>
+      <td class="nowrap">{{.Auth}}</td>
+      <td>{{range .Headers}}<div><code>{{.}}</code></div>{{else}}<span class="subtle">–</span>{{end}}</td>
+      <td>{{range .UsedBy}}<div class="nowrap">{{.}}</div>{{else}}<span class="pill pill-warning">unused</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{else}}
+<div class="empty"><p>The configuration has no sources.</p></div>
+{{end}}
+{{end}}
