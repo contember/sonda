@@ -28,19 +28,26 @@ func (a *app) dataCmd() *cobra.Command {
 
 func (a *app) dataSchemaCmd() *cobra.Command {
 	var env string
+	var entities []string
 	cmd := &cobra.Command{
 		Use:   "schema <service>",
 		Short: "Show the entities, fields and relations you can read",
-		Args:  cobra.ExactArgs(1),
+		Long: "Show the entities, fields and relations you can read. A schema too large for one\n" +
+			"response lists only entity names; then ask for the ones you need with --entity.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			params := url.Values{}
 			if env != "" {
 				params.Set("env", env)
 			}
+			for _, e := range entities {
+				params.Add("entity", e)
+			}
 			return fetch(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/data/schema", params, renderDataSchema)
 		},
 	}
 	cmd.Flags().StringVarP(&env, "env", "e", "", "environment (optional when only one is available)")
+	cmd.Flags().StringArrayVar(&entities, "entity", nil, "only this entity (repeatable)")
 	return cmd
 }
 
@@ -136,6 +143,9 @@ func variablesJSON(file string, pairs []string) (json.RawMessage, error) {
 }
 
 func renderDataSchema(w io.Writer, resp api.Response[api.DataSchema]) {
+	if resp.Meta.Truncated {
+		fmt.Fprintln(w, "# schema too large for one response: entity names only; use --entity NAME")
+	}
 	for _, e := range resp.Data.Entities {
 		fmt.Fprintln(w, e.Name)
 		for _, f := range e.Fields {

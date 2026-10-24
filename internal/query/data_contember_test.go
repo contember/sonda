@@ -62,7 +62,7 @@ func TestContemberReader(t *testing.T) {
 	s, identity := contemberService(t, url, project, reader, `["*.email", Article.secretNote]`)
 	ctx := context.Background()
 
-	schema, err := s.DataSchema(ctx, identity, "blog", "")
+	schema, err := s.DataSchema(ctx, identity, "blog", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
