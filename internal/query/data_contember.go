@@ -62,7 +62,7 @@ func (b *contemberData) query(ctx context.Context, text string, variables json.R
 	recordQuery(ctx, b.scope.Target, q.String())
 	// The response must fit max_response_bytes after redaction and wrapping; twice that is
 	// read, so redaction can still shorten it, and nothing larger is read or redacted.
-	data, err := b.client.Query(ctx, q, 2*b.limits.MaxResponseBytes)
+	data, err := b.client.Query(ctx, q, 2*b.limits.MaxResponseBytes, b.limits.MaxResponseBytes)
 	if err != nil {
 		return dataQuery{}, err
 	}

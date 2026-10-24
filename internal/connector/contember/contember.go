@@ -45,10 +45,16 @@ func (c *Client) Relations(ctx context.Context, scope authz.ContemberScope) ([]b
 
 const relationsQuery = `query { schema { entities { name fields { name ... on _Relation { targetEntity ownedBy inversedBy } } } } }`
 
-// Query runs a checked query and returns its data object. A response over maxBytes is
-// limit_exceeded; it is not read further, because it would be refused anyway.
-func (c *Client) Query(ctx context.Context, q policy.ContemberGraphQL, maxBytes int) (json.RawMessage, error) {
-	return c.post(ctx, q.Scope(), q.String(), true, maxBytes)
+// Query runs a checked query and returns its data object. The response is read up to
+// readBytes; a larger one is limit_exceeded and reports maxResponseBytes, the limit the agent
+// has to fit, since the response is not read further.
+func (c *Client) Query(ctx context.Context, q policy.ContemberGraphQL, readBytes, maxResponseBytes int) (json.RawMessage, error) {
+	data, err := c.post(ctx, q.Scope(), q.String(), true, readBytes)
+	var tooLarge *upstream.TooLargeError
+	if errors.As(err, &tooLarge) && tooLarge.Status >= 200 && tooLarge.Status < 300 {
+		return nil, apierr.New(api.CodeLimitExceeded, "the response is larger than %d bytes, the limit is %d; lower the limits or select fewer fields", tooLarge.Limit, maxResponseBytes)
+	}
+	return data, err
 }
 
 // ContentURL is the Content API endpoint of a project stage.
@@ -71,9 +77,9 @@ func (c *Client) post(ctx context.Context, scope authz.ContemberScope, query str
 	status, body, err := upstream.PostJSON(ctx, c.http, c.source.Name, c.ContentURL(scope), map[string]string{"query": query}, maxBytes)
 	var tooLarge *upstream.TooLargeError
 	if errors.As(err, &tooLarge) {
-		// Only the agent's own query can be made smaller.
+		// Only the agent's own successful query can be made smaller; Query maps that case.
 		if agentQuery && status >= 200 && status < 300 {
-			return nil, apierr.New(api.CodeLimitExceeded, "the response is larger than %d bytes; lower the limits or select fewer fields", tooLarge.Limit)
+			return nil, err
 		}
 		return nil, apierr.Upstream("%s", tooLarge.Error())
 	}
