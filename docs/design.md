@@ -565,7 +565,9 @@ layers, each of which must hold on its own:
 2. **Sonda.** The key's schema is introspected and cached for 10 minutes per source, project
    and stage. Every load fails if the schema can write: any `Mutation` field, or the
    `validateCreate…`/`validateUpdate…` queries that Contember adds only for roles that may
-   write. The binding then serves nothing. `serve` refuses to start with such a key;
+   write. The binding then serves nothing. `serve` checks every binding in parallel, each
+   with its own 15-second timeout, and refuses to start with such a key; an unreachable
+   engine only logs a warning, and its first request repeats the check;
    `sonda-server check --online` reports it.
 
 `internal/gqlguard` loads the introspection result into `gqlparser` (MIT) and checks each
@@ -596,7 +598,8 @@ query in three steps:
     limits on its path, and the sum must stay within `data_max_rows` (default 500). Aliases
     count like any other field. `offset`/`skip` are at most 10,000.
   - Depth counts nested entity fields (default 5), fields count after inlining (default
-    200), and the query plus variables are limited to `data_max_query_bytes` (16 KB).
+    200). The query plus variables, and the normalized query again, are limited to
+    `data_max_query_bytes` (16 KB): inlined variables and fragments can make it much larger.
   - Arguments outside `filter`, `by`, `orderBy`, `limit`, `first`, `offset` and `skip` are
     rejected, so a future Contember argument fails closed.
 
@@ -610,7 +613,8 @@ order; response `extensions` are dropped, because a Contember engine in debug mo
 with bound values there. GraphQL errors become `invalid_query`, Contember 401/403/404 and 5xx
 become `upstream_error`. There are no result handles: a response above `max_response_bytes`
 fails with `limit_exceeded`, and the agent lowers its limits. `meta.untrusted` marks
-`data.data`.
+`data.data`. The normalized query is returned once, in `data.query`; the source entry
+carries only the kind.
 
 Not covered: cost inside one row budget (a `contains` filter on a large unindexed table, a
 `totalCount` over millions of rows). Sonda's `query_timeout` cancels its own request, not

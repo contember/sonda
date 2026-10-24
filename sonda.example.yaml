@@ -51,8 +51,6 @@ sources:
   #   account_id: "${CF_ACCOUNT_ID}"
   #   auth: { type: bearer, token: "${CF_API_TOKEN}" }
 
-  # AWS serves CloudWatch Logs Insights and CloudWatch metrics. Credentials come from the
-  # default AWS credential chain (IRSA, environment, profile), or from assuming role_arn.
   # Contember serves the data capability: read-only GraphQL against the Content API.
   # Use an API key of a role that can only read.
   # shop-content:
@@ -60,6 +58,8 @@ sources:
   #   url: https://api.example.com
   #   auth: { type: bearer, token: "${SHOP_CONTEMBER_READER_TOKEN}" }
 
+  # AWS serves CloudWatch Logs Insights and CloudWatch metrics. Credentials come from the
+  # default AWS credential chain (IRSA, environment, profile), or from assuming role_arn.
   # aws-prod:
   #   type: aws
   #   region: eu-west-1
@@ -135,7 +135,7 @@ limits:
   data_max_rows: 500          # rows a query can return, nested limits multiplied
   data_max_depth: 5           # nested entity levels
   data_max_fields: 200        # selected fields after fragments are inlined
-  data_max_query_bytes: 16384 # query plus variables
+  data_max_query_bytes: 16384 # query plus variables, and the query after inlining
 
 # Extra regular expressions to redact from log lines and error messages, on top of the
 # built-in rules for bearer tokens, URL credentials, AWS keys, JWTs and password fields.

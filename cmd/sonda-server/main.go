@@ -76,10 +76,8 @@ func checkCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-			defer cancel()
 			failed := false
-			for _, check := range q.CheckData(ctx) {
+			for _, check := range q.CheckData(cmd.Context()) {
 				status := "ok"
 				if len(check.Errors) > 0 {
 					status, failed = "FAILED", true
@@ -120,8 +118,6 @@ func newQueryService(cfg *config.Config, st *store.Store) (*query.Service, error
 // only logs a warning, so one engine outage does not take telemetry down; requests to it
 // fail until it is back, and every schema refresh repeats the write check.
 func checkData(ctx context.Context, q *query.Service, log *slog.Logger) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
 	for _, check := range q.CheckData(ctx) {
 		attrs := []any{"service", check.Service, "environment", check.Environment, "source", check.Source}
 		if check.WriteAccess {

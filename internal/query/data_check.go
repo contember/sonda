@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
@@ -32,21 +33,30 @@ var personalField = regexp.MustCompile(`(?i)(e-?mail|phone|birth|address|street|
 // CheckData introspects every data binding. It reports keys that can write, unreachable
 // sources, allow-list entities and deny_fields entries that do not exist (a typo there would
 // silently leave a field readable), and readable fields with names that suggest personal data.
+//
+// Bindings are checked in parallel, each with its own timeout, so a hanging engine cannot
+// keep the check of another binding from finding a key that can write.
 func (s *Service) CheckData(ctx context.Context) []DataCheck {
-	var checks []DataCheck
-	for _, scope := range s.authz.ContemberScopes() {
-		check := DataCheck{Service: scope.Service(), Environment: scope.Environment(), Source: scope.Source().Name}
-		schema, err := LoadContemberSchema(ctx, s.connectors.Contember[scope.Source().Name], scope)
-		if err != nil {
-			var writeErr *writeAccessError
-			check.WriteAccess = errors.As(err, &writeErr)
-			check.Errors = append(check.Errors, errorText(err))
-			checks = append(checks, check)
-			continue
-		}
-		check.Errors, check.Warnings = bindingFindings(schema, scope)
-		checks = append(checks, check)
+	scopes := s.authz.ContemberScopes()
+	checks := make([]DataCheck, len(scopes))
+	var wg sync.WaitGroup
+	for i, scope := range scopes {
+		wg.Go(func() {
+			check := DataCheck{Service: scope.Service(), Environment: scope.Environment(), Source: scope.Source().Name}
+			loadCtx, cancel := context.WithTimeout(ctx, schemaLoadTimeout)
+			defer cancel()
+			schema, err := LoadContemberSchema(loadCtx, s.connectors.Contember[scope.Source().Name], scope)
+			if err != nil {
+				var writeErr *writeAccessError
+				check.WriteAccess = errors.As(err, &writeErr)
+				check.Errors = append(check.Errors, errorText(err))
+			} else {
+				check.Errors, check.Warnings = bindingFindings(schema, scope)
+			}
+			checks[i] = check
+		})
 	}
+	wg.Wait()
 	return checks
 }
 
