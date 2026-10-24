@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
 )
@@ -128,11 +127,22 @@ func PostJSON(ctx context.Context, client *http.Client, source, url string, body
 	if err != nil {
 		return 0, nil, Wrap(source, err)
 	}
-	// A cut body would only fail as invalid JSON; the agent can fix this by asking for less.
+	// A cut body would only fail as invalid JSON, so it is reported as too large.
 	if len(data) > maxBodyBytes {
-		return 0, nil, apierr.New(api.CodeLimitExceeded, "source %s returned more than %d MB; lower the limits", source, maxBodyBytes>>20)
+		return resp.StatusCode, nil, &TooLargeError{Source: source, Status: resp.StatusCode}
 	}
 	return resp.StatusCode, data, nil
+}
+
+// TooLargeError is a response body over the 32 MB read cap. The caller decides whether the
+// agent can fix it by asking for less.
+type TooLargeError struct {
+	Source string
+	Status int
+}
+
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("source %s returned more than %d MB (HTTP %d)", e.Source, maxBodyBytes>>20, e.Status)
 }
 
 // NewStatusError builds the error of a non-2xx response with a shortened body.

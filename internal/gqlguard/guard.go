@@ -298,6 +298,11 @@ func (p *printer) field(f *ast.Field) error {
 		p.b.WriteString("(" + strings.Join(args, ", ") + ")")
 	}
 	p.pending = 0
+	// Fragments can repeat literal arguments too, so the cap is also checked on what is
+	// printed so far.
+	if p.maxBytes > 0 && p.b.Len() > p.maxBytes {
+		return overLimit("the query would exceed %d bytes after fragments and variables are inlined", p.maxBytes)
+	}
 	p.b.WriteString(" ")
 	if len(f.SelectionSet) > 0 {
 		if err := p.selectionSet(f.SelectionSet, f.Definition.Type.Name()); err != nil {
