@@ -63,6 +63,10 @@ func reject(format string, args ...any) error {
 
 // Check validates a query with its JSON variables against the schema and the rules.
 func Check(s *Schema, query string, variables []byte, rules Rules) (Result, error) {
+	if s.inverse == nil {
+		// Without the relation model, a denied relation could be read from its other side.
+		return Result{}, errors.New("schema has no relation model; call AddRelations")
+	}
 	vars, err := decodeVariables(variables)
 	if err != nil {
 		return Result{}, err
@@ -573,7 +577,7 @@ func (w *walker) entity(set ast.SelectionSet, name string, multiplier, depth int
 		switch {
 		case f.Name == "__typename":
 		case e.columns[f.Name] != nil:
-			if w.rules.denied(name, f.Name) {
+			if w.schema.denied(w.rules, name, f.Name) {
 				return reject("field %s.%s is not allowed", name, f.Name)
 			}
 			if len(f.Arguments) > 0 {
@@ -581,7 +585,7 @@ func (w *walker) entity(set ast.SelectionSet, name string, multiplier, depth int
 			}
 		case e.relations[f.Name] != (relation{}):
 			r := e.relations[f.Name]
-			if w.rules.denied(name, f.Name) {
+			if w.schema.denied(w.rules, name, f.Name) {
 				return reject("field %s.%s is not allowed", name, f.Name)
 			}
 			h := hop{target: r.target}
@@ -593,7 +597,7 @@ func (w *walker) entity(set ast.SelectionSet, name string, multiplier, depth int
 			}
 		case e.derived[f.Name] != "":
 			base := e.derived[f.Name]
-			if w.rules.denied(name, base) {
+			if w.schema.denied(w.rules, name, base) {
 				return reject("field %s.%s is not allowed", name, base)
 			}
 			named := f.Definition.Type.Name()
@@ -698,12 +702,12 @@ func (w *walker) input(v *ast.Value, entityName, kind string, operator func(stri
 				return err
 			}
 		case e.columns[key] != nil:
-			if w.rules.denied(entityName, key) {
+			if w.schema.denied(w.rules, entityName, key) {
 				return reject("field %s.%s is not allowed in %s", entityName, key, kind)
 			}
 		case e.relations[key] != (relation{}):
 			r := e.relations[key]
-			if w.rules.denied(entityName, key) {
+			if w.schema.denied(w.rules, entityName, key) {
 				return reject("field %s.%s is not allowed in %s", entityName, key, kind)
 			}
 			if !w.rules.allowed(r.target) {

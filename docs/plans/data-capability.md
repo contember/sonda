@@ -77,6 +77,9 @@ sources. The implementation addresses:
   relations no longer counting as rows, a field cap before the quadratic validation step,
   `--var name=text` always being a string (`name:=json` for other values), shared schema
   loads, and CI failing instead of skipping when the Contember seed fails.
+- Later review rounds: the normalized query is size-limited too (inlined variables could
+  multiply it), startup checks run per binding in parallel, and a denied relation also
+  denies its other side, so `Article.author` cannot be read back through `Author.articles`.
 - No per-identity overrides for the data limits (they would need a store migration), no
   result handles for GraphQL trees (`limit_exceeded` instead), `check` stays offline unless
   `--online` is given.

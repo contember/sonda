@@ -81,6 +81,13 @@ func LoadContemberSchema(ctx context.Context, client *contember.Client, scope au
 		shown := write[:min(len(write), 3)]
 		return nil, &writeAccessError{err: apierr.Upstream("source %s is disabled: its API key can write (%s); give it a read-only role", scope.Source().Name, strings.Join(shown, ", "))}
 	}
+	relations, err := client.Relations(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if err := schema.AddRelations(relations); err != nil {
+		return nil, apierr.Upstream("source %s: %v", scope.Source().Name, err)
+	}
 	return schema, nil
 }
 
