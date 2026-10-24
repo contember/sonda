@@ -1,5 +1,6 @@
-// Package admin serves the admin UI under /admin: identity management and the audit log.
-// Sources and services stay in the config file and are not editable here.
+// Package admin serves the admin UI under /admin: identity management, a read-only view of the
+// configured services and sources, and the audit log. Sources and services stay in the config
+// file and are not editable here, so provider credentials never reach the database.
 package admin
 
 import (
@@ -65,6 +66,7 @@ func New(cfg *config.Config, ids identities.Store, st *store.Store, log *slog.Lo
 	authed.HandleFunc("POST /admin/identities/{name}", h.updateIdentity)
 	authed.HandleFunc("POST /admin/identities/{name}/token", h.rotateToken)
 	authed.HandleFunc("POST /admin/identities/{name}/delete", h.deleteIdentity)
+	authed.HandleFunc("GET /admin/services", h.listServices)
 	authed.HandleFunc("GET /admin/audit", h.auditLog)
 
 	mux := http.NewServeMux()
@@ -198,6 +200,10 @@ func isHTTPS(r *http.Request) bool {
 // view is the data every page gets; Data holds the page's own model.
 type view struct {
 	Title string
+	// Lead is a one-line description under the title.
+	Lead string
+	// Back is the parent page's URL, shown as a back link above the title.
+	Back  string
 	Nav   string
 	Error string
 	Data  any
@@ -217,7 +223,7 @@ func (h *Handler) serverError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
-var pageNames = []string{"login", "identities", "identity", "token", "audit"}
+var pageNames = []string{"login", "identities", "identity", "token", "services", "audit"}
 
 func parsePages() (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
