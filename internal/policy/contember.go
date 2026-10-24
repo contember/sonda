@@ -25,7 +25,8 @@ type ContemberGraphQL struct {
 func (q ContemberGraphQL) String() string              { return q.query }
 func (q ContemberGraphQL) Scope() authz.ContemberScope { return q.scope }
 
-// Rows is the maximum number of rows the query can return, from its limits.
+// Rows is the row budget the query uses: over every list and paginate field, the product of
+// the limits on its path. Single rows (get, has-one) are not counted.
 func (q ContemberGraphQL) Rows() int { return q.rows }
 
 // DataRules are the gqlguard rules of a scope under the given limits.
