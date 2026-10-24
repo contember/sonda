@@ -73,6 +73,10 @@ sources. The implementation addresses:
 - Layering: the scoped query is a `policy.ContemberGraphQL` value, built only by `policy`; the
   connector never receives agent text. The scope is `authz.DataScope` with a
   `ContemberScope` variant.
+- A second review of the implementation found no bypass of the guard. It led to: has-one
+  relations no longer counting as rows, a field cap before the quadratic validation step,
+  `--var name=text` always being a string (`name:=json` for other values), shared schema
+  loads, and CI failing instead of skipping when the Contember seed fails.
 - No per-identity overrides for the data limits (they would need a store migration), no
   result handles for GraphQL trees (`limit_exceeded` instead), `check` stays offline unless
   `--online` is given.

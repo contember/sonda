@@ -8,8 +8,8 @@ import (
 )
 
 // RedactJSON redacts every string value of a JSON document. It streams tokens, so keys keep
-// the order of the query and numbers keep their exact text. Object keys come from the schema
-// and stay as they are.
+// the order of the query and numbers keep their exact text. Object keys are not redacted:
+// they are field names and aliases, or keys inside JSON column values.
 func RedactJSON(r *Redactor, data json.RawMessage) (json.RawMessage, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()

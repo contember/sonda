@@ -278,7 +278,8 @@ func (s *Schema) Visible(rules Rules) ([]Entity, map[string][]string) {
 			}
 		}
 		for _, key := range e.unique {
-			if !rules.denied(name, key) {
+			r, isRelation := e.relations[key]
+			if !rules.denied(name, key) && (!isRelation || rules.allowed(r.target)) {
 				out.Unique = append(out.Unique, key)
 			}
 		}

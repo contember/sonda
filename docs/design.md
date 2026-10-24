@@ -572,7 +572,9 @@ layers, each of which must hold on its own:
 query in three steps:
 
 - **Parse and validate** the agent's document against the schema. Exactly one `query`
-  operation; no directives anywhere (`@include`/`@skip` would make counting ambiguous).
+  operation; no directives anywhere (`@include`/`@skip` would make counting ambiguous). The
+  fields written in the document are counted against `data_max_fields` before validation,
+  because its overlapping-fields step is quadratic.
 - **Normalize.** Fragments are inlined (Contember has no interfaces or unions, so a fragment
   applies only to its own type), aliases kept, the operation name dropped. Variables are
   inlined as literals, typed by their definitions; a missing nullable variable removes its
