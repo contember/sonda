@@ -259,8 +259,16 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	env.login(t)
 	ctx := context.Background()
 	stale := identities.Grant{Service: "api", Environment: "production", Capability: api.CapabilityTraces}
-	if err := env.store.Create(ctx, identities.Identity{Name: "stale", TokenSHA256: [32]byte{1}, Grants: []identities.Grant{stale}}); err != nil {
-		t.Fatal(err)
+	logs := identities.Grant{Service: "api", Environment: "production", Capability: api.CapabilityLogs}
+	for i, id := range []identities.Identity{
+		{Name: "stale", Grants: []identities.Grant{stale}},
+		{Name: "valid", Grants: []identities.Grant{logs}},
+		{Name: "both", Grants: []identities.Grant{stale, logs}},
+	} {
+		id.TokenSHA256 = [32]byte{byte(i + 1)}
+		if err := env.store.Create(ctx, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	resp, err := env.client.Get(env.server.URL + "/admin/services")
 	if err != nil {
@@ -268,7 +276,8 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(raw), `<span class="subtle">0</span>`) {
-		t.Errorf("a stale grant was counted:\n%s", raw)
+	// valid and both count; stale has no effective grant.
+	if !strings.Contains(string(raw), `rowspan="1">2</td>`) {
+		t.Errorf("want 2 identities with a configured grant:\n%s", raw)
 	}
 }
