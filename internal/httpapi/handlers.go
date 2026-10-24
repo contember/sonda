@@ -145,3 +145,15 @@ func (s *Server) releases(r *http.Request) (any, error) {
 	}
 	return s.query.Releases(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
 }
+
+func (s *Server) dataSchema(r *http.Request) (any, error) {
+	return s.query.DataSchema(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"))
+}
+
+func (s *Server) queryData(r *http.Request) (any, error) {
+	var req api.DataQueryRequest
+	if err := decodeBody(r, &req); err != nil {
+		return nil, err
+	}
+	return s.query.QueryData(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req)
+}

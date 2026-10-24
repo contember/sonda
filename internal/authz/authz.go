@@ -109,6 +109,8 @@ func backends(env *config.Environment, capabilities []api.Capability) map[api.Ca
 			result[capability] = api.BackendInfo{Source: string(env.Metrics.Source.Type), Dialect: env.Metrics.Dialect()}
 		case api.CapabilityTraces:
 			result[capability] = api.BackendInfo{Source: string(env.Traces.Source.Type), Dialect: env.Traces.Dialect()}
+		case api.CapabilityData:
+			result[capability] = api.BackendInfo{Source: string(env.Data.Source.Type), Dialect: env.Data.Dialect()}
 		}
 	}
 	return result
@@ -192,6 +194,34 @@ func (a *Authorizer) TraceScope(identity *Identity, service, env string) (TraceS
 		return TraceScope{}, err
 	}
 	return TraceScope{Target: target, binding: environment.Traces}, nil
+}
+
+func (a *Authorizer) DataScope(identity *Identity, service, env string) (DataScope, error) {
+	target, environment, err := a.resolve(identity, service, env, api.CapabilityData)
+	if err != nil {
+		return DataScope{}, err
+	}
+	return DataScope{Target: target, binding: environment.Data}, nil
+}
+
+// ContemberScopes returns the scope of every Contember data binding, for server-side checks
+// at startup. They are not tied to an identity and must not serve requests.
+func (a *Authorizer) ContemberScopes() []ContemberScope {
+	var scopes []ContemberScope
+	for _, svc := range a.cfg.Services {
+		for envName, env := range svc.Environments {
+			if env.Data != nil && env.Data.Source.Type == config.SourceContember {
+				scopes = append(scopes, ContemberScope{Target: Target{service: svc.Name, environment: envName}, binding: env.Data})
+			}
+		}
+	}
+	sort.Slice(scopes, func(i, j int) bool {
+		if scopes[i].service != scopes[j].service {
+			return scopes[i].service < scopes[j].service
+		}
+		return scopes[i].environment < scopes[j].environment
+	})
+	return scopes
 }
 
 // TraceVisibility reports which backend service names of the scope's source the identity may see in
@@ -403,3 +433,42 @@ type TempoScope struct {
 
 func (s TempoScope) Source() *config.Source { return s.source }
 func (s TempoScope) ServiceName() string    { return s.serviceName }
+
+// DataScope restricts a data source to one service. Contember is the only variant.
+type DataScope struct {
+	Target
+	binding *config.DataBinding
+}
+
+func (s DataScope) Source() *config.Source { return s.binding.Source }
+func (s DataScope) Dialect() api.Dialect   { return s.binding.Dialect() }
+
+func (s DataScope) Contember() (ContemberScope, bool) {
+	if s.binding.Source.Type != config.SourceContember {
+		return ContemberScope{}, false
+	}
+	return ContemberScope{Target: s.Target, binding: s.binding}, true
+}
+
+// ContemberScope restricts a Contember engine to one project stage, the allowed entities and
+// the fields that are not denied. The API key's role is the primary boundary; this scope
+// narrows it further.
+type ContemberScope struct {
+	Target
+	binding *config.DataBinding
+}
+
+func (s ContemberScope) Source() *config.Source { return s.binding.Source }
+func (s ContemberScope) Project() string        { return s.binding.Project }
+func (s ContemberScope) Stage() string          { return s.binding.Stage }
+
+// Entities returns a copy of the allow list; empty allows every entity the role can read.
+func (s ContemberScope) Entities() []string { return slices.Clone(s.binding.Entities) }
+
+// Denied reports whether a field is hidden by deny_fields (Entity.field or *.field).
+func (s ContemberScope) Denied(entity, field string) bool {
+	return slices.Contains(s.binding.DenyFields, entity+"."+field) || slices.Contains(s.binding.DenyFields, "*."+field)
+}
+
+// DenyFields returns a copy of the configured deny list.
+func (s ContemberScope) DenyFields() []string { return slices.Clone(s.binding.DenyFields) }

@@ -43,6 +43,7 @@ const (
 	SourceCloudflare SourceType = "cloudflare"
 	SourceAWS        SourceType = "aws"
 	SourceTempo      SourceType = "tempo"
+	SourceContember  SourceType = "contember"
 )
 
 type Source struct {
@@ -104,6 +105,7 @@ type Environment struct {
 	Logs    *LogBinding
 	Metrics *MetricBinding
 	Traces  *TraceBinding
+	Data    *DataBinding
 }
 
 type ErrorBinding struct {
@@ -180,6 +182,18 @@ func (b *TraceBinding) Dialect() api.Dialect {
 	return ""
 }
 
+// DataBinding scopes a Contember source to one project stage. Entities is an optional allow
+// list; DenyFields hides fields, as "Entity.field" or "*.field".
+type DataBinding struct {
+	Source     *Source
+	Project    string
+	Stage      string
+	Entities   []string
+	DenyFields []string
+}
+
+func (b *DataBinding) Dialect() api.Dialect { return api.DialectContemberGraphQL }
+
 func (e *Environment) Capabilities() []api.Capability {
 	var caps []api.Capability
 	if e.Errors != nil {
@@ -194,6 +208,9 @@ func (e *Environment) Capabilities() []api.Capability {
 	if e.Traces != nil {
 		caps = append(caps, api.CapabilityTraces)
 	}
+	if e.Data != nil {
+		caps = append(caps, api.CapabilityData)
+	}
 	return caps
 }
 
@@ -204,6 +221,11 @@ type Limits struct {
 	QueryTimeout      time.Duration
 	ConcurrentQueries int
 	RequestsPerMinute int
+	// Data limits apply to data queries. They have no per-identity overrides.
+	DataMaxRows       int
+	DataMaxDepth      int
+	DataMaxFields     int
+	DataMaxQueryBytes int
 }
 
 var DefaultLimits = Limits{
@@ -213,4 +235,8 @@ var DefaultLimits = Limits{
 	QueryTimeout:      30 * time.Second,
 	ConcurrentQueries: 4,
 	RequestsPerMinute: 60,
+	DataMaxRows:       500,
+	DataMaxDepth:      5,
+	DataMaxFields:     200,
+	DataMaxQueryBytes: 16 * 1024,
 }

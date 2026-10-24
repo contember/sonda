@@ -3,6 +3,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -102,4 +103,34 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// PostJSON sends body as JSON and returns the status and the body of the response, so the
+// caller can read errors that come with a non-2xx status (GraphQL does that).
+func PostJSON(ctx context.Context, client *http.Client, source, url string, body any) (int, []byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return 0, nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, Wrap(source, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil {
+		return 0, nil, Wrap(source, err)
+	}
+	return resp.StatusCode, data, nil
+}
+
+// NewStatusError builds the error of a non-2xx response with a shortened body.
+func NewStatusError(source string, status int, body []byte) *StatusError {
+	return &StatusError{Source: source, Status: status, Body: truncate(strings.TrimSpace(string(body)), 300)}
 }

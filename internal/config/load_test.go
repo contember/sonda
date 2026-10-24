@@ -208,7 +208,7 @@ func TestParseBackendErrors(t *testing.T) {
 		replace [2]string
 		want    string
 	}{
-		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare or aws"},
+		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare, aws or contember"},
 
 		{"cloudflare without account", [2]string{`    account_id: "${CF_ACCOUNT_ID}"` + "\n", ""}, "sources.cf.account_id is required"},
 		{"cloudflare basic auth", [2]string{`{ type: bearer, token: "${CF_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, "sources.cf.auth must be bearer"},
@@ -286,7 +286,7 @@ func TestParseExistingSourceRules(t *testing.T) {
 		{"prometheus with account", [2]string{"type: prometheus\n", "type: prometheus\n    account_id: acc\n"}, "sources.prom.account_id is allowed only for cloudflare sources"},
 		{"loki with region", [2]string{"type: loki\n", "type: loki\n    region: eu-west-1\n"}, "sources.loki.region is allowed only for aws sources"},
 		{"loki logs with script", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: loki, selector: '{app="api"}', script: w }`}, "logs.script is not allowed for loki sources"},
-		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics or traces is required"},
+		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics, traces or data is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -295,6 +295,71 @@ func TestParseExistingSourceRules(t *testing.T) {
 			}
 			input := strings.Replace(validConfig, tt.replace[0], tt.replace[1], 1)
 			_, err := Parse([]byte(input), env(validEnv()))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const dataConfig = `
+sources:
+  content:
+    type: contember
+    url: https://api.example.com
+    auth: { type: bearer, token: "${CONTEMBER_TOKEN}" }
+services:
+  shop:
+    environments:
+      production:
+        data:
+          source: content
+          project: shop
+          entities: [Order, Customer]
+          deny_fields: ["*.email", Customer.phone]
+limits:
+  data_max_rows: 100
+`
+
+func TestParseData(t *testing.T) {
+	cfg, err := Parse([]byte(dataConfig), env(map[string]string{"CONTEMBER_TOKEN": "key"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := cfg.Services["shop"].Environments["production"].Data
+	if data.Project != "shop" || data.Stage != "live" || len(data.Entities) != 2 || len(data.DenyFields) != 2 || data.Source.Auth.Token != "key" {
+		t.Errorf("data binding = %+v", data)
+	}
+	if data.Dialect() != api.DialectContemberGraphQL {
+		t.Errorf("dialect = %s", data.Dialect())
+	}
+	if caps := cfg.Services["shop"].Environments["production"].Capabilities(); len(caps) != 1 || caps[0] != api.CapabilityData {
+		t.Errorf("capabilities = %v", caps)
+	}
+	if cfg.Limits.DataMaxRows != 100 || cfg.Limits.DataMaxDepth != DefaultLimits.DataMaxDepth {
+		t.Errorf("limits = %+v", cfg.Limits)
+	}
+}
+
+func TestParseDataErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"auth not bearer", [2]string{`auth: { type: bearer, token: "${CONTEMBER_TOKEN}" }`, `auth: { type: none }`}, "auth must be bearer for contember sources"},
+		{"missing url", [2]string{"url: https://api.example.com", ""}, "invalid URL"},
+		{"missing project", [2]string{"project: shop", ""}, "project must be a Contember project slug"},
+		{"bad stage", [2]string{"project: shop", "project: shop\n          stage: Live!"}, "stage must be a Contember stage slug"},
+		{"bad entity", [2]string{"[Order, Customer]", "[Order, Order]"}, "must be a unique entity name"},
+		{"bad deny field", [2]string{"Customer.phone", "phone"}, "must be Entity.field or *.field"},
+		{"wrong source type", [2]string{"type: contember", "type: loki"}, "expected contember"},
+		{"data limit", [2]string{"data_max_rows: 100", "data_max_rows: 0"}, "data_max_rows must be positive"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := strings.Replace(dataConfig, tt.replace[0], tt.replace[1], 1)
+			_, err := Parse([]byte(input), env(map[string]string{"CONTEMBER_TOKEN": "key"}))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

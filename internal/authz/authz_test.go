@@ -173,6 +173,7 @@ sources:
   aws: { type: aws, region: eu-west-1 }
   tempo: { type: tempo, url: "http://tempo" }
   tempo-eu: { type: tempo, url: "http://tempo-eu" }
+  content: { type: contember, url: "http://engine", auth: { type: bearer, token: t } }
 services:
   worker:
     environments:
@@ -187,6 +188,7 @@ services:
         logs: { source: aws, log_groups: [/aws/rds/db] }
         metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: db } }
         traces: { source: tempo, service: db }
+        data: { source: content, project: db, entities: [Order], deny_fields: ["*.email", Order.note] }
   api:
     environments:
       production:
@@ -386,5 +388,34 @@ func TestEnvironmentBackends(t *testing.T) {
 	}
 	if !maps.Equal(envs[0].Backends, want) {
 		t.Errorf("backends = %+v", envs[0].Backends)
+	}
+}
+
+func TestDataScope(t *testing.T) {
+	a := backendsAuthorizer(t)
+	identity := grantAll("db")
+	if _, err := a.DataScope(identity, "db", ""); !hasCode(err, api.CodeNotFound) {
+		t.Fatalf("data without a data grant: %v", err)
+	}
+	identity.Grants = append(identity.Grants, identities.Grant{Service: "db", Environment: "production", Capability: api.CapabilityData})
+	scope, err := a.DataScope(identity, "db", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, ok := scope.Contember()
+	if !ok || cs.Project() != "db" || cs.Stage() != "live" || scope.Dialect() != api.DialectContemberGraphQL {
+		t.Fatalf("contember scope = %+v, %v", cs, ok)
+	}
+	if !cs.Denied("Customer", "email") || !cs.Denied("Order", "note") || cs.Denied("Customer", "note") {
+		t.Error("deny_fields not applied")
+	}
+	entities := cs.Entities()
+	entities[0] = "Changed"
+	if cs.Entities()[0] != "Order" {
+		t.Error("Entities is not a copy")
+	}
+	backends := a.Environments(identity, a.cfg.Services["db"])[0].Backends
+	if backends[api.CapabilityData] != (api.BackendInfo{Source: "contember", Dialect: api.DialectContemberGraphQL}) {
+		t.Errorf("data backend = %+v", backends[api.CapabilityData])
 	}
 }

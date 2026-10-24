@@ -61,6 +61,12 @@ jobs:
           dev/seed-traces.sh
           timeout 60 sh -c 'until curl -sfG --data-urlencode "q={ resource.service.name = \"svc-b\" }" http://localhost:13200/api/search | grep -q traceID; do sleep 2; done'
 
+      # The data tests run against a Contember engine with a read-only and a write role.
+      - name: Start and seed Contember
+        run: |
+          docker compose -f dev/docker-compose.yml up -d contember
+          dev/seed-contember.sh | sed 's/^export //' >> "$GITHUB_ENV"
+
       - run: go test ./...
         env:
           SONDA_TEST_LOKI_URL: http://localhost:3100

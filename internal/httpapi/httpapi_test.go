@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -67,6 +68,21 @@ func (u *upstreams) handler() http.Handler {
 			{"id":"1","shortId":"API-1","title":"Timeout","count":"10","userCount":2,"firstSeen":"2026-01-01T00:00:00Z","lastSeen":"2026-01-02T00:00:00Z","project":{"slug":"api"}},
 			{"id":"2","shortId":"BILLING-1","title":"Leak","count":"5","userCount":1,"firstSeen":"2026-01-01T00:00:00Z","lastSeen":"2026-01-02T00:00:00Z","project":{"slug":"billing"}}]`)
 	})
+	for project, fixture := range map[string]string{"shop": "contember_reader.json", "shopw": "contember_writer.json"} {
+		mux.HandleFunc("POST /content/"+project+"/live", func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Query string `json:"query"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if strings.Contains(body.Query, "__schema") {
+				data, _ := os.ReadFile(filepath.Join("..", "gqlguard", "testdata", fixture))
+				_, _ = w.Write(data)
+				return
+			}
+			u.record(body.Query)
+			fmt.Fprint(w, `{"data":{"listArticle":[{"title":"Hello","secret":"password=hunter2"}]},"extensions":{"dbQueries":["select"]}}`)
+		})
+	}
 	mux.HandleFunc("/api/0/organizations/acme/issues/2/", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"id":"2","project":{"slug":"billing"}}`)
 	})
@@ -92,7 +108,16 @@ sources:
   prom: { type: prometheus, url: %[1]q }
   tempo: { type: tempo, url: %[1]q }
   cf: { type: cloudflare, url: %[1]q, account_id: acc, auth: { type: bearer, token: t } }
+  content: { type: contember, url: %[1]q, auth: { type: bearer, token: c } }
 services:
+  shop:
+    environments:
+      production:
+        data: { source: content, project: shop, deny_fields: [Article.secretNote, "*.email"] }
+  shopw:
+    environments:
+      production:
+        data: { source: content, project: shopw }
   api:
     environments:
       production:
@@ -131,6 +156,8 @@ services:
 				{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
 				{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
 				{Service: "worker", Environment: "production", Capability: api.CapabilityLogs},
+				{Service: "shop", Environment: "production", Capability: api.CapabilityData},
+				{Service: "shopw", Environment: "production", Capability: api.CapabilityData},
 			},
 		},
 		{
@@ -387,5 +414,83 @@ func TestPipelineIsLokiOnly(t *testing.T) {
 	status = env.call(t, "agent-token", "POST", "/v1/services/worker/logs/search", api.LogSearchRequest{Contains: []string{"x"}}, &errResp)
 	if status != http.StatusBadGateway || errResp.Error.Code != api.CodeUpstreamError {
 		t.Errorf("cloudflare search: %d %+v", status, errResp)
+	}
+}
+
+func TestDataSchemaHidesDeniedFields(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.Response[api.DataSchema]
+	if status := env.call(t, "agent-token", "GET", "/v1/services/shop/data/schema", nil, &resp); status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	if len(resp.Data.Entities) != 3 {
+		t.Fatalf("entities = %+v", resp.Data.Entities)
+	}
+	for _, e := range resp.Data.Entities {
+		for _, f := range e.Fields {
+			if f.Name == "secretNote" || f.Name == "email" {
+				t.Errorf("%s.%s is visible", e.Name, f.Name)
+			}
+		}
+	}
+}
+
+func TestDataQueryIsNormalizedAndRedacted(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.Response[api.DataQueryResult]
+	status := env.call(t, "agent-token", "POST", "/v1/services/shop/data/query", api.DataQueryRequest{
+		Query:     `query($n: Int!) { listArticle(limit: $n) { ...F } } fragment F on Article { title }`,
+		Variables: json.RawMessage(`{"n": 5}`),
+	}, &resp)
+	if status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	want := `query { listArticle(limit: 5) { title } }`
+	if got := env.upstream.last(); got != want {
+		t.Errorf("upstream received %s, want %s", got, want)
+	}
+	if resp.Data.Query != want || resp.Data.Rows != 5 {
+		t.Errorf("result = %+v", resp.Data)
+	}
+	if strings.Contains(string(resp.Data.Data), "hunter2") || strings.Contains(string(resp.Data.Data), "dbQueries") {
+		t.Errorf("data not redacted or extensions leaked: %s", resp.Data.Data)
+	}
+	if len(resp.Meta.Untrusted) == 0 {
+		t.Error("data not marked untrusted")
+	}
+}
+
+func TestDataQueryRejectsDeniedFieldBeforeUpstream(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.ErrorResponse
+	status := env.call(t, "agent-token", "POST", "/v1/services/shop/data/query", api.DataQueryRequest{
+		Query: `{ listArticle(limit: 1, filter: {secretNote: {isNull: false}}) { id } }`,
+	}, &resp)
+	if status != http.StatusBadRequest || resp.Error.Code != api.CodeInvalidQuery {
+		t.Fatalf("status %d, error %+v", status, resp.Error)
+	}
+	env.upstream.mu.Lock()
+	defer env.upstream.mu.Unlock()
+	if len(env.upstream.queries) != 0 {
+		t.Errorf("upstream received %v", env.upstream.queries)
+	}
+}
+
+func TestDataRefusesWriteKey(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.ErrorResponse
+	status := env.call(t, "agent-token", "POST", "/v1/services/shopw/data/query", api.DataQueryRequest{
+		Query: `{ listArticle(limit: 1) { id } }`,
+	}, &resp)
+	if status != http.StatusBadGateway || !strings.Contains(resp.Error.Message, "can write") {
+		t.Fatalf("status %d, error %+v", status, resp.Error)
+	}
+}
+
+func TestDataNeedsDataGrant(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.ErrorResponse
+	if status := env.call(t, "other-token", "GET", "/v1/services/shop/data/schema", nil, &resp); status != http.StatusNotFound {
+		t.Fatalf("status %d", status)
 	}
 }

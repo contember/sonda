@@ -1,0 +1,814 @@
+type _Column implements _Field {
+  name: String!
+  type: String!
+  enumName: String
+  defaultValue: Json
+  nullable: Boolean!
+  rules: [_Rule!]!
+  validators: [_Validator!]!
+}
+
+interface _Field {
+  name: String!
+  type: String!
+  nullable: Boolean
+  rules: [_Rule!]!
+  validators: [_Validator!]!
+}
+
+type _Rule {
+  message: _RuleMessage
+  validator: Int!
+}
+
+type _RuleMessage {
+  text: String
+}
+
+type _Validator {
+  operation: String!
+  arguments: [_Argument!]!
+}
+
+union _Argument = _ValidatorArgument | _PathArgument | _LiteralArgument
+
+type _ValidatorArgument {
+  validator: Int!
+}
+
+type _PathArgument {
+  path: [String!]!
+}
+
+type _LiteralArgument {
+  value: Json
+}
+
+"""JSON custom scalar type"""
+scalar Json
+
+type _Relation implements _Field {
+  name: String!
+  type: String!
+  side: _RelationSide!
+  targetEntity: String!
+  ownedBy: String
+  inversedBy: String
+  nullable: Boolean
+  onDelete: _OnDeleteBehaviour
+  orphanRemoval: Boolean
+  orderBy: [_OrderBy!]
+  rules: [_Rule!]!
+  validators: [_Validator!]!
+}
+
+enum _RelationSide {
+  owning
+  inverse
+}
+
+enum _OnDeleteBehaviour {
+  restrict
+  cascade
+  setNull
+}
+
+type _OrderBy {
+  path: [String!]!
+  direction: _OrderByDirection!
+}
+
+enum _OrderByDirection {
+  asc
+  desc
+}
+
+type Query {
+  schema: _Schema
+  getAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere): Author
+  listAuthor(filter: AuthorWhere, orderBy: [AuthorOrderBy!], offset: Int, limit: Int): [Author!]!
+  paginateAuthor(filter: AuthorWhere, orderBy: [AuthorOrderBy!], skip: Int, first: Int): AuthorConnection!
+  validateCreateAuthor(data: AuthorCreateInput!): _ValidationResult!
+  validateUpdateAuthor(by: AuthorUniqueWhere!, data: AuthorUpdateInput!): _ValidationResult!
+  getArticle(by: ArticleUniqueWhere!, filter: ArticleWhere): Article
+  listArticle(filter: ArticleWhere, orderBy: [ArticleOrderBy!], offset: Int, limit: Int): [Article!]!
+  paginateArticle(filter: ArticleWhere, orderBy: [ArticleOrderBy!], skip: Int, first: Int): ArticleConnection!
+  validateCreateArticle(data: ArticleCreateInput!): _ValidationResult!
+  validateUpdateArticle(by: ArticleUniqueWhere!, data: ArticleUpdateInput!): _ValidationResult!
+  getTag(by: TagUniqueWhere!, filter: TagWhere): Tag
+  listTag(filter: TagWhere, orderBy: [TagOrderBy!], offset: Int, limit: Int): [Tag!]!
+  paginateTag(filter: TagWhere, orderBy: [TagOrderBy!], skip: Int, first: Int): TagConnection!
+  validateCreateTag(data: TagCreateInput!): _ValidationResult!
+  validateUpdateTag(by: TagUniqueWhere!, data: TagUpdateInput!): _ValidationResult!
+  transaction: QueryTransaction
+  _info: Info
+}
+
+type _Schema {
+  enums: [_Enum!]!
+  entities: [_Entity!]!
+}
+
+type _Enum {
+  name: String!
+  values: [String!]!
+}
+
+type _Entity {
+  name: String!
+  customPrimaryAllowed: Boolean!
+  fields: [_Field!]!
+  unique: [_UniqueConstraint!]!
+}
+
+type _UniqueConstraint {
+  fields: [String!]!
+}
+
+type Author {
+  _meta: AuthorMeta
+  id: UUID!
+  name: String!
+  email: String!
+  articles(filter: ArticleWhere, orderBy: [ArticleOrderBy!], offset: Int, limit: Int): [Article!]!
+  articlesBy(by: ArticlesOfAuthorByUniqueWhere!, filter: ArticleWhere): Article
+  paginateArticles(filter: ArticleWhere, orderBy: [ArticleOrderBy!], skip: Int, first: Int): ArticleConnection!
+}
+
+type AuthorMeta {
+  id: FieldMeta
+  name: FieldMeta
+  email: FieldMeta
+  articles: FieldMeta
+}
+
+type FieldMeta {
+  readable: Boolean
+  updatable: Boolean
+}
+
+scalar UUID
+
+type Article {
+  _meta: ArticleMeta
+  id: UUID!
+  title: String!
+  published: Boolean!
+  status: ArticleStatus!
+  secretNote: String
+  author(filter: AuthorWhere): Author
+  tags(filter: TagWhere, orderBy: [TagOrderBy!], offset: Int, limit: Int): [Tag!]!
+  paginateTags(filter: TagWhere, orderBy: [TagOrderBy!], skip: Int, first: Int): TagConnection!
+}
+
+type ArticleMeta {
+  id: FieldMeta
+  title: FieldMeta
+  published: FieldMeta
+  status: FieldMeta
+  secretNote: FieldMeta
+  author: FieldMeta
+  tags: FieldMeta
+}
+
+enum ArticleStatus {
+  draft
+  published
+}
+
+input AuthorWhere {
+  id: UUIDCondition
+  name: StringCondition
+  email: StringCondition
+  articles: ArticleWhere
+  and: [AuthorWhere]
+  or: [AuthorWhere]
+  not: AuthorWhere
+}
+
+input UUIDCondition {
+  and: [UUIDCondition!]
+  or: [UUIDCondition!]
+  not: UUIDCondition
+  null: Boolean
+  isNull: Boolean
+  eq: UUID
+  notEq: UUID
+  in: [UUID!]
+  notIn: [UUID!]
+  lt: UUID
+  lte: UUID
+  gt: UUID
+  gte: UUID
+}
+
+input StringCondition {
+  and: [StringCondition!]
+  or: [StringCondition!]
+  not: StringCondition
+  null: Boolean
+  isNull: Boolean
+  eq: String
+  notEq: String
+  in: [String!]
+  notIn: [String!]
+  lt: String
+  lte: String
+  gt: String
+  gte: String
+  contains: String
+  startsWith: String
+  endsWith: String
+  containsCI: String
+  startsWithCI: String
+  endsWithCI: String
+}
+
+input ArticleWhere {
+  id: UUIDCondition
+  title: StringCondition
+  published: BooleanCondition
+  status: ArticleStatusEnumCondition
+  secretNote: StringCondition
+  author: AuthorWhere
+  tags: TagWhere
+  and: [ArticleWhere]
+  or: [ArticleWhere]
+  not: ArticleWhere
+}
+
+input BooleanCondition {
+  and: [BooleanCondition!]
+  or: [BooleanCondition!]
+  not: BooleanCondition
+  null: Boolean
+  isNull: Boolean
+  eq: Boolean
+  notEq: Boolean
+  in: [Boolean!]
+  notIn: [Boolean!]
+  lt: Boolean
+  lte: Boolean
+  gt: Boolean
+  gte: Boolean
+}
+
+input ArticleStatusEnumCondition {
+  and: [ArticleStatusEnumCondition!]
+  or: [ArticleStatusEnumCondition!]
+  not: ArticleStatusEnumCondition
+  null: Boolean
+  isNull: Boolean
+  eq: ArticleStatus
+  notEq: ArticleStatus
+  in: [ArticleStatus!]
+  notIn: [ArticleStatus!]
+  lt: ArticleStatus
+  lte: ArticleStatus
+  gt: ArticleStatus
+  gte: ArticleStatus
+}
+
+input TagWhere {
+  id: UUIDCondition
+  name: StringCondition
+  articles: ArticleWhere
+  and: [TagWhere]
+  or: [TagWhere]
+  not: TagWhere
+}
+
+type Tag {
+  _meta: TagMeta
+  id: UUID!
+  name: String!
+  articles(filter: ArticleWhere, orderBy: [ArticleOrderBy!], offset: Int, limit: Int): [Article!]!
+  paginateArticles(filter: ArticleWhere, orderBy: [ArticleOrderBy!], skip: Int, first: Int): ArticleConnection!
+}
+
+type TagMeta {
+  id: FieldMeta
+  name: FieldMeta
+  articles: FieldMeta
+}
+
+input ArticleOrderBy {
+  _random: Boolean
+  _randomSeeded: Int
+  id: OrderDirection
+  title: OrderDirection
+  published: OrderDirection
+  status: OrderDirection
+  secretNote: OrderDirection
+  author: AuthorOrderBy
+}
+
+enum OrderDirection {
+  asc
+  desc
+  ascNullsFirst
+  descNullsLast
+}
+
+input AuthorOrderBy {
+  _random: Boolean
+  _randomSeeded: Int
+  id: OrderDirection
+  name: OrderDirection
+  email: OrderDirection
+}
+
+type ArticleConnection {
+  pageInfo: PageInfo!
+  edges: [ArticleEdge!]!
+}
+
+type PageInfo {
+  totalCount: Int!
+}
+
+type ArticleEdge {
+  node: Article!
+}
+
+input TagOrderBy {
+  _random: Boolean
+  _randomSeeded: Int
+  id: OrderDirection
+  name: OrderDirection
+}
+
+type TagConnection {
+  pageInfo: PageInfo!
+  edges: [TagEdge!]!
+}
+
+type TagEdge {
+  node: Tag!
+}
+
+input ArticlesOfAuthorByUniqueWhere {
+  id: UUID
+}
+
+input AuthorUniqueWhere {
+  id: UUID
+  email: String
+  articles: ArticleUniqueWhere
+}
+
+input ArticleUniqueWhere {
+  id: UUID
+}
+
+type AuthorConnection {
+  pageInfo: PageInfo!
+  edges: [AuthorEdge!]!
+}
+
+type AuthorEdge {
+  node: Author!
+}
+
+type _ValidationResult {
+  valid: Boolean!
+  errors: [_ValidationError!]!
+}
+
+type _ValidationError {
+  path: [_PathFragment!]!
+  message: _ValidationMessage!
+}
+
+union _PathFragment = _FieldPathFragment | _IndexPathFragment
+
+type _FieldPathFragment {
+  field: String!
+}
+
+type _IndexPathFragment {
+  index: Int!
+  alias: String
+}
+
+type _ValidationMessage {
+  text: String!
+}
+
+input AuthorCreateInput {
+  name: String
+  email: String
+  articles: [AuthorCreateArticlesEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input AuthorCreateArticlesEntityRelationInput {
+  connect: ArticleUniqueWhere
+  create: ArticleWithoutAuthorCreateInput
+  connectOrCreate: AuthorConnectOrCreateArticlesRelationInput
+  alias: String
+}
+
+input ArticleWithoutAuthorCreateInput {
+  title: String
+  published: Boolean
+  status: ArticleStatus
+  secretNote: String
+  tags: [ArticleCreateTagsEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input ArticleCreateTagsEntityRelationInput {
+  connect: TagUniqueWhere
+  create: TagWithoutArticlesCreateInput
+  connectOrCreate: ArticleConnectOrCreateTagsRelationInput
+  alias: String
+}
+
+input TagUniqueWhere {
+  id: UUID
+  name: String
+}
+
+input TagWithoutArticlesCreateInput {
+  name: String
+  _dummy_field_: Boolean
+}
+
+input ArticleConnectOrCreateTagsRelationInput {
+  connect: TagUniqueWhere!
+  create: TagWithoutArticlesCreateInput!
+}
+
+input AuthorConnectOrCreateArticlesRelationInput {
+  connect: ArticleUniqueWhere!
+  create: ArticleWithoutAuthorCreateInput!
+}
+
+input AuthorUpdateInput {
+  name: String
+  email: String
+  articles: [AuthorUpdateArticlesEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input AuthorUpdateArticlesEntityRelationInput {
+  create: ArticleWithoutAuthorCreateInput
+  update: AuthorUpdateArticlesRelationInput
+  upsert: AuthorUpsertArticlesRelationInput
+  connect: ArticleUniqueWhere
+  connectOrCreate: AuthorConnectOrCreateArticlesRelationInput
+  disconnect: ArticleUniqueWhere
+  delete: ArticleUniqueWhere
+  alias: String
+}
+
+input AuthorUpdateArticlesRelationInput {
+  by: ArticleUniqueWhere!
+  data: ArticleWithoutAuthorUpdateInput!
+}
+
+input ArticleWithoutAuthorUpdateInput {
+  title: String
+  published: Boolean
+  status: ArticleStatus
+  secretNote: String
+  tags: [ArticleUpdateTagsEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input ArticleUpdateTagsEntityRelationInput {
+  create: TagWithoutArticlesCreateInput
+  update: ArticleUpdateTagsRelationInput
+  upsert: ArticleUpsertTagsRelationInput
+  connect: TagUniqueWhere
+  connectOrCreate: ArticleConnectOrCreateTagsRelationInput
+  disconnect: TagUniqueWhere
+  delete: TagUniqueWhere
+  alias: String
+}
+
+input ArticleUpdateTagsRelationInput {
+  by: TagUniqueWhere!
+  data: TagWithoutArticlesUpdateInput!
+}
+
+input TagWithoutArticlesUpdateInput {
+  name: String
+  _dummy_field_: Boolean
+}
+
+input ArticleUpsertTagsRelationInput {
+  by: TagUniqueWhere!
+  update: TagWithoutArticlesUpdateInput!
+  create: TagWithoutArticlesCreateInput!
+}
+
+input AuthorUpsertArticlesRelationInput {
+  by: ArticleUniqueWhere!
+  update: ArticleWithoutAuthorUpdateInput!
+  create: ArticleWithoutAuthorCreateInput!
+}
+
+input ArticleCreateInput {
+  title: String
+  published: Boolean
+  status: ArticleStatus
+  secretNote: String
+  author: ArticleCreateAuthorEntityRelationInput
+  tags: [ArticleCreateTagsEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input ArticleCreateAuthorEntityRelationInput {
+  connect: AuthorUniqueWhere
+  create: AuthorWithoutArticlesCreateInput
+  connectOrCreate: ArticleConnectOrCreateAuthorRelationInput
+}
+
+input AuthorWithoutArticlesCreateInput {
+  name: String
+  email: String
+  _dummy_field_: Boolean
+}
+
+input ArticleConnectOrCreateAuthorRelationInput {
+  connect: AuthorUniqueWhere!
+  create: AuthorWithoutArticlesCreateInput!
+}
+
+input ArticleUpdateInput {
+  title: String
+  published: Boolean
+  status: ArticleStatus
+  secretNote: String
+  author: ArticleUpdateAuthorEntityRelationInput
+  tags: [ArticleUpdateTagsEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input ArticleUpdateAuthorEntityRelationInput {
+  connect: AuthorUniqueWhere
+  create: AuthorWithoutArticlesCreateInput
+  connectOrCreate: ArticleConnectOrCreateAuthorRelationInput
+  update: AuthorWithoutArticlesUpdateInput
+  upsert: ArticleUpsertAuthorRelationInput
+  disconnect: Boolean
+  delete: Boolean
+}
+
+input AuthorWithoutArticlesUpdateInput {
+  name: String
+  email: String
+  _dummy_field_: Boolean
+}
+
+input ArticleUpsertAuthorRelationInput {
+  update: AuthorWithoutArticlesUpdateInput!
+  create: AuthorWithoutArticlesCreateInput!
+}
+
+input TagCreateInput {
+  name: String
+  articles: [TagCreateArticlesEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input TagCreateArticlesEntityRelationInput {
+  connect: ArticleUniqueWhere
+  create: ArticleWithoutTagsCreateInput
+  connectOrCreate: TagConnectOrCreateArticlesRelationInput
+  alias: String
+}
+
+input ArticleWithoutTagsCreateInput {
+  title: String
+  published: Boolean
+  status: ArticleStatus
+  secretNote: String
+  author: ArticleCreateAuthorEntityRelationInput
+  _dummy_field_: Boolean
+}
+
+input TagConnectOrCreateArticlesRelationInput {
+  connect: ArticleUniqueWhere!
+  create: ArticleWithoutTagsCreateInput!
+}
+
+input TagUpdateInput {
+  name: String
+  articles: [TagUpdateArticlesEntityRelationInput!]
+  _dummy_field_: Boolean
+}
+
+input TagUpdateArticlesEntityRelationInput {
+  create: ArticleWithoutTagsCreateInput
+  update: TagUpdateArticlesRelationInput
+  upsert: TagUpsertArticlesRelationInput
+  connect: ArticleUniqueWhere
+  connectOrCreate: TagConnectOrCreateArticlesRelationInput
+  disconnect: ArticleUniqueWhere
+  delete: ArticleUniqueWhere
+  alias: String
+}
+
+input TagUpdateArticlesRelationInput {
+  by: ArticleUniqueWhere!
+  data: ArticleWithoutTagsUpdateInput!
+}
+
+input ArticleWithoutTagsUpdateInput {
+  title: String
+  published: Boolean
+  status: ArticleStatus
+  secretNote: String
+  author: ArticleUpdateAuthorEntityRelationInput
+  _dummy_field_: Boolean
+}
+
+input TagUpsertArticlesRelationInput {
+  by: ArticleUniqueWhere!
+  update: ArticleWithoutTagsUpdateInput!
+  create: ArticleWithoutTagsCreateInput!
+}
+
+type QueryTransaction {
+  schema: _Schema
+  getAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere): Author
+  listAuthor(filter: AuthorWhere, orderBy: [AuthorOrderBy!], offset: Int, limit: Int): [Author!]!
+  paginateAuthor(filter: AuthorWhere, orderBy: [AuthorOrderBy!], skip: Int, first: Int): AuthorConnection!
+  validateCreateAuthor(data: AuthorCreateInput!): _ValidationResult!
+  validateUpdateAuthor(by: AuthorUniqueWhere!, data: AuthorUpdateInput!): _ValidationResult!
+  getArticle(by: ArticleUniqueWhere!, filter: ArticleWhere): Article
+  listArticle(filter: ArticleWhere, orderBy: [ArticleOrderBy!], offset: Int, limit: Int): [Article!]!
+  paginateArticle(filter: ArticleWhere, orderBy: [ArticleOrderBy!], skip: Int, first: Int): ArticleConnection!
+  validateCreateArticle(data: ArticleCreateInput!): _ValidationResult!
+  validateUpdateArticle(by: ArticleUniqueWhere!, data: ArticleUpdateInput!): _ValidationResult!
+  getTag(by: TagUniqueWhere!, filter: TagWhere): Tag
+  listTag(filter: TagWhere, orderBy: [TagOrderBy!], offset: Int, limit: Int): [Tag!]!
+  paginateTag(filter: TagWhere, orderBy: [TagOrderBy!], skip: Int, first: Int): TagConnection!
+  validateCreateTag(data: TagCreateInput!): _ValidationResult!
+  validateUpdateTag(by: TagUniqueWhere!, data: TagUpdateInput!): _ValidationResult!
+}
+
+type Info {
+  description: String
+}
+
+type Mutation {
+  createAuthor(data: AuthorCreateInput!): AuthorCreateResult!
+  deleteAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere): AuthorDeleteResult!
+  updateAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere, data: AuthorUpdateInput!): AuthorUpdateResult!
+  upsertAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere, update: AuthorUpdateInput!, create: AuthorCreateInput!): AuthorUpsertResult!
+  createArticle(data: ArticleCreateInput!): ArticleCreateResult!
+  deleteArticle(by: ArticleUniqueWhere!, filter: ArticleWhere): ArticleDeleteResult!
+  updateArticle(by: ArticleUniqueWhere!, filter: ArticleWhere, data: ArticleUpdateInput!): ArticleUpdateResult!
+  upsertArticle(by: ArticleUniqueWhere!, filter: ArticleWhere, update: ArticleUpdateInput!, create: ArticleCreateInput!): ArticleUpsertResult!
+  createTag(data: TagCreateInput!): TagCreateResult!
+  deleteTag(by: TagUniqueWhere!, filter: TagWhere): TagDeleteResult!
+  updateTag(by: TagUniqueWhere!, filter: TagWhere, data: TagUpdateInput!): TagUpdateResult!
+  upsertTag(by: TagUniqueWhere!, filter: TagWhere, update: TagUpdateInput!, create: TagCreateInput!): TagUpsertResult!
+  transaction(options: MutationTransactionOptions): MutationTransaction!
+  query: Query!
+}
+
+type AuthorCreateResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Author
+  validation: _ValidationResult!
+}
+
+interface MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+}
+
+type _MutationError {
+  path: [_PathFragment!]! @deprecated(reason: "Use `paths`.")
+  paths: [[_PathFragment!]!]!
+  type: _MutationErrorType!
+  message: String
+}
+
+enum _MutationErrorType {
+  NotNullConstraintViolation
+  UniqueConstraintViolation
+  ForeignKeyConstraintViolation
+  NotFoundOrDenied
+  NonUniqueWhereInput
+  InvalidDataInput
+  SqlError
+}
+
+type AuthorDeleteResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Author
+}
+
+type AuthorUpdateResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Author
+  validation: _ValidationResult!
+}
+
+type AuthorUpsertResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Author
+  validation: _ValidationResult!
+}
+
+type ArticleCreateResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Article
+  validation: _ValidationResult!
+}
+
+type ArticleDeleteResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Article
+}
+
+type ArticleUpdateResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Article
+  validation: _ValidationResult!
+}
+
+type ArticleUpsertResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Article
+  validation: _ValidationResult!
+}
+
+type TagCreateResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Tag
+  validation: _ValidationResult!
+}
+
+type TagDeleteResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Tag
+}
+
+type TagUpdateResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Tag
+  validation: _ValidationResult!
+}
+
+type TagUpsertResult implements MutationResult {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  node: Tag
+  validation: _ValidationResult!
+}
+
+type MutationTransaction {
+  ok: Boolean!
+  errorMessage: String
+  errors: [_MutationError!]!
+  validation: _ValidationResult!
+  createAuthor(data: AuthorCreateInput!): AuthorCreateResult!
+  deleteAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere): AuthorDeleteResult!
+  updateAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere, data: AuthorUpdateInput!): AuthorUpdateResult!
+  upsertAuthor(by: AuthorUniqueWhere!, filter: AuthorWhere, update: AuthorUpdateInput!, create: AuthorCreateInput!): AuthorUpsertResult!
+  createArticle(data: ArticleCreateInput!): ArticleCreateResult!
+  deleteArticle(by: ArticleUniqueWhere!, filter: ArticleWhere): ArticleDeleteResult!
+  updateArticle(by: ArticleUniqueWhere!, filter: ArticleWhere, data: ArticleUpdateInput!): ArticleUpdateResult!
+  upsertArticle(by: ArticleUniqueWhere!, filter: ArticleWhere, update: ArticleUpdateInput!, create: ArticleCreateInput!): ArticleUpsertResult!
+  createTag(data: TagCreateInput!): TagCreateResult!
+  deleteTag(by: TagUniqueWhere!, filter: TagWhere): TagDeleteResult!
+  updateTag(by: TagUniqueWhere!, filter: TagWhere, data: TagUpdateInput!): TagUpdateResult!
+  upsertTag(by: TagUniqueWhere!, filter: TagWhere, update: TagUpdateInput!, create: TagCreateInput!): TagUpsertResult!
+  query: Query
+}
+
+input MutationTransactionOptions {
+  deferForeignKeyConstraints: Boolean
+  deferUniqueConstraints: Boolean
+}

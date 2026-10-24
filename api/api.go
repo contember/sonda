@@ -68,14 +68,15 @@ const (
 	CapabilityLogs    Capability = "logs"
 	CapabilityMetrics Capability = "metrics"
 	CapabilityTraces  Capability = "traces"
+	CapabilityData    Capability = "data"
 )
 
 func ParseCapability(s string) (Capability, error) {
 	switch c := Capability(s); c {
-	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces:
+	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityData:
 		return c, nil
 	}
-	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics or traces)", s)
+	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces or data)", s)
 }
 
 // Dialect names the query language of a native query endpoint.
@@ -89,6 +90,7 @@ const (
 	DialectCloudflareMetric Dialect = "cloudflare-metric"
 	DialectLogsInsights     Dialect = "logs-insights"
 	DialectCloudWatchMetric Dialect = "cloudwatch-metric"
+	DialectContemberGraphQL Dialect = "contember-graphql"
 )
 
 // BackendInfo tells the agent which source type serves a capability and which query dialect
@@ -426,4 +428,44 @@ type ResultPage struct {
 	NextOffset *int                `json:"nextOffset,omitempty"`
 	Streams    []map[string]string `json:"streams,omitempty"`
 	Lines      []LogLine           `json:"lines"`
+}
+
+// DataQueryRequest runs a read-only GraphQL query. Variables is a JSON object; Sonda inlines
+// the variables into the query before it runs.
+type DataQueryRequest struct {
+	Environment string          `json:"env,omitempty"`
+	Query       string          `json:"query"`
+	Variables   json.RawMessage `json:"variables,omitempty"`
+}
+
+type DataQueryResult struct {
+	// Query is the normalized query that ran: fragments and variables inlined.
+	Query string `json:"query"`
+	// Rows is the maximum number of rows the query could return, from its limits.
+	Rows int             `json:"rows"`
+	Data json.RawMessage `json:"data"`
+}
+
+// DataSchema describes the entities an identity may read through the data endpoints.
+type DataSchema struct {
+	Entities []DataEntity `json:"entities"`
+	// Enums maps enum names used by the fields to their values.
+	Enums map[string][]string `json:"enums,omitempty"`
+}
+
+type DataEntity struct {
+	Name   string      `json:"name"`
+	Fields []DataField `json:"fields"`
+	// Unique lists the fields usable in get<Entity>(by: …).
+	Unique []string `json:"unique,omitempty"`
+}
+
+// DataField is a column (Type set) or a relation (Target set).
+type DataField struct {
+	Name     string `json:"name"`
+	Type     string `json:"type,omitempty"`
+	Nullable bool   `json:"nullable,omitempty"`
+	List     bool   `json:"list,omitempty"`
+	Target   string `json:"target,omitempty"`
+	Many     bool   `json:"many,omitempty"`
 }

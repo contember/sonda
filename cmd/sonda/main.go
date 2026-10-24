@@ -35,8 +35,8 @@ func main() {
 	a := &app{}
 	root := &cobra.Command{
 		Use:           "sonda",
-		Short:         "Query production telemetry through a Sonda server",
-		Long:          "Query production telemetry through a Sonda server.\n\nOutput is JSON when stdout is not a terminal, compact text otherwise.\nConfigure with SONDA_URL and SONDA_TOKEN, or ~/.config/sonda/config.yaml (url, token).",
+		Short:         "Query production telemetry and data through a Sonda server",
+		Long:          "Query production telemetry and data through a Sonda server.\n\nOutput is JSON when stdout is not a terminal, compact text otherwise.\nConfigure with SONDA_URL and SONDA_TOKEN, or ~/.config/sonda/config.yaml (url, token).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -49,6 +49,7 @@ func main() {
 		a.logsCmd(), a.resultCmd(),
 		a.metricsCmd(), a.signalCmd(),
 		a.tracesCmd(), a.traceCmd(),
+		a.dataCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
