@@ -35,8 +35,8 @@
       <tbody>
       {{range .Matrix}}
         <tr>
-          <td><strong>{{.Project}}</strong></td>
-          <td>{{.Environment}}</td>
+          <td class="nowrap"><strong>{{.Project}}</strong></td>
+          <td class="nowrap">{{.Environment}}</td>
           <td class="muted">{{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</td>
           {{$row := .}}
           {{range $i, $cell := .Cells}}

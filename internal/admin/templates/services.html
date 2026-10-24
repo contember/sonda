@@ -58,7 +58,7 @@
       <td class="wrap"><code>{{.Host}}</code></td>
       <td class="nowrap">{{.Auth}}</td>
       <td>{{range .Headers}}<div><code>{{.}}</code></div>{{else}}<span class="subtle">–</span>{{end}}</td>
-      <td>{{range .UsedBy}}<div>{{.}}</div>{{else}}<span class="pill pill-warning">unused</span>{{end}}</td>
+      <td>{{range .UsedBy}}<div class="nowrap">{{.}}</div>{{else}}<span class="pill pill-warning">unused</span>{{end}}</td>
     </tr>
   {{end}}
   </tbody>
