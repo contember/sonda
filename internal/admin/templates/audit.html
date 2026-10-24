@@ -1,39 +1,40 @@
 {{define "content"}}
-<form method="get" action="/admin/audit" class="filter">
-  <label>Identity
-    <select name="identity">
+<form method="get" action="/admin/audit" class="filter-bar">
+  <label class="field">
+    <span class="field-label">Identity</span>
+    <select class="input" name="identity">
       <option value="">All</option>
       {{range .Identities}}<option{{if eq . $.Identity}} selected{{end}}>{{.}}</option>{{end}}
     </select>
   </label>
-  <button type="submit">Filter</button>
+  <button type="submit" class="button button-secondary">Filter</button>
 </form>
 {{if .Records}}
-<div class="scroll">
+<div class="table-wrap">
 <table class="audit">
   <thead>
-    <tr><th>Time (UTC)</th><th>Identity</th><th>Request</th><th>Service</th><th>Status</th><th>Duration</th><th>Bytes</th></tr>
+    <tr><th>Time (UTC)</th><th>Identity</th><th>Request</th><th>Service</th><th>Status</th><th class="end">Duration</th><th class="end">Bytes</th></tr>
   </thead>
   <tbody>
   {{range .Records}}
     <tr>
-      <td class="nowrap">{{time .Time}}</td>
-      <td>{{with .Identity}}{{.}}{{else}}<span class="muted">unauthenticated</span>{{end}}</td>
-      <td>
+      <td class="nowrap muted">{{time .Time}}</td>
+      <td class="nowrap">{{with .Identity}}{{.}}{{else}}<span class="subtle">unauthenticated</span>{{end}}</td>
+      <td class="wrap">
         <code>{{.Method}} {{.Path}}</code>
         {{if .Queries}}<details><summary>Upstream queries</summary><pre>{{.Queries}}</pre></details>{{end}}
       </td>
-      <td>{{.Service}}{{if .Environment}} / {{.Environment}}{{end}}</td>
-      <td{{if ge .Status 400}} class="bad"{{end}}>{{.Status}}{{with .ErrorCode}} {{.}}{{end}}</td>
-      <td class="nowrap">{{.Duration}}</td>
-      <td>{{.ResponseBytes}}</td>
+      <td class="nowrap">{{.Service}}{{if .Environment}} <span class="muted">/ {{.Environment}}</span>{{end}}</td>
+      <td class="nowrap"><span class="pill {{if ge .Status 500}}pill-danger{{else if ge .Status 400}}pill-warning{{else}}pill-success{{end}}">{{.Status}}{{with .ErrorCode}} {{.}}{{end}}</span></td>
+      <td class="end nowrap">{{.Duration}}</td>
+      <td class="end">{{.ResponseBytes}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
 </div>
-{{if .OlderID}}<p><a href="/admin/audit?identity={{.Identity}}&amp;before={{.OlderID}}">Older entries</a></p>{{end}}
+{{if .OlderID}}<p class="more"><a class="button button-secondary" href="/admin/audit?identity={{.Identity}}&amp;before={{.OlderID}}">Older entries</a></p>{{end}}
 {{else}}
-<p class="muted">No audit records.</p>
+<div class="empty"><p>No audit records.</p></div>
 {{end}}
 {{end}}

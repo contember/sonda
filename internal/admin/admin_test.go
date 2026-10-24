@@ -36,12 +36,23 @@ admin:
   token: `+adminToken+`
 sources:
   loki: { type: loki, url: "http://loki:3100" }
+  sentry:
+    type: sentry
+    org: acme
+    url: "https://sentry.example.com/tenant-path?key=url-secret"
+    auth: { type: bearer, token: "${SENTRY_TOKEN}" }
+    headers: { X-Scope-OrgID: header-secret }
 services:
   api:
     environments:
       production:
         logs: { source: loki, selector: '{app="api"}' }
-`), func(string) (string, bool) { return "", false })
+`), func(name string) (string, bool) {
+		if name == "SENTRY_TOKEN" {
+			return "token-secret", true
+		}
+		return "", false
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,5 +226,30 @@ func TestRejectsCrossOriginPost(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status %d", resp.StatusCode)
+	}
+}
+
+func TestServicesPageHidesCredentials(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	resp, err := env.client.Get(env.server.URL + "/admin/services")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	for _, want := range []string{"production", "{app=&#34;api&#34;}", "https://sentry.example.com", "X-Scope-OrgID", "unused", "api / production"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	for _, secret := range []string{"token-secret", "header-secret", "url-secret", "tenant-path"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("page shows %q", secret)
+		}
 	}
 }

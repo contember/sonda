@@ -1,8 +1,10 @@
 {{define "content"}}
-<form method="post" action="/admin/login" class="narrow">
-  <label class="field">Admin token
-    <input type="password" name="token" required autofocus autocomplete="current-password">
+<form class="form" method="post" action="/admin/login">
+  <label class="field">
+    <span class="field-label">Admin token</span>
+    <input class="input" type="password" name="token" required autofocus autocomplete="current-password">
+    <span class="field-hint">The value of <code>admin.token</code> in the server configuration.</span>
   </label>
-  <p class="actions"><button type="submit">Sign in</button></p>
+  <button type="submit" class="button">Sign in</button>
 </form>
 {{end}}
