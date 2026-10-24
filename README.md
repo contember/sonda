@@ -110,10 +110,11 @@ parts that matter for security:
 - **Provider credentials** come from environment variables or, for AWS, the default credential
   chain. `${NAME}` reads the variable `NAME`; when it is unset or empty and `NAME_FILE` is set, the
   value is read from that file (Docker and Kubernetes secrets). A token, password, admin token,
-  credential header (`Authorization`, `Cookie`, `X-Api-Key`…) or URL password written directly
-  into a source works, but `check` and `serve` warn about it. `grafana.url` must not contain
-  credentials or a query, because it is copied into links returned to agents. Use read-only tokens and roles; the Security section of `docs/design.md` lists the
-  Cloudflare permission and the AWS IAM actions.
+  credential header (`Authorization`, `Cookie`, `X-Api-Key`…), URL password or password in
+  `server.database` written directly into the config file works, but `check` and `serve` warn
+  about it. `grafana.url` must not contain credentials or a query, because it is copied into
+  links returned to agents. Use read-only tokens and roles; the Security section of
+  `docs/design.md` lists the Cloudflare permission and the AWS IAM actions.
 - **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
   `/admin` only on a trusted network.
 

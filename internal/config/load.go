@@ -765,12 +765,13 @@ func (v *validator) expand(path, raw string) string {
 
 // secret expands a credential (a token, password or the admin token) and warns unless it is
 // exactly one ${NAME} reference: config files end up in repositories, backups and support
-// tickets. Sonda adds the authorization scheme itself, so a "Bearer " prefix gets its own hint.
+// tickets. A scheme prefix in auth.token gets its own hint, because Sonda sends
+// "Authorization: Bearer <token>" and the scheme would appear twice.
 func (v *validator) secret(path, raw string) string {
 	switch {
 	case raw == "" || wholeReference.MatchString(raw):
-	case authScheme.MatchString(raw):
-		v.warn("%s starts with an authorization scheme; give only the credential, Sonda adds the scheme", path)
+	case strings.HasSuffix(path, ".auth.token") && authScheme.MatchString(raw):
+		v.warn("%s starts with an authorization scheme; Sonda sends \"Authorization: Bearer <token>\", so give only the token, or use auth type none with headers.Authorization for another scheme", path)
 	case envReference.MatchString(raw):
 		v.warn("%s is partly written in the config file; make it a single \"${NAME}\" reference", path)
 	default:

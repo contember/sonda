@@ -169,6 +169,16 @@ func TestPartlyLiteralCredentialsWarn(t *testing.T) {
 			t.Errorf("%s: warnings %q, want %q", replacement, got, want)
 		}
 	}
+	// The scheme hint is only for auth.token; elsewhere a prefix is just partly literal.
+	got := warnings(t, strings.Replace(validConfig, `token: "${ADMIN_TOKEN}"`, `token: "Bearer ${ADMIN_TOKEN}"`, 1))
+	if !strings.Contains(got, "admin.token is partly written") || strings.Contains(got, "authorization scheme") {
+		t.Errorf("admin.token: warnings %q", got)
+	}
+	basic := strings.Replace(validConfig, "    url: http://prometheus:9090", "    url: http://prometheus:9090\n    auth: { type: basic, username: \"123\", password: \"Basic ${P}\" }", 1)
+	got = warnings(t, basic)
+	if !strings.Contains(got, "sources.prom.auth.password is partly written") || strings.Contains(got, "authorization scheme") {
+		t.Errorf("auth.password: warnings %q", got)
+	}
 	// Header values may wrap a reference in any form; only a value without one warns.
 	headers := map[string]bool{
 		`Cookie: "session=${T}"`:                  false,
@@ -179,11 +189,11 @@ func TestPartlyLiteralCredentialsWarn(t *testing.T) {
 	}
 	for header, warn := range headers {
 		got := warnings(t, strings.Replace(validConfig, "X-Scope-OrgID: prod", "X-Scope-OrgID: prod, "+header, 1))
-		if strings.Contains(got, "is written in the config file") != warn {
+		if warn && !strings.Contains(got, "is written in the config file") || !warn && got != "" {
 			t.Errorf("%s: warnings %q, want warning %v", header, got, warn)
 		}
 	}
-	got := warnings(t, strings.Replace(validConfig, "url: http://loki:3100", `url: "http://u:pw${P}@loki:3100"`, 1))
+	got = warnings(t, strings.Replace(validConfig, "url: http://loki:3100", `url: "http://u:pw${P}@loki:3100"`, 1))
 	if !strings.Contains(got, "sources.loki.url contains a password") {
 		t.Errorf("partly literal URL password did not warn: %q", got)
 	}
