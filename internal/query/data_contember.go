@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
@@ -13,6 +14,9 @@ import (
 	"github.com/contember/sonda/internal/gqlguard"
 	"github.com/contember/sonda/internal/policy"
 )
+
+// schemaLoadTimeout bounds one introspection, also at startup.
+const schemaLoadTimeout = 15 * time.Second
 
 type contemberData struct {
 	scope   authz.ContemberScope
@@ -30,7 +34,11 @@ func (b *contemberData) dialect() api.Dialect { return api.DialectContemberGraph
 func (b *contemberData) schema(ctx context.Context) (*gqlguard.Schema, gqlguard.Rules, error) {
 	key := b.scope.Source().Name + "/" + b.scope.Project() + "/" + b.scope.Stage()
 	schema, err := b.schemas.get(key, func() (*gqlguard.Schema, error) {
-		return LoadContemberSchema(ctx, b.client, b.scope)
+		// Concurrent requests share this load, so it must not end when the first caller's
+		// request does.
+		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), schemaLoadTimeout)
+		defer cancel()
+		return LoadContemberSchema(loadCtx, b.client, b.scope)
 	})
 	return schema, policy.DataRules(b.scope, b.limits), err
 }
@@ -50,10 +58,11 @@ func (b *contemberData) query(ctx context.Context, text string, variables json.R
 		return dataQuery{}, err
 	}
 	return dataQuery{
-		query:  q.String(),
-		rows:   q.Rows(),
-		data:   data,
-		source: api.SourceRef{Kind: string(config.SourceContember), Query: q.String()},
+		query: q.String(),
+		rows:  q.Rows(),
+		data:  data,
+		// The query is already in data.query; it is not repeated here.
+		source: api.SourceRef{Kind: string(config.SourceContember)},
 	}, nil
 }
 

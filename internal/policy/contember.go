@@ -54,5 +54,11 @@ func ScopeContemberGraphQL(scope authz.ContemberScope, schema *gqlguard.Schema, 
 		}
 		return ContemberGraphQL{}, err
 	}
+	// Inlined variables and fragments can make the normalized query much larger than the
+	// input. It runs upstream, goes to the audit log and back to the agent, so it gets the
+	// same limit.
+	if len(res.Query) > limits.DataMaxQueryBytes {
+		return ContemberGraphQL{}, apierr.New(api.CodeLimitExceeded, "the query has %d bytes after variables and fragments are inlined, the limit is %d", len(res.Query), limits.DataMaxQueryBytes)
+	}
 	return ContemberGraphQL{scope: scope, query: res.Query, rows: res.Rows}, nil
 }
