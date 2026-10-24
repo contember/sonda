@@ -3,9 +3,9 @@
 Your agent's eyes into production.
 
 Sonda is a self-hosted, read-only gateway that gives AI agents one credential and one
-service-centric interface to production telemetry. It stores no telemetry: it queries the
-sources on demand, restricts every query to the services an agent may see, and returns
-compact responses with links back to the source.
+service-centric interface to production telemetry and, where granted, to application data.
+It stores neither: it queries the sources on demand, restricts every query to the services
+an agent may see, and returns compact responses with links back to the source.
 
 | Source | Capabilities |
 |---|---|
@@ -15,9 +15,10 @@ compact responses with links back to the source.
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
 | **Grafana Tempo** | traces |
+| **Contember** Content API | data (read-only GraphQL) |
 
 ```text
-agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo
+agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo / Contember
           one token     authz, query scoping, grouping, limits, audit
 ```
 
@@ -28,6 +29,9 @@ agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus
   PromQL, TraceQL, Logs Insights, Cloudflare query JSON). Sonda adds the service scope to
   every query, so a query cannot reach another service. `describe` tells the agent which
   dialect a capability takes.
+- **Read-only data.** The `data` capability runs GraphQL against a Contember project with a
+  read-only API key. Sonda refuses a key that can write there, and checks every query: no
+  mutations, a limit on every list, denied fields hidden also from filters and ordering.
 - **Compact answers.** Log search returns an exact count (an estimate for Cloudflare) and a
   sample grouped into patterns;
   metrics return summaries; a trace is a span tree. Large results stay on the server behind
@@ -69,6 +73,7 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | `sonda logs search/query/fields <svc>`, `sonda result <id>` | Logs |
 | `sonda metrics list/query <svc>`, `sonda signal <svc> <name>` | Metrics |
 | `sonda traces search/query <svc>`, `sonda trace <svc> <id>` | Traces |
+| `sonda data schema/query <svc>` | Application data (read-only GraphQL) |
 
 The CLI prints JSON when its output is piped and compact text in a terminal.
 
@@ -85,8 +90,10 @@ parts that matter for security:
   - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns or ARNs.
   - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
-- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`) for service
-  environments. Anything else is not found. A `traces` grant also decides which spans of a
+  - Contember `project` and `stage`, with an optional `entities` allow list and
+    `deny_fields`. The API key's role is the main boundary (see below).
+- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `data`)
+  for service environments. `data` is never implied by the others. Anything else is not found. A `traces` grant also decides which spans of a
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
@@ -139,6 +146,44 @@ services:
 A signal is PromQL for Prometheus and a mapping for Cloudflare or CloudWatch. All metrics
 environments of a service with signals must use the same source type.
 
+### Application data (Contember)
+
+```yaml
+sources:
+  shop-content:
+    type: contember
+    url: https://api.example.com        # engine base URL; Sonda calls /content/{project}/{stage}
+    auth: { type: bearer, token: "${SHOP_CONTEMBER_READER_TOKEN}" }
+
+services:
+  shop-api:
+    environments:
+      production:
+        data:
+          source: shop-content
+          project: shop                 # Contember project slug
+          stage: live                   # default
+          entities: [Order, Product]    # optional allow list; empty = everything the role reads
+          deny_fields: ["*.email", Customer.phone]   # a denied relation hides both its sides
+
+limits:
+  data_max_rows: 500                    # row budget: list limits, nested lists multiplied
+```
+
+Give the API key its own Contember role with read permissions only, and use its ACL
+predicates to hide rows agents must not see. Contember then generates no mutations for the
+key. Create the key with this one membership: Sonda can only see what the key may do in the
+bound project and stage. It introspects the schema at startup and on every schema refresh
+(10 minutes), and refuses a key that can write there: `serve` does not start, and requests
+fail. Allow-listed entities and `deny_fields` that do not exist are refused the same way,
+because a typo would leave a field readable. `sonda-server check --online` reports both and
+warns about readable fields that look like personal data. Query results and the audited query text
+can contain personal data; treat the audit log accordingly.
+
+An older Sonda does not know the `data` grant. Before rolling back to a version without it,
+revoke `data` in the admin UI (or `DELETE FROM identity_grants WHERE capability = 'data'`);
+otherwise identities that hold it cannot sign in and the identity list fails to load.
+
 ## Admin UI
 
 Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.
@@ -163,6 +208,7 @@ The CLI is a thin client over the API in `api/`. All endpoints need
 | `POST /v1/services/{s}/logs/search`, `/logs/query`; `GET /logs/fields` | `logs` |
 | `GET /v1/services/{s}/metrics`, `/signals/{name}`; `POST /metrics/query` | `metrics` |
 | `POST /v1/services/{s}/traces/search`, `/traces/query`; `GET /traces/{id}` | `traces` |
+| `GET /v1/services/{s}/data/schema`; `POST /data/query` | `data` |
 | `GET /v1/results/{id}` | the identity that created it |
 
 Time ranges: `env`, `since` (`30m`, `6h`, `2d`) or `from`/`to` (RFC 3339) as query
@@ -172,11 +218,13 @@ parameters, or the same fields in POST bodies.
 
 ```bash
 go test ./...
-docker compose -f dev/docker-compose.yml up -d   # Loki :13100, Prometheus :19090, Tempo :13200 (OTLP :14318), Postgres :15432
+docker compose -f dev/docker-compose.yml up -d   # Loki :13100, Prometheus :19090, Tempo :13200 (OTLP :14318), Postgres :15432, Contember :14000
 SONDA_TEST_LOKI_URL=http://localhost:13100 go test ./internal/logql   # LogQL scoping against a real Loki
 dev/seed-traces.sh                               # traces of two services in the local Tempo
 SONDA_TEST_TEMPO_URL=http://localhost:13200 go test ./internal/traceql   # TraceQL scoping against a real Tempo
 SONDA_TEST_POSTGRES_URL=postgres://sonda:sonda@localhost:15432/sonda go test ./internal/store   # store against Postgres
+eval "$(dev/seed-contember.sh)"                  # Contember engine :14000 with a read-only and a write key
+go test ./internal/query -run Contember          # data queries against a real Contember
 ```
 
 The design and its trade-offs are in `docs/design.md`.

@@ -81,6 +81,15 @@ type rawEnvironment struct {
 	Logs    *rawBinding      `yaml:"logs"`
 	Metrics *rawBinding      `yaml:"metrics"`
 	Traces  *rawBinding      `yaml:"traces"`
+	Data    *rawDataBinding  `yaml:"data"`
+}
+
+type rawDataBinding struct {
+	Source     string   `yaml:"source"`
+	Project    string   `yaml:"project"`
+	Stage      string   `yaml:"stage"`
+	Entities   []string `yaml:"entities"`
+	DenyFields []string `yaml:"deny_fields"`
 }
 
 type rawErrorBinding struct {
@@ -108,6 +117,10 @@ type rawLimits struct {
 	QueryTimeout      string `yaml:"query_timeout"`
 	ConcurrentQueries *int   `yaml:"concurrent_queries"`
 	RequestsPerMinute *int   `yaml:"requests_per_minute"`
+	DataMaxRows       *int   `yaml:"data_max_rows"`
+	DataMaxDepth      *int   `yaml:"data_max_depth"`
+	DataMaxFields     *int   `yaml:"data_max_fields"`
+	DataMaxQueryBytes *int   `yaml:"data_max_query_bytes"`
 }
 
 func LoadFile(path string) (*Config, error) {
@@ -218,6 +231,10 @@ func (v *validator) source(name string, raw rawSource) *Source {
 			v.fail("%s.org is required for sentry sources", path)
 		}
 	case SourceLoki, SourcePrometheus, SourceTempo:
+	case SourceContember:
+		if raw.Auth.Type != string(AuthBearer) {
+			v.fail("%s.auth must be bearer for contember sources (a Contember API key)", path)
+		}
 	case SourceCloudflare:
 		if src.URL == "" {
 			src.URL = defaultCloudflareURL
@@ -233,7 +250,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		src.Auth = Auth{Type: AuthNone}
 		return src
 	default:
-		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare or aws, got %q", path, raw.Type)
+		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws or contember, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
@@ -332,8 +349,11 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 		if re.Traces != nil {
 			env.Traces = v.traceBinding(envPath+".traces", *re.Traces, sources)
 		}
+		if re.Data != nil {
+			env.Data = v.dataBinding(envPath+".data", *re.Data, sources)
+		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs, metrics or traces is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics, traces or data is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
@@ -514,6 +534,38 @@ func (v *validator) traceBinding(path string, raw rawBinding, sources map[string
 	return binding
 }
 
+var (
+	contemberSlug   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	graphQLName     = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+	denyFieldFormat = regexp.MustCompile(`^(\*|[_A-Za-z][_0-9A-Za-z]*)\.[_A-Za-z][_0-9A-Za-z]*$`)
+)
+
+func (v *validator) dataBinding(path string, raw rawDataBinding, sources map[string]*Source) *DataBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceContember)
+	binding := &DataBinding{Source: src, Project: raw.Project, Stage: valueOr(raw.Stage, "live")}
+	if !contemberSlug.MatchString(binding.Project) {
+		v.fail("%s.project must be a Contember project slug, got %q", path, raw.Project)
+	}
+	if !contemberSlug.MatchString(binding.Stage) {
+		v.fail("%s.stage must be a Contember stage slug, got %q", path, raw.Stage)
+	}
+	seen := map[string]bool{}
+	for _, name := range raw.Entities {
+		if !graphQLName.MatchString(name) || seen[name] {
+			v.fail("%s.entities: %q must be a unique entity name", path, name)
+		}
+		seen[name] = true
+	}
+	for _, field := range raw.DenyFields {
+		if !denyFieldFormat.MatchString(field) {
+			v.fail("%s.deny_fields: %q must be Entity.field or *.field", path, field)
+		}
+	}
+	binding.Entities = raw.Entities
+	binding.DenyFields = raw.DenyFields
+	return binding
+}
+
 // bindingFields reports set fields that do not belong to the binding variant of the source.
 func (v *validator) bindingFields(path string, raw rawBinding, src *Source, allowed ...string) {
 	fields := []struct {
@@ -628,6 +680,10 @@ func (v *validator) limits(path string, raw rawLimits, base Limits) Limits {
 	v.positive(path+".max_response_bytes", raw.MaxResponseBytes, &limits.MaxResponseBytes)
 	v.positive(path+".concurrent_queries", raw.ConcurrentQueries, &limits.ConcurrentQueries)
 	v.positive(path+".requests_per_minute", raw.RequestsPerMinute, &limits.RequestsPerMinute)
+	v.positive(path+".data_max_rows", raw.DataMaxRows, &limits.DataMaxRows)
+	v.positive(path+".data_max_depth", raw.DataMaxDepth, &limits.DataMaxDepth)
+	v.positive(path+".data_max_fields", raw.DataMaxFields, &limits.DataMaxFields)
+	v.positive(path+".data_max_query_bytes", raw.DataMaxQueryBytes, &limits.DataMaxQueryBytes)
 	return limits
 }
 

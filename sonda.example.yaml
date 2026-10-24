@@ -51,6 +51,13 @@ sources:
   #   account_id: "${CF_ACCOUNT_ID}"
   #   auth: { type: bearer, token: "${CF_API_TOKEN}" }
 
+  # Contember serves the data capability: read-only GraphQL against the Content API.
+  # Use an API key of a role that can only read.
+  # shop-content:
+  #   type: contember
+  #   url: https://api.example.com
+  #   auth: { type: bearer, token: "${SHOP_CONTEMBER_READER_TOKEN}" }
+
   # AWS serves CloudWatch Logs Insights and CloudWatch metrics. Credentials come from the
   # default AWS credential chain (IRSA, environment, profile), or from assuming role_arn.
   # aws-prod:
@@ -103,6 +110,20 @@ services:
   #   signals:
   #     cpu: { metric: CPUUtilization, stat: Average }
 
+  # Read-only application data from a Contember project (the "data" capability). The
+  # source's API key must have one membership, in a role that can only read; Sonda refuses
+  # a key that can write in the bound project stage. entities is an optional allow list, deny_fields hides fields also from filters;
+  # a denied relation is hidden on both sides.
+  # shop-api:
+  #   environments:
+  #     production:
+  #       data:
+  #         source: shop-content
+  #         project: shop
+  #         stage: live
+  #         entities: [Order, Product]
+  #         deny_fields: ["*.email", Customer.phone]
+
 # Server defaults; each identity can override them in the admin UI.
 limits:
   max_range: 7d
@@ -111,6 +132,11 @@ limits:
   query_timeout: 30s
   concurrent_queries: 4
   requests_per_minute: 60
+  # Data queries; these have no per-identity overrides.
+  data_max_rows: 500          # row budget: list limits, nested lists multiplied
+  data_max_depth: 5           # nested entity levels
+  data_max_fields: 200        # selected fields after fragments are inlined
+  data_max_query_bytes: 16384 # query plus variables, and the query after inlining
 
 # Extra regular expressions to redact from log lines and error messages, on top of the
 # built-in rules for bearer tokens, URL credentials, AWS keys, JWTs and password fields.

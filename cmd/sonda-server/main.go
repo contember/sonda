@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/httpapi"
+	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/query"
 	"github.com/contember/sonda/internal/store"
 )
@@ -40,18 +42,7 @@ func main() {
 				return serve(cmd.Context(), configPath)
 			},
 		},
-		&cobra.Command{
-			Use:   "check",
-			Short: "Validate the configuration file",
-			Args:  cobra.NoArgs,
-			RunE: func(cmd *cobra.Command, _ []string) error {
-				if _, err := config.LoadFile(configPath); err != nil {
-					return err
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "configuration is valid")
-				return nil
-			},
-		},
+		checkCmd(&configPath),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -60,6 +51,88 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func checkCmd(configPath *string) *cobra.Command {
+	var online bool
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Validate the configuration file",
+		Long: "Validate the configuration file. With --online, also connect to every data source and\n" +
+			"check that its API key cannot write, that allow-listed entities and deny_fields exist,\n" +
+			"and warn about readable fields that may hold personal data.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.LoadFile(*configPath)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "configuration is valid")
+			if !online {
+				return nil
+			}
+			q, err := newQueryService(cfg, nil)
+			if err != nil {
+				return err
+			}
+			failed := false
+			for _, check := range q.CheckData(cmd.Context()) {
+				status := "ok"
+				if len(check.Errors) > 0 {
+					status, failed = "FAILED", true
+				}
+				fmt.Fprintf(out, "data %s/%s (source %s): %s\n", check.Service, check.Environment, check.Source, status)
+				for _, e := range check.Errors {
+					fmt.Fprintf(out, "  error: %s\n", e)
+				}
+				for _, w := range check.Warnings {
+					fmt.Fprintf(out, "  warning: %s\n", w)
+				}
+			}
+			if failed {
+				return errors.New("online check failed")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&online, "online", false, "also check data sources over the network")
+	return cmd
+}
+
+// newQueryService builds the query service; the store may be nil for checks that do not
+// authenticate.
+func newQueryService(cfg *config.Config, st *store.Store) (*query.Service, error) {
+	connectors, err := query.NewConnectors(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var ids identities.Store
+	if st != nil {
+		ids = st
+	}
+	return query.New(cfg, authz.New(cfg, ids), connectors, st)
+}
+
+// checkData refuses to start when a data source's API key can write, or when a binding names
+// entities or deny_fields that do not exist (a typo would leave a field readable). An
+// unreachable source
+// only logs a warning, so one engine outage does not take telemetry down; requests to it
+// fail until it is back, and every schema refresh repeats the write check.
+func checkData(ctx context.Context, q *query.Service, log *slog.Logger) error {
+	for _, check := range q.CheckData(ctx) {
+		attrs := []any{"service", check.Service, "environment", check.Environment, "source", check.Source}
+		if check.WriteAccess || check.Misconfigured {
+			return fmt.Errorf("data %s/%s: %s", check.Service, check.Environment, strings.Join(check.Errors, "; "))
+		}
+		for _, e := range check.Errors {
+			log.Warn("data source check failed", append(attrs, "error", e)...)
+		}
+		for _, w := range check.Warnings {
+			log.Warn("data source check", append(attrs, "warning", w)...)
+		}
+	}
+	return nil
 }
 
 func serve(ctx context.Context, configPath string) error {
@@ -80,6 +153,9 @@ func serve(ctx context.Context, configPath string) error {
 	authorizer := authz.New(cfg, st)
 	q, err := query.New(cfg, authorizer, connectors, st)
 	if err != nil {
+		return err
+	}
+	if err := checkData(ctx, q, log); err != nil {
 		return err
 	}
 	handler := http.NewServeMux()

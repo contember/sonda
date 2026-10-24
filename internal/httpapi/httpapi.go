@@ -47,6 +47,8 @@ func New(q *query.Service, authorizer *authz.Authorizer, st *store.Store, log *s
 	mux.Handle("POST /v1/services/{service}/traces/search", s.handle(s.searchTraces))
 	mux.Handle("POST /v1/services/{service}/traces/query", s.handle(s.queryTraces))
 	mux.Handle("GET /v1/services/{service}/traces/{id}", s.handle(s.getTrace))
+	mux.Handle("GET /v1/services/{service}/data/schema", s.handle(s.dataSchema))
+	mux.Handle("POST /v1/services/{service}/data/query", s.handle(s.queryData))
 	mux.Handle("GET /v1/results/{id}", s.handle(s.result))
 	return mux
 }
@@ -107,7 +109,7 @@ func (s *Server) run(r *http.Request, h handlerFunc) (*authz.Identity, []byte, e
 	}
 	if len(body) > identity.Limits.MaxResponseBytes {
 		return identity, nil, apierr.New(api.CodeLimitExceeded,
-			"response has %d bytes, the limit is %d; narrow the time range or lower the limit",
+			"response has %d bytes, the limit is %d; narrow the query (time range, limits or selected fields)",
 			len(body), identity.Limits.MaxResponseBytes)
 	}
 	return identity, body, nil
