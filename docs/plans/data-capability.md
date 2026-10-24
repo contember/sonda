@@ -42,7 +42,8 @@ Two independent layers; each must hold on its own.
    The project and stage come from the binding, in the URL; the query cannot change them.
    This is why agent-written GraphQL is acceptable here, while design section 1 rejects it
    for Cloudflare: there, the account and script would be inside the query.
-2. **Sonda.** The schema is introspected per binding and cached for 10 minutes. It shows
+2. **Sonda.** The schema is introspected and cached for 10 minutes per source, project and
+   stage. It shows
    what the key may do in the bound project stage, so the key should have one membership
    only. Every load fails if the schema can write (any `Mutation` field, or the `validateCreate…` and
    `validateUpdate…` queries that Contember adds only for writing roles). `serve` refuses to
