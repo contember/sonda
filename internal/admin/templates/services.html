@@ -17,13 +17,14 @@
     <tbody>
     {{range .Environments}}
       {{$env := .}}
+      {{$rows := len .Bindings}}
       {{range $i, $b := .Bindings}}
       <tr>
-        <td class="nowrap">{{if eq $i 0}}<strong>{{$env.Name}}</strong>{{end}}</td>
+        {{if eq $i 0}}<th scope="row" rowspan="{{$rows}}" class="env">{{$env.Name}}</th>{{end}}
         <td><span class="pill pill-accent">{{$b.Capability}}</span></td>
         <td class="nowrap">{{$b.Source}} <span class="pill">{{$b.SourceType}}</span></td>
         <td class="wrap"><code>{{$b.Scope}}</code></td>
-        <td class="end">{{if eq $i 0}}{{if $env.Identities}}{{$env.Identities}}{{else}}<span class="subtle">0</span>{{end}}{{end}}</td>
+        {{if eq $i 0}}<td class="end env-count" rowspan="{{$rows}}">{{if $env.Identities}}{{$env.Identities}}{{else}}<span class="subtle">0</span>{{end}}</td>{{end}}
       </tr>
       {{end}}
     {{end}}
