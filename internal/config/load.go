@@ -339,6 +339,10 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 		Repository:   raw.Repository,
 		Environments: map[string]*Environment{},
 	}
+	// The repository is returned to agents and linked in the admin UI.
+	if u, err := url.Parse(raw.Repository); err == nil && u.User != nil {
+		v.fail("%s.repository must not contain a username or password: it is returned to agents", path)
+	}
 	if len(raw.Environments) == 0 {
 		v.fail("%s.environments: at least one environment is required", path)
 	}

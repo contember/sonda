@@ -214,6 +214,18 @@ func TestPartlyLiteralCredentialsWarn(t *testing.T) {
 	}
 }
 
+func TestRepositoryRefusesCredentials(t *testing.T) {
+	input := strings.Replace(validConfig, "  api:\n", "  api:\n    repository: https://bob:ghp_secret@github.com/acme/api\n", 1)
+	_, err := Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "services.api.repository must not contain") || strings.Contains(err.Error(), "ghp_secret") {
+		t.Errorf("error = %v", err)
+	}
+	input = strings.Replace(validConfig, "  api:\n", "  api:\n    repository: github.com/acme/api\n", 1)
+	if _, err := Parse([]byte(input), env(validEnv())); err != nil {
+		t.Errorf("plain repository: %v", err)
+	}
+}
+
 func TestSensitiveHeader(t *testing.T) {
 	for name, want := range map[string]bool{
 		"Authorization": true, "Proxy-Authorization": true, "Cookie": true, "X-Api-Key": true,

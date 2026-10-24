@@ -176,7 +176,7 @@ limits:
 Config validation at startup fails on: unknown fields, unknown source references, environment
 variables that are unset (an empty or unset `NAME` falls back to the file named by `NAME_FILE`;
 an unreadable file fails), source URLs with a fragment or with `@` after the authority (an
-unencoded password), a `grafana.url` with credentials or a query, a source type not allowed for the capability, binding fields of another
+unencoded password), a `grafana.url` with credentials or a query, a service `repository` with credentials, a source type not allowed for the capability, binding fields of another
 source type, unparsable selectors or signals, selectors without an `=` or `=~` matcher that
 rejects the empty value (e.g. `{job!=""}` selects nearly everything), log group lists that are
 empty, longer than 50, duplicated, or contain `*` or ARNs, CloudWatch bindings with no or more
