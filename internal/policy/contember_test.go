@@ -52,7 +52,7 @@ services:
 	vars := []byte(`{"s": "` + strings.Repeat("v", 2000) + `"}`)
 	limits := config.DefaultLimits
 	_, err = ScopeContemberGraphQL(scope, schema, query, vars, limits)
-	if e, ok := apierr.As(err); !ok || e.Code != api.CodeLimitExceeded || !strings.Contains(e.Message, "after variables and fragments are inlined") {
+	if e, ok := apierr.As(err); !ok || e.Code != api.CodeLimitExceeded || !strings.Contains(e.Message, "after variables are inlined") {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := ScopeContemberGraphQL(scope, schema, `{ listTag(limit: 1) { id } }`, nil, limits); err != nil {

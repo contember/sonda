@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
 )
@@ -123,9 +124,13 @@ func PostJSON(ctx context.Context, client *http.Client, source, url string, body
 		return 0, nil, Wrap(source, err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return 0, nil, Wrap(source, err)
+	}
+	// A cut body would only fail as invalid JSON; the agent can fix this by asking for less.
+	if len(data) > maxBodyBytes {
+		return 0, nil, apierr.New(api.CodeLimitExceeded, "source %s returned more than %d MB; lower the limits", source, maxBodyBytes>>20)
 	}
 	return resp.StatusCode, data, nil
 }

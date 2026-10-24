@@ -31,6 +31,9 @@ type Rules struct {
 	MaxFields int
 	// MaxOffset caps offset and skip.
 	MaxOffset int
+	// MaxBytes caps the normalized query. Inlined variables can repeat a large value many
+	// times, so the cap is checked while printing, before the text is built and validated.
+	MaxBytes int
 }
 
 func (r Rules) allowed(entity string) bool {
@@ -50,15 +53,21 @@ type Result struct {
 	Fields int
 }
 
-// Error is a rejection the agent can act on.
+// Error is a rejection the agent can act on. Limit marks a size limit rather than an
+// invalid query.
 type Error struct {
 	Message string
+	Limit   bool
 }
 
 func (e *Error) Error() string { return e.Message }
 
 func reject(format string, args ...any) error {
 	return &Error{Message: fmt.Sprintf(format, args...)}
+}
+
+func overLimit(format string, args ...any) error {
+	return &Error{Message: fmt.Sprintf(format, args...), Limit: true}
 }
 
 // Check validates a query with its JSON variables against the schema and the rules.
@@ -87,7 +96,7 @@ func Check(s *Schema, query string, variables []byte, rules Rules) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	normalized, err := normalize(s, op, vars, rules.MaxFields)
+	normalized, err := normalize(s, op, vars, rules.MaxFields, rules.MaxBytes)
 	if err != nil {
 		return Result{}, err
 	}
@@ -183,13 +192,13 @@ func singleQuery(doc *ast.QueryDocument) (*ast.OperationDefinition, error) {
 }
 
 // normalize prints the operation with fragments and variables inlined.
-func normalize(s *Schema, op *ast.OperationDefinition, vars map[string]any, maxFields int) (string, error) {
+func normalize(s *Schema, op *ast.OperationDefinition, vars map[string]any, maxFields, maxBytes int) (string, error) {
 	for name := range vars {
 		if op.VariableDefinitions.ForName(name) == nil {
 			return "", reject("variable $%s is not defined in the query", name)
 		}
 	}
-	p := &printer{schema: s, vars: vars, maxFields: maxFields}
+	p := &printer{schema: s, vars: vars, maxFields: maxFields, maxBytes: maxBytes}
 	p.b.WriteString("query ")
 	if err := p.selectionSet(op.SelectionSet, s.ast.Query.Name); err != nil {
 		return "", err
@@ -203,6 +212,19 @@ type printer struct {
 	b         strings.Builder
 	fields    int
 	maxFields int
+	maxBytes  int
+	// pending counts inlined variable text of the field being printed that is not in b yet.
+	pending int
+}
+
+// inlined accounts for the text of an inlined variable and fails once the query would
+// exceed the byte cap.
+func (p *printer) inlined(text string) error {
+	p.pending += len(text)
+	if p.maxBytes > 0 && p.b.Len()+p.pending > p.maxBytes {
+		return overLimit("the query would exceed %d bytes after variables are inlined", p.maxBytes)
+	}
+	return nil
 }
 
 func (p *printer) selectionSet(set ast.SelectionSet, parent string) error {
@@ -275,6 +297,7 @@ func (p *printer) field(f *ast.Field) error {
 	if len(args) > 0 {
 		p.b.WriteString("(" + strings.Join(args, ", ") + ")")
 	}
+	p.pending = 0
 	p.b.WriteString(" ")
 	if len(f.SelectionSet) > 0 {
 		if err := p.selectionSet(f.SelectionSet, f.Definition.Type.Name()); err != nil {
@@ -293,10 +316,17 @@ func (p *printer) value(v *ast.Value) (text string, ok bool, err error) {
 		def := v.VariableDefinition
 		if val, given := p.vars[v.Raw]; given {
 			text, err := p.literal(val, def.Type)
+			if err == nil {
+				err = p.inlined(text)
+			}
 			return text, err == nil, err
 		}
 		if def.DefaultValue != nil {
-			return p.value(def.DefaultValue)
+			text, ok, err := p.value(def.DefaultValue)
+			if err == nil {
+				err = p.inlined(text)
+			}
+			return text, ok && err == nil, err
 		}
 		if def.Type.NonNull {
 			return "", false, reject("variable $%s is required", v.Raw)
