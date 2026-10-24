@@ -563,7 +563,8 @@ layers, each of which must hold on its own:
    schema per role, so such a key has no `Mutation` type at all. The project and stage come
    from the binding and are part of the URL; a query cannot name another project.
 2. **Sonda.** The key's schema is introspected and cached for 10 minutes per source, project
-   and stage. Every load fails if the schema can write: any `Mutation` field, or the
+   and stage. This shows only what the key may do in the bound project stage, so the key
+   should have no other membership. Every load fails if the schema can write: any `Mutation` field, or the
    `validateCreate…`/`validateUpdate…` queries that Contember adds only for roles that may
    write. The binding then serves nothing. `serve` checks every binding in parallel, each
    with its own 15-second timeout, and refuses to start with such a key; an unreachable
@@ -597,7 +598,9 @@ query in three steps:
     schema. Without that model no query runs.
   - Every `list<E>` and has-many relation needs `limit`, every paginate field `first`, as an
     integer after variables are inlined. Rows are budgeted: each list adds the product of the
-    limits on its path, and the sum must stay within `data_max_rows` (default 500). Aliases
+    limits on its path, and the sum must stay within `data_max_rows` (default 500). Single
+    rows (`get`, has-one, `<rel>By`) are not counted; the response reports the budget used as
+    `data.rows`. Aliases
     count like any other field. `offset`/`skip` are at most 10,000.
   - Depth counts nested entity fields (default 5), fields count after inlining (default
     200). The query plus variables, and the normalized query again, are limited to

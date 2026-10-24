@@ -30,7 +30,7 @@ agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus
   every query, so a query cannot reach another service. `describe` tells the agent which
   dialect a capability takes.
 - **Read-only data.** The `data` capability runs GraphQL against a Contember project with a
-  read-only API key. Sonda refuses a key that can write, and checks every query: no
+  read-only API key. Sonda refuses a key that can write there, and checks every query: no
   mutations, a limit on every list, denied fields hidden also from filters and ordering.
 - **Compact answers.** Log search returns an exact count (an estimate for Cloudflare) and a
   sample grouped into patterns;
@@ -167,13 +167,15 @@ services:
           deny_fields: ["*.email", Customer.phone]   # a denied relation hides both its sides
 
 limits:
-  data_max_rows: 500                    # rows a query can return, nested lists multiplied
+  data_max_rows: 500                    # row budget: list limits, nested lists multiplied
 ```
 
 Give the API key its own Contember role with read permissions only, and use its ACL
 predicates to hide rows agents must not see. Contember then generates no mutations for the
-key. Sonda introspects the schema at startup and on every schema refresh (10 minutes), and
-refuses a key that can write: `serve` does not start, and requests fail. `sonda-server check
+key. Create the key with this one membership: Sonda can only see what the key may do in the
+bound project and stage. It introspects the schema at startup and on every schema refresh
+(10 minutes), and refuses a key that can write there: `serve` does not start, and requests
+fail. `sonda-server check
 --online` also reports allow-listed entities and `deny_fields` that do not exist, and warns
 about readable fields that look like personal data. Query results and the audited query text
 can contain personal data; treat the audit log accordingly.

@@ -111,8 +111,8 @@ services:
   #     cpu: { metric: CPUUtilization, stat: Average }
 
   # Read-only application data from a Contember project (the "data" capability). The
-  # source's API key must belong to a role that can only read; Sonda refuses a key that can
-  # write. entities is an optional allow list, deny_fields hides fields also from filters;
+  # source's API key must have one membership, in a role that can only read; Sonda refuses
+  # a key that can write in the bound project stage. entities is an optional allow list, deny_fields hides fields also from filters;
   # a denied relation is hidden on both sides.
   # shop-api:
   #   environments:
@@ -133,7 +133,7 @@ limits:
   concurrent_queries: 4
   requests_per_minute: 60
   # Data queries; these have no per-identity overrides.
-  data_max_rows: 500          # rows a query can return, nested limits multiplied
+  data_max_rows: 500          # row budget: list limits, nested lists multiplied
   data_max_depth: 5           # nested entity levels
   data_max_fields: 200        # selected fields after fragments are inlined
   data_max_query_bytes: 16384 # query plus variables, and the query after inlining

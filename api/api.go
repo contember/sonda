@@ -441,7 +441,8 @@ type DataQueryRequest struct {
 type DataQueryResult struct {
 	// Query is the normalized query that ran: fragments and variables inlined.
 	Query string `json:"query"`
-	// Rows is the maximum number of rows the query could return, from its limits.
+	// Rows is the row budget the query uses: over every list and paginate field, the product
+	// of the limits on its path. Single rows (get, has-one) are not counted.
 	Rows int             `json:"rows"`
 	Data json.RawMessage `json:"data"`
 }

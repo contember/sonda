@@ -67,7 +67,9 @@ func (b *contemberData) query(ctx context.Context, text string, variables json.R
 }
 
 // LoadContemberSchema introspects the project stage and refuses an API key whose role can
-// write: Sonda must never hold a credential that could change data.
+// write in the bound project stage. Sonda never calls another project or stage, but a key
+// with other memberships could still write there, so operators give the key one read-only
+// membership.
 func LoadContemberSchema(ctx context.Context, client *contember.Client, scope authz.ContemberScope) (*gqlguard.Schema, error) {
 	data, err := client.Introspect(ctx, scope)
 	if err != nil {

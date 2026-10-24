@@ -110,7 +110,7 @@ The `contember-graphql` dialect is the Contember Content API, read-only:
   `paginate<Entity>(filter, orderBy, skip, first) { pageInfo { totalCount } edges { node { … } } }`.
 - Every list and has-many relation needs `limit` (`first` for paginate). Nested limits
   multiply: `listOrder(limit: 20) { items(limit: 10) }` counts as 220 rows against the
-  server's row limit. Count with `paginate<Entity>(first: 1, filter: …) { pageInfo { totalCount } }`
+  server's row limit; single rows (`get`, has-one) are not counted. Count with `paginate<Entity>(first: 1, filter: …) { pageInfo { totalCount } }`
   instead of listing rows.
 - Filters: `filter: {status: {eq: paid}, customer: {name: {contains: "x"}}, or: [{…}, {…}]}`;
   ordering: `orderBy: [{createdAt: desc}]`. Relations work in both.
