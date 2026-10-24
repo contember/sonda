@@ -1,6 +1,8 @@
 # Sonda server configuration. Copy to sonda.yaml and adjust.
 # ${NAME} references environment variables; they are allowed only in source URLs,
-# credentials, account IDs, role ARNs, headers and the admin token. Validate with: sonda-server check -c sonda.yaml
+# credentials, account IDs, role ARNs, headers and the admin token. When NAME is unset and
+# NAME_FILE is set, the value is read from that file (Docker and Kubernetes secrets).
+# Do not write credentials here directly. Validate with: sonda-server check -c sonda.yaml
 
 server:
   listen: ":8080"
