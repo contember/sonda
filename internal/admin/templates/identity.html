@@ -35,8 +35,8 @@
       <tbody>
       {{range .Matrix}}
         <tr>
-          <td><strong>{{.Service}}</strong></td>
-          <td>{{.Environment}}</td>
+          <td class="nowrap"><strong>{{.Service}}</strong></td>
+          <td class="nowrap">{{.Environment}}</td>
           {{$row := .}}
           {{range $i, $cell := .Cells}}
           <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="subtle" title="Not configured for this environment">–</span>{{end}}</td>

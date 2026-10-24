@@ -130,6 +130,14 @@ func TestSecretFilePrecedence(t *testing.T) {
 	}
 }
 
+func TestGrafanaURLRefusesCredentials(t *testing.T) {
+	input := validConfig + "grafana:\n  url: https://admin:grafpw@grafana.example.com\n"
+	_, err := Parse([]byte(input), env(validEnv()))
+	if err == nil || !strings.Contains(err.Error(), "grafana.url must not contain a username or password") || strings.Contains(err.Error(), "grafpw") {
+		t.Errorf("error = %v", err)
+	}
+}
+
 func TestSensitiveHeader(t *testing.T) {
 	for name, want := range map[string]bool{
 		"Authorization": true, "Proxy-Authorization": true, "Cookie": true, "X-Api-Key": true,

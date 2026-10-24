@@ -168,6 +168,11 @@ func (v *validator) config(raw rawConfig) *Config {
 	}
 	if raw.Grafana != nil {
 		v.url("grafana.url", raw.Grafana.URL)
+		// The URL is copied into Explore links returned to agents, so it must not carry
+		// credentials.
+		if u, err := url.Parse(raw.Grafana.URL); err == nil && u.User != nil {
+			v.fail("grafana.url must not contain a username or password: it is copied into links returned to agents")
+		}
 		cfg.Grafana = &Grafana{URL: raw.Grafana.URL}
 	}
 	for _, pattern := range raw.Redact {
