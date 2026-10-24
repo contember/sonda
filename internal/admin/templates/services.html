@@ -14,8 +14,8 @@
     <thead>
       <tr><th>Environment</th><th>Capability</th><th>Source</th><th>Scope</th><th class="end">Identities</th></tr>
     </thead>
-    <tbody>
     {{range .Environments}}
+    <tbody>
       {{$env := .}}
       {{$rows := len .Bindings}}
       {{range $i, $b := .Bindings}}
@@ -27,8 +27,8 @@
         {{if eq $i 0}}<td class="end env-count" rowspan="{{$rows}}">{{if $env.Identities}}{{$env.Identities}}{{else}}<span class="subtle">0</span>{{end}}</td>{{end}}
       </tr>
       {{end}}
-    {{end}}
     </tbody>
+    {{end}}
   </table>
   </div>
   {{if .Signals}}
