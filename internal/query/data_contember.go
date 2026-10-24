@@ -40,6 +40,13 @@ func (b *contemberData) schema(ctx context.Context) (*gqlguard.Schema, gqlguard.
 		defer cancel()
 		return LoadContemberSchema(loadCtx, b.client, b.scope)
 	})
+	if err == nil {
+		// Schemas are shared by bindings on the same project stage; the binding's own entries
+		// are checked on every request, also when the engine was down at startup.
+		if errs := bindingErrors(schema, b.scope); len(errs) > 0 {
+			err = apierr.Upstream("data binding %s/%s is misconfigured: %s", b.scope.Service(), b.scope.Environment(), strings.Join(errs, "; "))
+		}
+	}
 	return schema, policy.DataRules(b.scope, b.limits), err
 }
 

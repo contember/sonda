@@ -23,8 +23,11 @@ type DataCheck struct {
 	Source      string
 	// WriteAccess is set when the API key can write. The server refuses to start then.
 	WriteAccess bool
-	Errors      []string
-	Warnings    []string
+	// Misconfigured is set when allow-list entities or deny_fields do not exist. The server
+	// refuses to start then too, and the binding serves nothing.
+	Misconfigured bool
+	Errors        []string
+	Warnings      []string
 }
 
 // personalField matches field names that often hold personal data.
@@ -52,6 +55,7 @@ func (s *Service) CheckData(ctx context.Context) []DataCheck {
 				check.Errors = append(check.Errors, errorText(err))
 			} else {
 				check.Errors, check.Warnings = bindingFindings(schema, scope)
+				check.Misconfigured = len(check.Errors) > 0
 			}
 			checks[i] = check
 		})
@@ -61,6 +65,21 @@ func (s *Service) CheckData(ctx context.Context) []DataCheck {
 }
 
 func bindingFindings(schema *gqlguard.Schema, scope authz.ContemberScope) (errs, warnings []string) {
+	entities, _ := schema.Visible(policy.DataRules(scope, config.DefaultLimits))
+	for _, e := range entities {
+		for _, f := range e.Fields {
+			if f.Target == "" && personalField.MatchString(f.Name) {
+				warnings = append(warnings, fmt.Sprintf("%s.%s is readable and may hold personal data; deny it unless agents need it", e.Name, f.Name))
+			}
+		}
+	}
+	return bindingErrors(schema, scope), warnings
+}
+
+// bindingErrors reports allow-list entities and deny_fields entries that do not exist in the
+// schema. A typo in deny_fields would leave the field readable, so such a binding serves
+// nothing.
+func bindingErrors(schema *gqlguard.Schema, scope authz.ContemberScope) (errs []string) {
 	for _, entity := range scope.Entities() {
 		if !schema.HasEntity(entity) {
 			errs = append(errs, fmt.Sprintf("entities: %s does not exist or the role cannot read it", entity))
@@ -76,15 +95,7 @@ func bindingFindings(schema *gqlguard.Schema, scope authz.ContemberScope) (errs,
 			errs = append(errs, fmt.Sprintf("deny_fields: %s does not exist or the role cannot read it", deny))
 		}
 	}
-	entities, _ := schema.Visible(policy.DataRules(scope, config.DefaultLimits))
-	for _, e := range entities {
-		for _, f := range e.Fields {
-			if f.Target == "" && personalField.MatchString(f.Name) {
-				warnings = append(warnings, fmt.Sprintf("%s.%s is readable and may hold personal data; deny it unless agents need it", e.Name, f.Name))
-			}
-		}
-	}
-	return errs, warnings
+	return errs
 }
 
 func errorText(err error) string {

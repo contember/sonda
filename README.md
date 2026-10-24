@@ -175,9 +175,9 @@ predicates to hide rows agents must not see. Contember then generates no mutatio
 key. Create the key with this one membership: Sonda can only see what the key may do in the
 bound project and stage. It introspects the schema at startup and on every schema refresh
 (10 minutes), and refuses a key that can write there: `serve` does not start, and requests
-fail. `sonda-server check
---online` also reports allow-listed entities and `deny_fields` that do not exist, and warns
-about readable fields that look like personal data. Query results and the audited query text
+fail. Allow-listed entities and `deny_fields` that do not exist are refused the same way,
+because a typo would leave a field readable. `sonda-server check --online` reports both and
+warns about readable fields that look like personal data. Query results and the audited query text
 can contain personal data; treat the audit log accordingly.
 
 ## Admin UI

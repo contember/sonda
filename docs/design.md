@@ -569,7 +569,9 @@ layers, each of which must hold on its own:
    write. The binding then serves nothing. `serve` checks every binding in parallel, each
    with its own 15-second timeout, and refuses to start with such a key; an unreachable
    engine only logs a warning, and its first request repeats the check;
-   `sonda-server check --online` reports it.
+   `sonda-server check --online` reports it. Allow-listed entities and `deny_fields` that
+   do not exist in the schema are treated the same way, at startup and on every request,
+   because a typo in `deny_fields` would leave the field readable.
 
 `internal/gqlguard` loads the introspection result into `gqlparser` (MIT) and checks each
 query in three steps:

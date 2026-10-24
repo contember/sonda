@@ -114,13 +114,15 @@ func newQueryService(cfg *config.Config, st *store.Store) (*query.Service, error
 	return query.New(cfg, authz.New(cfg, ids), connectors, st)
 }
 
-// checkData refuses to start when a data source's API key can write. An unreachable source
+// checkData refuses to start when a data source's API key can write, or when a binding names
+// entities or deny_fields that do not exist (a typo would leave a field readable). An
+// unreachable source
 // only logs a warning, so one engine outage does not take telemetry down; requests to it
 // fail until it is back, and every schema refresh repeats the write check.
 func checkData(ctx context.Context, q *query.Service, log *slog.Logger) error {
 	for _, check := range q.CheckData(ctx) {
 		attrs := []any{"service", check.Service, "environment", check.Environment, "source", check.Source}
-		if check.WriteAccess {
+		if check.WriteAccess || check.Misconfigured {
 			return fmt.Errorf("data %s/%s: %s", check.Service, check.Environment, strings.Join(check.Errors, "; "))
 		}
 		for _, e := range check.Errors {

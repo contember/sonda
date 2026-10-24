@@ -131,6 +131,15 @@ func TestContemberCheckFindings(t *testing.T) {
 	if !strings.Contains(got, "deny_fields: Author.mail does not exist") || !strings.Contains(got, "Author.email is readable") {
 		t.Errorf("findings = %s", got)
 	}
+	if !checks[0].Misconfigured {
+		t.Error("a mistyped deny_fields entry does not mark the binding misconfigured")
+	}
+	// Requests fail too, also when the startup check could not run.
+	s, identity := contemberService(t, url, project, reader, `[Author.mail]`)
+	_, err := s.QueryData(context.Background(), identity, "blog", api.DataQueryRequest{Query: `{ listAuthor(limit: 1) { name } }`})
+	if e, ok := apierr.As(err); !ok || e.Code != api.CodeUpstreamError || !strings.Contains(e.Message, "misconfigured") {
+		t.Errorf("query with a mistyped deny_fields entry: %v", err)
+	}
 }
 
 func TestContemberRefusesWriter(t *testing.T) {
