@@ -476,7 +476,7 @@ func TestDataQueryRefusesOversizedResponse(t *testing.T) {
 	env.call(t, "agent-token", "POST", "/v1/services/shop/data/query", api.DataQueryRequest{
 		Query: `{ listArticle(limit: 500) { title } }`,
 	}, &resp)
-	if resp.Error.Code != api.CodeLimitExceeded || !strings.Contains(resp.Error.Message, "select fewer fields") {
+	if resp.Error.Code != api.CodeLimitExceeded || !strings.Contains(resp.Error.Message, "the limit is 65536; lower the limits or select fewer fields") {
 		t.Fatalf("error %+v", resp.Error)
 	}
 }

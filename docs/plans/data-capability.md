@@ -90,6 +90,8 @@ sources. The implementation addresses:
 - Round 8: an agent query's response is read only up to twice `max_response_bytes`, so
   aliasing a text column hundreds of times cannot make Sonda read and redact 30 MB; the
   README tells operators to revoke `data` grants before rolling back to an older version.
+- Round 9: the oversize error names `max_response_bytes`, the limit the agent must fit, and
+  the generic response-size message no longer assumes a time range.
 - No per-identity overrides for the data limits (they would need a store migration), no
   result handles for GraphQL trees (`limit_exceeded` instead), `check` stays offline unless
   `--online` is given.

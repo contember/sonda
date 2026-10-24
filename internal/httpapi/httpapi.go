@@ -109,7 +109,7 @@ func (s *Server) run(r *http.Request, h handlerFunc) (*authz.Identity, []byte, e
 	}
 	if len(body) > identity.Limits.MaxResponseBytes {
 		return identity, nil, apierr.New(api.CodeLimitExceeded,
-			"response has %d bytes, the limit is %d; narrow the time range or lower the limit",
+			"response has %d bytes, the limit is %d; narrow the query (time range, limits or selected fields)",
 			len(body), identity.Limits.MaxResponseBytes)
 	}
 	return identity, body, nil
