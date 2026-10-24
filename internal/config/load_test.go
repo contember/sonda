@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,53 @@ func TestParseValid(t *testing.T) {
 	}
 	if got := len(cfg.Services["api"].Environments["production"].Logs.Selector.Matchers); got != 1 {
 		t.Errorf("log matchers = %d", got)
+	}
+}
+
+func TestSecretFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentry_token")
+	if err := os.WriteFile(path, []byte("from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	vars := validEnv()
+	delete(vars, "SENTRY_TOKEN")
+	vars["SENTRY_TOKEN_FILE"] = path
+	cfg, err := Parse([]byte(validConfig), env(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Sources["sentry"].Auth.Token; got != "from-file" {
+		t.Errorf("token = %q", got)
+	}
+
+	vars["SENTRY_TOKEN_FILE"] = filepath.Join(t.TempDir(), "missing")
+	if _, err := Parse([]byte(validConfig), env(vars)); err == nil || !strings.Contains(err.Error(), "read SENTRY_TOKEN_FILE") {
+		t.Errorf("missing file: error = %v", err)
+	}
+}
+
+func TestWarnsAboutCredentialsInFile(t *testing.T) {
+	cfg, err := Parse([]byte(validConfig), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings for referenced credentials: %v", cfg.Warnings)
+	}
+	input := strings.Replace(validConfig, `token: "${SENTRY_TOKEN}"`, `token: written-here`, 1)
+	input = strings.Replace(input, `X-Scope-OrgID: prod`, `X-Scope-OrgID: prod, X-Api-Key: written-too`, 1)
+	cfg, err = Parse([]byte(input), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(cfg.Warnings, "\n")
+	for _, want := range []string{"sources.sentry.auth.token is written in the config file", "sources.loki.headers.X-Api-Key is written in the config file"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warnings lack %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "X-Scope-OrgID") || strings.Contains(got, "written-here") {
+		t.Errorf("unexpected warning content:\n%s", got)
 	}
 }
 

@@ -28,7 +28,7 @@ returns compact, evidence-carrying responses.
 | Identities | In the identity store, managed at runtime in the admin UI | In the YAML file | Tokens are created, rotated and revoked often; a restart for each change is impractical. |
 | Identity store | `identities.Store` interface, implemented by `store` for SQLite and Postgres | SQLite only | Another database can be added without touching `authz` or the UI. |
 | Admin UI | Server-rendered `html/template` + htmx, embedded in `sonda-server` | React SPA | No JS toolchain, one binary. The UI is a few forms and tables. |
-| Provider secrets | Environment variable references in YAML; the AWS default credential chain | Encrypted in the database | No key management in v1. |
+| Provider secrets | Environment variable references in YAML (`${NAME}`, or a file named by `NAME_FILE`); the AWS default credential chain | Encrypted in the database | No key management in v1. An encryption key would sit next to the database anyway. A credential written into the file is accepted but warned about by `check` and `serve`. |
 | Internal storage | SQLite (`modernc.org/sqlite`, pure Go) by default; Postgres (`pgx`) when `server.database` is a `postgres://` URL | SQLite only | SQLite needs no extra service. Postgres suits deployments without a persistent volume. Both hold identities, the audit log and result handles in the same tables and run the same queries; only the schema types and the unique-violation check differ. Metadata caches live in memory. |
 | Loki/Prometheus/Tempo access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `detected_fields`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
 | Range limit | Reject ranges over `max_range` with `limit_exceeded` | Silently shorten the range | A shortened range would make counts look complete when they are not. |
@@ -728,7 +728,14 @@ Served under `/admin` only when `admin.token` is set. Pages:
 - **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
   Grants are a matrix of configured service environments × capabilities; unconfigured cells
   cannot be selected. A new or rotated token is shown once; only its SHA-256 is stored.
+- **Services**: the configured services, environments and capabilities with the source and
+  scope each reads, how many identities hold a grant there, and the sources with type, scheme
+  and host, auth type and header names. Credentials, header values, URL paths and query
+  strings are never shown.
 - **Audit log**: newest first, filterable by identity, 100 records per page.
+
+The look follows the Fabrika admin kit (`@fabrika/ui`): sidebar shell, page headers, bordered
+tables, pills; light and dark by `prefers-color-scheme`. One stylesheet, no build step.
 
 Rules:
 

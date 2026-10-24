@@ -127,21 +127,28 @@ func Parse(data []byte, lookupEnv func(string) (string, bool)) (*Config, error) 
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	v := &validator{lookupEnv: lookupEnv}
+	v := &validator{lookupEnv: lookupEnv, readFile: os.ReadFile}
 	cfg := v.config(raw)
 	if err := errors.Join(v.errs...); err != nil {
 		return nil, err
 	}
+	cfg.Warnings = v.warnings
 	return cfg, nil
 }
 
 type validator struct {
 	lookupEnv func(string) (string, bool)
+	readFile  func(string) ([]byte, error)
 	errs      []error
+	warnings  []string
 }
 
 func (v *validator) fail(format string, args ...any) {
 	v.errs = append(v.errs, fmt.Errorf(format, args...))
+}
+
+func (v *validator) warn(format string, args ...any) {
+	v.warnings = append(v.warnings, fmt.Sprintf(format, args...))
 }
 
 func (v *validator) config(raw rawConfig) *Config {
@@ -180,7 +187,7 @@ func (v *validator) config(raw rawConfig) *Config {
 const minAdminTokenLength = 32
 
 func (v *validator) admin(raw rawAdmin) *Admin {
-	token := v.expand("admin.token", raw.Token)
+	token := v.secret("admin.token", raw.Token)
 	if len(token) < minAdminTokenLength {
 		v.fail("admin.token must have at least %d characters (generate one with `openssl rand -hex 32`)", minAdminTokenLength)
 	}
@@ -238,7 +245,11 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	v.url(path+".url", src.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
 	for header, value := range raw.Headers {
-		src.Headers[header] = v.expand(path+".headers."+header, value)
+		if sensitiveHeader(header) {
+			src.Headers[header] = v.secret(path+".headers."+header, value)
+		} else {
+			src.Headers[header] = v.expand(path+".headers."+header, value)
+		}
 	}
 	return src
 }
@@ -283,9 +294,9 @@ func (v *validator) onlyFor(path string, set bool, sourceType, allowed SourceTyp
 func (v *validator) auth(path string, raw rawAuth) Auth {
 	auth := Auth{
 		Type:     AuthType(valueOr(raw.Type, string(AuthNone))),
-		Token:    v.expand(path+".token", raw.Token),
+		Token:    v.secret(path+".token", raw.Token),
 		Username: v.expand(path+".username", raw.Username),
-		Password: v.expand(path+".password", raw.Password),
+		Password: v.secret(path+".password", raw.Password),
 	}
 	switch auth.Type {
 	case AuthNone:
@@ -668,15 +679,41 @@ func (v *validator) url(path, raw string) {
 
 var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// expand resolves ${NAME} references. When NAME is not set but NAME_FILE is, the value is
+// read from that file, as with Docker and Kubernetes secrets; a trailing newline is dropped.
 func (v *validator) expand(path, raw string) string {
 	return envReference.ReplaceAllStringFunc(raw, func(ref string) string {
 		name := envReference.FindStringSubmatch(ref)[1]
-		value, ok := v.lookupEnv(name)
-		if !ok {
-			v.fail("%s: environment variable %s is not set", path, name)
+		if value, ok := v.lookupEnv(name); ok {
+			return value
 		}
-		return value
+		if file, ok := v.lookupEnv(name + "_FILE"); ok {
+			data, err := v.readFile(file)
+			if err != nil {
+				v.fail("%s: read %s_FILE: %v", path, name, err)
+				return ""
+			}
+			return strings.TrimRight(string(data), "\r\n")
+		}
+		v.fail("%s: environment variable %s is not set (nor %s_FILE)", path, name, name)
+		return ""
 	})
+}
+
+// secret expands a credential and warns when it is written into the file instead of
+// referenced: config files end up in repositories, backups and support tickets.
+func (v *validator) secret(path, raw string) string {
+	if raw != "" && !envReference.MatchString(raw) {
+		v.warn("%s is written in the config file; reference an environment variable instead, e.g. \"${NAME}\" (or NAME_FILE)", path)
+	}
+	return v.expand(path, raw)
+}
+
+// sensitiveHeader reports headers that usually carry credentials.
+func sensitiveHeader(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == "authorization" || strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "password") || strings.HasSuffix(lower, "key") || strings.Contains(lower, "api-key")
 }
 
 func parseLogSelector(selector string) ([]*labels.Matcher, error) {

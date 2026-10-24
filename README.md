@@ -56,6 +56,24 @@ export SONDA_URL=http://localhost:8080 SONDA_TOKEN=sonda_...
 
 Requires Go 1.26.5 or newer. A container image builds from the `Dockerfile`.
 
+### Credentials on a local machine
+
+Sonda reads credentials from the environment and does not load `.env` files itself. Keep them
+out of `sonda.yaml` and out of git (`.env` is ignored):
+
+```bash
+# .env
+SONDA_ADMIN_TOKEN=...
+SENTRY_TOKEN=...
+
+set -a; source .env; set +a
+./sonda-server serve -c sonda.yaml
+```
+
+With a password manager the values do not touch the disk at all, e.g. 1Password:
+`op run --env-file=.env -- ./sonda-server serve -c sonda.yaml` with `op://` references in
+`.env`. AWS sources use your local profile from `~/.aws`.
+
 ## For agents
 
 `skills/sonda/SKILL.md` teaches an agent the investigation flow and the commands. Install
@@ -90,7 +108,9 @@ parts that matter for security:
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
-  chain. Use read-only tokens and roles; the Security section of `docs/design.md` lists the
+  chain. `${NAME}` reads the variable `NAME`; when it is unset and `NAME_FILE` is set, the value
+  is read from that file (Docker and Kubernetes secrets). A credential written directly into
+  the file works, but `check` and `serve` warn about it. Use read-only tokens and roles; the Security section of `docs/design.md` lists the
   Cloudflare permission and the AWS IAM actions.
 - **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
   `/admin` only on a trusted network.
@@ -146,6 +166,8 @@ Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served
 - **Identities**: create an identity, select its grants in a service × capability matrix,
   override limits, rotate or revoke its token. Changes apply to the next request; no restart.
   A token is shown once; Sonda stores only its SHA-256.
+- **Services**: a read-only view of the configuration: services, environments, what each
+  capability reads, and the sources. It shows no credentials.
 - **Audit log**: every agent request and every admin action, filterable by identity.
 
 The UI is server-rendered with htmx and embedded in `sonda-server`.
