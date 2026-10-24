@@ -55,7 +55,7 @@ func (a *app) dataQueryCmd() *cobra.Command {
 			"list<Entity>(limit: N, …) and paginate<Entity>(first: N, …). Every list needs a limit.\n" +
 			"Read the query from the argument, from --file, or from stdin with --file -.",
 		Example: `  sonda data query shop -e production '{ listOrder(limit: 5, orderBy: [{createdAt: desc}]) { id status } }'
-  sonda data query shop -f order.graphql --var id=0d6c…`,
+  sonda data query shop -f order.graphql --var id=0d6c… --var n:=10`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query, err := queryText(args[1:], file, cmd.InOrStdin())
@@ -74,7 +74,7 @@ func (a *app) dataQueryCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&env, "env", "e", "", "environment (optional when only one is available)")
 	cmd.Flags().StringVarP(&file, "file", "f", "", "read the query from a file (- for stdin)")
 	cmd.Flags().StringVar(&varsFile, "vars", "", "JSON file with variables")
-	cmd.Flags().StringArrayVar(&vars, "var", nil, "variable name=value; the value is parsed as JSON, otherwise taken as a string (repeatable)")
+	cmd.Flags().StringArrayVar(&vars, "var", nil, "variable name=text (a string) or name:=json (a number, boolean, list or object) (repeatable)")
 	return cmd
 }
 
@@ -103,22 +103,31 @@ func variablesJSON(file string, pairs []string) (json.RawMessage, error) {
 		}
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.UseNumber()
-		if err := decoder.Decode(&vars); err != nil {
-			return nil, fmt.Errorf("--vars: %w", err)
+		if err := decoder.Decode(&vars); err != nil || decoder.More() {
+			return nil, fmt.Errorf("--vars: %s must hold one JSON object", file)
+		}
+		if vars == nil {
+			vars = map[string]any{}
 		}
 	}
 	for _, pair := range pairs {
 		name, value, ok := strings.Cut(pair, "=")
-		if !ok || name == "" {
-			return nil, fmt.Errorf("--var %q must be name=value", pair)
+		if !ok || name == "" || name == ":" {
+			return nil, fmt.Errorf("--var %q must be name=text or name:=json", pair)
+		}
+		// name=text is always a string, so IDs and years that look like numbers stay strings.
+		jsonName, isJSON := strings.CutSuffix(name, ":")
+		if !isJSON {
+			vars[name] = value
+			continue
 		}
 		decoder := json.NewDecoder(strings.NewReader(value))
 		decoder.UseNumber()
 		var parsed any
 		if err := decoder.Decode(&parsed); err != nil || decoder.More() {
-			parsed = value
+			return nil, fmt.Errorf("--var %s: %q is not one JSON value", jsonName, value)
 		}
-		vars[name] = parsed
+		vars[jsonName] = parsed
 	}
 	if len(vars) == 0 {
 		return nil, nil

@@ -48,10 +48,12 @@ fail() {
 }
 
 log "waiting for $CONTEMBER_URL"
-for _ in $(seq 1 60); do
-	if curl -s -o /dev/null "$CONTEMBER_URL"; then break; fi
+ready=
+for _ in $(seq 1 90); do
+	if curl -s -o /dev/null "$CONTEMBER_URL"; then ready=1; break; fi
 	sleep 1
 done
+[ -n "$ready" ] || fail "engine at $CONTEMBER_URL did not start within 90 s" "-"
 
 # 1. Project
 res=$(gql /tenant "$ROOT_TOKEN" --data "{\"query\":\"mutation { createProject(projectSlug: \\\"$PROJECT\\\", name: \\\"Sonda test\\\", options: { noDeployToken: true }) { ok error { code developerMessage } } }\"}")

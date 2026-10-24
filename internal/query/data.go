@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
@@ -105,10 +107,12 @@ func (s *Service) QueryData(ctx context.Context, identity *authz.Identity, servi
 	return api.Response[api.DataQueryResult]{Data: api.DataQueryResult{Query: result.query, Rows: result.rows, Data: data}, Meta: meta}, nil
 }
 
-// schemaCache keeps introspected schemas per source, project and stage.
+// schemaCache keeps introspected schemas per source, project and stage. Concurrent loads of
+// one key share a single introspection.
 type schemaCache struct {
 	mu      sync.Mutex
 	entries map[string]schemaEntry
+	loads   singleflight.Group
 	now     func() time.Time
 }
 
@@ -121,7 +125,8 @@ func newSchemaCache(now func() time.Time) *schemaCache {
 	return &schemaCache{entries: map[string]schemaEntry{}, now: now}
 }
 
-// get returns a cached schema or loads a fresh one. Failed loads are not cached.
+// get returns a cached schema or loads a fresh one. A failed load also drops the cached
+// schema: the binding fails closed until a load passes the write check again.
 func (c *schemaCache) get(key string, load func() (*gqlguard.Schema, error)) (*gqlguard.Schema, error) {
 	c.mu.Lock()
 	entry, ok := c.entries[key]
@@ -129,7 +134,8 @@ func (c *schemaCache) get(key string, load func() (*gqlguard.Schema, error)) (*g
 	if ok && c.now().Sub(entry.fetched) < schemaTTL {
 		return entry.schema, nil
 	}
-	schema, err := load()
+	loaded, err, _ := c.loads.Do(key, func() (any, error) { return load() })
+	schema, _ := loaded.(*gqlguard.Schema)
 	if err != nil {
 		c.mu.Lock()
 		delete(c.entries, key)

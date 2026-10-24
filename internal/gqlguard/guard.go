@@ -12,6 +12,8 @@ import (
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
+	"github.com/vektah/gqlparser/v2/parser"
+	"github.com/vektah/gqlparser/v2/validator"
 )
 
 // Rules restrict what a query may read and how much.
@@ -20,8 +22,8 @@ type Rules struct {
 	Entities []string
 	// Denied reports fields the agent may not select, filter, look up or order by.
 	Denied func(entity, field string) bool
-	// MaxRows caps the rows a query can return: the sum over every list of the product of the
-	// limits on its path.
+	// MaxRows caps the rows a query can return: the sum over every list and paginate field of
+	// the product of the limits on its path.
 	MaxRows int
 	// MaxDepth caps the number of nested entity fields on a path.
 	MaxDepth int
@@ -65,8 +67,16 @@ func Check(s *Schema, query string, variables []byte, rules Rules) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	doc, errs := gqlparser.LoadQuery(s.ast, query)
-	if len(errs) > 0 {
+	doc, parseErr := parser.ParseQuery(&ast.Source{Input: query})
+	if parseErr != nil {
+		return Result{}, reject("invalid GraphQL: %s", parseErrorMessage(parseErr))
+	}
+	// Validation has quadratic steps (overlapping fields), so the written fields are capped
+	// before it runs. Fragment expansion is capped later, while printing.
+	if rules.MaxFields > 0 && countFields(doc) > rules.MaxFields {
+		return Result{}, reject("the query selects more than %d fields", rules.MaxFields)
+	}
+	if errs := validator.Validate(s.ast, doc); len(errs) > 0 {
 		return Result{}, validationError(errs)
 	}
 	op, err := singleQuery(doc)
@@ -92,6 +102,31 @@ func Check(s *Schema, query string, variables []byte, rules Rules) (Result, erro
 		return Result{}, err
 	}
 	return Result{Query: normalized, Rows: w.rows, Depth: w.depth, Fields: w.fields}, nil
+}
+
+// countFields counts the fields written in the document, fragments counted once.
+func countFields(doc *ast.QueryDocument) int {
+	var count func(set ast.SelectionSet) int
+	count = func(set ast.SelectionSet) int {
+		n := 0
+		for _, sel := range set {
+			switch sel := sel.(type) {
+			case *ast.Field:
+				n += 1 + count(sel.SelectionSet)
+			case *ast.InlineFragment:
+				n += count(sel.SelectionSet)
+			}
+		}
+		return n
+	}
+	total := 0
+	for _, op := range doc.Operations {
+		total += count(op.SelectionSet)
+	}
+	for _, f := range doc.Fragments {
+		total += count(f.SelectionSet)
+	}
+	return total
 }
 
 func validationError(errs gqlerror.List) error {
@@ -502,8 +537,12 @@ func (w *walker) hop(f *ast.Field, h hop, multiplier, depth int) error {
 	if h.limitArg != "" && !hasLimit {
 		return reject("%s needs %s: N (at most %d rows per query)", f.Name, h.limitArg, w.rules.MaxRows)
 	}
+	// A list multiplies the rows of everything below it; a single row (get, has-one, <rel>By)
+	// adds nothing on its own.
 	multiplier *= rows
-	w.rows += multiplier
+	if h.limitArg != "" {
+		w.rows += multiplier
+	}
 	if w.rules.MaxRows > 0 && (rows > w.rules.MaxRows || w.rows > w.rules.MaxRows) {
 		return reject("the query can return %d rows, the limit is %d; lower the limits of nested lists", w.rows, w.rules.MaxRows)
 	}
@@ -678,4 +717,12 @@ func (w *walker) input(v *ast.Value, entityName, kind string, operator func(stri
 		}
 	}
 	return nil
+}
+
+func parseErrorMessage(err error) string {
+	var gqlErr *gqlerror.Error
+	if errors.As(err, &gqlErr) {
+		return gqlErr.Message
+	}
+	return err.Error()
 }

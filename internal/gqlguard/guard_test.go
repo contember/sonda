@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The fixtures are introspection results of the dev Contember engine (dev/seed-contember.sh):
@@ -84,6 +85,16 @@ func TestVisible(t *testing.T) {
 	}
 }
 
+func TestVisibleUniqueSkipsHiddenTargets(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	rules := testRules()
+	rules.Entities = []string{"Author"}
+	entities, _ := s.Visible(rules)
+	if len(entities) != 1 || slices.Contains(entities[0].Unique, "articles") || !slices.Contains(entities[0].Unique, "id") {
+		t.Fatalf("entities = %+v", entities)
+	}
+}
+
 func TestCheckAccepts(t *testing.T) {
 	s := loadFixture(t, "contember_reader.json")
 	cases := []struct {
@@ -100,7 +111,7 @@ func TestCheckAccepts(t *testing.T) {
 			name:  "get by unique",
 			query: `query Q { getAuthor(by: {id: "8c0f3a4e-0000-0000-0000-000000000000"}) { name articles(limit: 5) { title } } }`,
 			want:  `query { getAuthor(by: {id: "8c0f3a4e-0000-0000-0000-000000000000"}) { name articles(limit: 5) { title } } }`,
-			rows:  6,
+			rows:  5,
 		},
 		{
 			name:  "paginate count",
@@ -117,7 +128,7 @@ func TestCheckAccepts(t *testing.T) {
 			name:  "fragments and aliases are inlined",
 			query: `query { a: listArticle(limit: 2) { ...F } } fragment F on Article { title author { name } ... on Article { id } }`,
 			want:  `query { a: listArticle(limit: 2) { title author { name } id } }`,
-			rows:  4,
+			rows:  2,
 		},
 		{
 			name:  "variables are inlined",
@@ -146,7 +157,12 @@ func TestCheckAccepts(t *testing.T) {
 		{
 			name:  "derived reducer and paginate relation",
 			query: `{ getAuthor(by: {id: "x"}) { articlesBy(by: {id: "y"}) { title } paginateArticles(first: 3) { edges { node { title } } } } }`,
-			rows:  1 + 1 + 3,
+			rows:  3,
+		},
+		{
+			name:  "has-one relations add no rows",
+			query: `{ listArticle(limit: 200) { author { name } } }`,
+			rows:  200,
 		},
 		{
 			name:  "typename and offset",
@@ -223,6 +239,21 @@ func TestCheckRejects(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A large flat query is rejected before validation, whose overlapping-fields step is
+// quadratic in the number of fields.
+func TestCheckRejectsLargeQueryQuickly(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	query := `{ listArticle(limit: 1) { ` + strings.Repeat("id ", 5000) + `} }`
+	start := time.Now()
+	_, err := Check(s, query, nil, testRules())
+	if err == nil || !strings.Contains(err.Error(), "more than 50 fields") {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("rejection took %s", elapsed)
 	}
 }
 

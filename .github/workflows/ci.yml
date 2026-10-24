@@ -62,10 +62,14 @@ jobs:
           timeout 60 sh -c 'until curl -sfG --data-urlencode "q={ resource.service.name = \"svc-b\" }" http://localhost:13200/api/search | grep -q traceID; do sleep 2; done'
 
       # The data tests run against a Contember engine with a read-only and a write role.
+      # The env file is written only after the seed succeeds, so a failed seed fails CI instead
+      # of skipping the data tests.
       - name: Start and seed Contember
+        shell: bash
         run: |
           docker compose -f dev/docker-compose.yml up -d contember
-          dev/seed-contember.sh | sed 's/^export //' >> "$GITHUB_ENV"
+          dev/seed-contember.sh > contember.env
+          sed 's/^export //' contember.env >> "$GITHUB_ENV"
 
       - run: go test ./...
         env:
