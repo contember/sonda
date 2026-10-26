@@ -85,6 +85,7 @@ type rawEnvironment struct {
 	Metrics   *rawBinding         `yaml:"metrics"`
 	Traces    *rawBinding         `yaml:"traces"`
 	Workloads *rawWorkloadBinding `yaml:"workloads"`
+	Alerts    *rawBinding         `yaml:"alerts"`
 }
 
 type rawWorkloadBinding struct {
@@ -242,7 +243,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		if raw.Org == "" {
 			v.fail("%s.org is required for sentry sources", path)
 		}
-	case SourceLoki, SourcePrometheus, SourceTempo:
+	case SourceLoki, SourcePrometheus, SourceTempo, SourceGrafana:
 	case SourceCloudflare:
 		if src.URL == "" {
 			src.URL = defaultCloudflareURL
@@ -268,7 +269,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 			src.RootCAs = v.caFile(path+".ca_file", raw.CAFile)
 		}
 	default:
-		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws or kubernetes, got %q", path, raw.Type)
+		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes or grafana, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
@@ -412,8 +413,11 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 		if re.Workloads != nil {
 			env.Workloads = v.workloadBinding(envPath+".workloads", *re.Workloads, sources)
 		}
+		if re.Alerts != nil {
+			env.Alerts = v.alertBinding(envPath+".alerts", *re.Alerts, sources)
+		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs, metrics, traces or workloads is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics, traces, workloads or alerts is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
@@ -595,6 +599,16 @@ func (v *validator) metricBinding(path string, raw rawBinding, sources map[strin
 		binding.Dimensions = v.dimensions(path, raw.Dimensions)
 	}
 	return binding
+}
+
+// alertBinding takes a Prometheus selector; alerts carry the labels of the series their rule
+// evaluated, plus the rule's own labels.
+func (v *validator) alertBinding(path string, raw rawBinding, sources map[string]*Source) *AlertBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourcePrometheus, SourceGrafana)
+	if src != nil {
+		v.bindingFields(path, raw, src, "selector")
+	}
+	return &AlertBinding{Source: src, Selector: v.selector(path, raw.Selector, parseMetricSelector)}
 }
 
 func (v *validator) traceBinding(path string, raw rawBinding, sources map[string]*Source) *TraceBinding {

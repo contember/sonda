@@ -69,14 +69,15 @@ const (
 	CapabilityMetrics   Capability = "metrics"
 	CapabilityTraces    Capability = "traces"
 	CapabilityWorkloads Capability = "workloads"
+	CapabilityAlerts    Capability = "alerts"
 )
 
 func ParseCapability(s string) (Capability, error) {
 	switch c := Capability(s); c {
-	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads:
+	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityAlerts:
 		return c, nil
 	}
-	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces or workloads)", s)
+	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces, workloads or alerts)", s)
 }
 
 // Dialect names the query language of a native query endpoint.
@@ -334,6 +335,7 @@ type Overview struct {
 	Issues    *OverviewPart[[]Issue]          `json:"issues,omitempty"`
 	Signals   []SignalOverview                `json:"signals,omitempty"`
 	Workloads *OverviewPart[*WorkloadSummary] `json:"workloads,omitempty"`
+	Alerts    *OverviewPart[[]Alert]          `json:"alerts,omitempty"`
 }
 
 // OverviewPart carries either items or the error that prevented loading them, so one
@@ -502,4 +504,17 @@ type WorkloadSummary struct {
 	Warnings int      `json:"warnings"`
 	// Rollout is the newest ReplicaSet with replicas.
 	Rollout *Rollout `json:"rollout,omitempty"`
+}
+
+// Alert is an active alert of the service's alerting rules.
+type Alert struct {
+	Name string `json:"name"` // the alertname label
+	// State is firing, pending, recovering, nodata or error.
+	State string `json:"state"`
+	// StateReason is Grafana's reason for the state, e.g. MissingSeries.
+	StateReason string            `json:"stateReason,omitempty"`
+	ActiveAt    *time.Time        `json:"activeAt,omitempty"`
+	Value       string            `json:"value,omitempty"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }

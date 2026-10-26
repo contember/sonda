@@ -312,6 +312,16 @@ func renderOverview(w io.Writer, resp api.Response[api.Overview]) {
 			writeWorkloadSummary(w, o.Workloads.Items)
 		}
 	}
+	if o.Alerts != nil {
+		fmt.Fprintln(w, "\nALERTS (now)")
+		if o.Alerts.Error != "" {
+			fmt.Fprintln(w, "  error: "+o.Alerts.Error)
+		} else if len(o.Alerts.Items) == 0 {
+			fmt.Fprintln(w, "  none active")
+		} else {
+			writeAlerts(w, o.Alerts.Items)
+		}
+	}
 	if len(o.Signals) > 0 {
 		fmt.Fprintln(w, "\nSIGNALS")
 		for _, s := range o.Signals {

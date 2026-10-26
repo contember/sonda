@@ -11,14 +11,15 @@ compact responses with links back to the source.
 |---|---|
 | **Sentry** | errors, releases |
 | **Loki** | logs |
-| **Prometheus** (and Mimir, Thanos, VictoriaMetrics, Grafana Cloud) | metrics |
+| **Prometheus** (and Mimir, Thanos, VictoriaMetrics, Grafana Cloud) | metrics, alerts |
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
 | **Grafana Tempo** | traces |
 | **Kubernetes** pods, ReplicaSets and events | workloads |
+| **Grafana** managed alerting | alerts |
 
 ```text
-agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo / Kubernetes
+agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo / Kubernetes / Grafana
           one token     authz, query scoping, grouping, limits, audit
 ```
 
@@ -65,12 +66,13 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | Command | Purpose |
 |---|---|
 | `sonda services`, `sonda describe <svc>` | What the token can access; backend and dialect per capability |
-| `sonda overview <svc>` | Releases, top errors, signal summaries |
+| `sonda overview <svc>` | Releases, top errors, signal summaries, pod health, active alerts |
 | `sonda errors <svc>`, `sonda error <svc> <id>`, `sonda releases <svc>` | Sentry |
 | `sonda logs search/query/fields <svc>`, `sonda result <id>` | Logs |
 | `sonda metrics list/query <svc>`, `sonda signal <svc> <name>` | Metrics |
 | `sonda traces search/query <svc>`, `sonda trace <svc> <id>` | Traces |
 | `sonda workloads <svc>` | Kubernetes pods, rollouts and events |
+| `sonda alerts <svc>` | Active alerts of Prometheus or Grafana alerting rules |
 
 The CLI prints JSON when its output is piped and compact text in a terminal.
 
@@ -90,7 +92,9 @@ parts that matter for security:
   - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
-- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`) for service
+  - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.
+    The alerts API returns the alerts of every service, so this filter in Sonda is the scope.
+- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `alerts`) for service
   environments. Anything else is not found. A `traces` grant also decides which spans of a
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
@@ -100,7 +104,7 @@ parts that matter for security:
 - **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
   `/admin` only on a trusted network.
 
-Sources and bindings for Cloudflare, AWS, Tempo and Kubernetes:
+Sources and bindings for Cloudflare, AWS, Tempo, Kubernetes and Grafana alerting:
 
 ```yaml
 sources:
@@ -123,6 +127,10 @@ sources:
     url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com
     auth: { type: bearer, token: "${K8S_TOKEN}" }  # a read-only service account token
     ca_file: /etc/sonda/k8s-prod-ca.crt
+  grafana:
+    type: grafana                      # Grafana-managed alerts; a prometheus source serves its own rules' alerts
+    url: https://grafana.example.com
+    auth: { type: bearer, token: "${GRAFANA_TOKEN}" }  # a Viewer service account token
 
 services:
   web-worker:
@@ -146,6 +154,7 @@ services:
       production:
         traces: { source: tempo-prod, service: engine-api }  # resource.service.name
         workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+        alerts: { source: grafana, selector: '{service="engine-api"}' }
 ```
 
 A signal is PromQL for Prometheus and a mapping for Cloudflare or CloudWatch. All metrics

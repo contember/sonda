@@ -36,6 +36,9 @@ returns compact, evidence-carrying responses.
 | Kubernetes access | Plain HTTP against the API server: pods and ReplicaSets by namespace and label selector, events of the namespace filtered by object | `client-go`; Kubernetes events through Loki | Three list calls need no client library. Events are not in the log pipelines we run, and the API keeps them for about an hour. |
 | Kubernetes scope | A namespace and exact labels (`key: value`) | A free label selector | Exact labels are both the upstream selector and an exact post-check, and cannot express "everything except". |
 | Workloads capability | A new capability `workloads` | Serve pods under `logs` or `metrics` | Pod state, rollouts and events are a separate kind of data; a grant should name it. |
+| Alerts source | The Prometheus-compatible alerts API of Prometheus/Mimir (`/api/v1/alerts`) or of Grafana-managed alerting (a `grafana` source) | Alertmanager; Grafana's own alerting API | One response shape for both. Alertmanager holds only firing alerts, after grouping and silencing. |
+| Alerts scope | A Prometheus `selector` over the alert labels, applied by Sonda | Upstream filtering | The alerts API has no label filter; it returns every alert the token can read, and Sonda drops those that do not match. |
+| Alerts capability | A new capability `alerts` | Serve alerts under `metrics` | Alerts may come from another source than metrics (Grafana), and a grant should name it. |
 | Workspaces | One server = one workspace | Multi-workspace in v1 | No current need. Nothing in the model prevents adding it later. |
 
 ## 2. Domain model
@@ -52,17 +55,18 @@ Identity ──< Grant (services × environments × capabilities)
   |---|---|---|---|
   | `sentry` | Sentry | errors | `url`, `org`, auth |
   | `loki` | Loki | logs | `url`, auth, headers |
-  | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics | `url`, auth, headers |
+  | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics, alerts | `url`, auth, headers |
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
   | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, optional `role_arn` + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token, optional `ca_file`; without `url`, the pod's service account (in-cluster) |
+  | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
 
   Auth is `none`, `bearer` or `basic`. Extra headers carry e.g. `X-Scope-OrgID` for
   multi-tenant Loki, Mimir or Tempo. AWS has no URL, auth or headers: credentials come from
   the default credential chain (IRSA, environment, profile), or from assuming `role_arn`.
 - **Grafana** (optional): base URL and a datasource UID per source. Used only to build Explore
-  links in responses. Sonda does not query Grafana.
+  links in responses. Sonda queries Grafana only through a `grafana` source, for alerts.
 - **Service**: a logical application. Has a description, an optional repository, environments and
   signals.
 - **Environment**: per service, maps each capability to a source and a binding. The binding is
@@ -80,6 +84,7 @@ Identity ──< Grant (services × environments × capabilities)
   | `traces` | `tempo` | `service` (`resource.service.name`) |
   | `traces` | `cloudflare` | `script` |
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty) |
+  | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
 
 - **Dialect**: each binding has the query dialect of its native query endpoint: `logql`,
   `promql`, `traceql`, `cloudflare-query`, `cloudflare-metric`, `logs-insights`,
@@ -93,7 +98,7 @@ Identity ──< Grant (services × environments × capabilities)
 - **Identity**: an agent service account. Authenticated by a bearer token. The identity store
   keeps only the SHA-256 of the token. Managed in the admin UI (section 11), not in the config.
 - **Grant**: one `(service, environment, capability)`. Capabilities: `errors`, `logs`,
-  `metrics`, `traces`, `workloads`. A native query requires the same capability as the structured tool for
+  `metrics`, `traces`, `workloads`, `alerts`. A native query requires the same capability as the structured tool for
   that signal type. A `traces` grant also makes the service's spans visible in full inside
   traces fetched through other services (section 8). A grant for a service or capability that
   is no longer configured has no effect.
@@ -212,7 +217,8 @@ internal/connector
   aws/             CloudWatch Logs and CloudWatch client (aws-sdk-go-v2)
   tempo/           Tempo HTTP API client
   kubernetes/      Kubernetes API client: pods, ReplicaSets, events
-internal/query     use cases: overview, errors, logs, metrics, traces, workloads, results; one backend per source type
+  alerting/        Prometheus-compatible alerts API client (Prometheus, Mimir, Grafana)
+internal/query     use cases: overview, errors, logs, metrics, traces, workloads, alerts, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles
@@ -225,7 +231,7 @@ Boundaries:
 - `httpapi` parses requests into `api` types and calls `query`. Nothing reaches a connector
   without a scope from `authz`.
 - `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
-  `TraceScope` and `WorkloadScope`, which resolve to one typed variant per source type (`SelectorScope`,
+  `TraceScope`, `WorkloadScope` and `AlertScope` (a `SelectorScope`), which resolve to one typed variant per source type (`SelectorScope`,
   `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
@@ -350,6 +356,23 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   mounted `ca.crt` and reads the mounted service account token on every request, because the
   kubelet rotates it. With `url`, a bearer token is required (a service account token secret
   works for EKS) and `ca_file` names the cluster CA.
+
+### Alerts specifics
+
+- Endpoints used: Prometheus `GET /api/v1/alerts` (for Mimir, the source `url` includes its
+  `/prometheus` prefix) and Grafana `GET /api/prometheus/grafana/api/v1/alerts`, which returns the
+  alert instances of Grafana-managed rules in the token's organization.
+- The API cannot filter by labels. Sonda reads all alerts and keeps those whose labels match
+  every matcher of the binding's selector; a missing label matches as the empty value. The
+  selector must contain an `=` or `=~` matcher that rejects the empty value, as for metrics.
+- States: Prometheus reports `firing` and `pending`; Grafana reports `Alerting`, `Pending`,
+  `Recovering`, `NoData`, `Error` and `Normal`, optionally followed by a reason, e.g.
+  `Alerting (Error)`. Sonda returns `firing` (for `Alerting`), `pending`, `recovering`, `nodata`
+  and `error`, with the reason in `stateReason`, and drops `Normal` and `inactive`.
+- Alerts are the current state; there is no range. Firing alerts sort first, then by `activeAt`,
+  newest first. Responses hold at most 100 alerts and mark more as `truncated`.
+- Annotations whose names start with `__` (Grafana's dashboard and panel references) are
+  dropped. Annotation values are redacted; labels, annotations and values are marked untrusted.
 
 ## 5. Authorization
 
@@ -710,7 +733,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 |---|---|---|
 | `/v1/services` | any grant | Services the identity can access |
 | `/v1/services/{s}` | any grant | Environments, capabilities with backend and dialect, signals, repository |
-| `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values, workload health. The usual first call. |
+| `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values, workload health, active alerts. The usual first call. |
 | `/v1/services/{s}/errors` | `errors` | Issues: title, count, users, first/last seen, link |
 | `/v1/services/{s}/errors/{id}` | `errors` | Issue + latest event in `env` with stack trace (in-app frames, newest first) and trace ID |
 | `/v1/services/{s}/releases` | `errors` | Releases and deploys in range |
@@ -724,6 +747,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `POST /v1/services/{s}/traces/query` | `traces` | Native query in the backend's dialect (scoped) → trace summaries |
 | `/v1/services/{s}/traces/{id}` | `traces` | Span tree; spans of services without a grant are stubs |
 | `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states, last termination) and rollouts now; events of the service's objects in range |
+| `/v1/services/{s}/alerts` | `alerts` | Active alerts now: name, state, active since, value, labels, annotations. Takes only `env`. |
 | `/v1/results/{id}` | owner | Page through or drill into a stored result |
 
 `metrics/query` takes the query as a string in every dialect; for Cloudflare and CloudWatch it
@@ -753,6 +777,7 @@ sonda traces search engine-api --since 1h --min-duration 500ms --errors
 sonda traces query engine-api '{ status = error && duration > 500ms }'
 sonda trace engine-api 4bf92f3577b34da6a3ce929d0e0e4736 --since 6h
 sonda workloads engine-api -e production --since 1h
+sonda alerts engine-api -e production
 sonda result res_8KcW --group 2
 ```
 
@@ -816,6 +841,10 @@ Rules:
   only `get` and `list` on `pods`, `events` and `apps/replicasets`. Events are listed for the
   whole namespace and filtered by Sonda, so the role must not be broader than the namespaces in
   the config. Container and event messages are redacted and marked untrusted.
+- **Alerts token.** The alerts API returns every alert of the Prometheus tenant or Grafana
+  organization, so the credential reads alerts of all services; Sonda's selector filter is the
+  only scope. For Grafana, use a service account with the Viewer role in the organization that
+  holds the rules.
 - **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
   `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
   `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus

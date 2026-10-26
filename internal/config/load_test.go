@@ -225,7 +225,7 @@ func TestParseBackendErrors(t *testing.T) {
 		replace [2]string
 		want    string
 	}{
-		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare, aws or kubernetes"},
+		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes or grafana"},
 
 		{"cloudflare without account", [2]string{`    account_id: "${CF_ACCOUNT_ID}"` + "\n", ""}, "sources.cf.account_id is required"},
 		{"cloudflare basic auth", [2]string{`{ type: bearer, token: "${CF_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, "sources.cf.auth must be bearer"},
@@ -313,7 +313,7 @@ func TestParseExistingSourceRules(t *testing.T) {
 		{"prometheus with account", [2]string{"type: prometheus\n", "type: prometheus\n    account_id: acc\n"}, "sources.prom.account_id is allowed only for cloudflare sources"},
 		{"loki with region", [2]string{"type: loki\n", "type: loki\n    region: eu-west-1\n"}, "sources.loki.region is allowed only for aws sources"},
 		{"loki logs with script", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: loki, selector: '{app="api"}', script: w }`}, "logs.script is not allowed for loki sources"},
-		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics, traces or workloads is required"},
+		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics, traces, workloads or alerts is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -413,6 +413,67 @@ func TestParseKubernetesErrors(t *testing.T) {
 			vars := map[string]string{"K8S_TOKEN": "k8s-secret"}
 			maps.Copy(vars, tt.env)
 			_, err := Parse([]byte(strings.Replace(base, tt.replace[0], tt.replace[1], 1)), env(vars))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const alertsConfig = `
+sources:
+  grafana:
+    type: grafana
+    url: https://grafana.example
+    auth: { type: bearer, token: "${GRAFANA_TOKEN}" }
+  prom:
+    type: prometheus
+    url: http://prometheus:9090
+services:
+  api:
+    environments:
+      production:
+        alerts: { source: grafana, selector: '{service="api"}' }
+      staging:
+        alerts: { source: prom, selector: '{job=~"api-.+"}' }
+`
+
+func TestParseAlerts(t *testing.T) {
+	cfg, err := Parse([]byte(alertsConfig), env(map[string]string{"GRAFANA_TOKEN": "g"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envs := cfg.Services["api"].Environments
+	if b := envs["production"].Alerts; b.Source.Type != SourceGrafana || b.Selector.Text != `{service="api"}` {
+		t.Errorf("grafana alerts = %+v", b)
+	}
+	if b := envs["staging"].Alerts; b.Source.Type != SourcePrometheus || len(b.Selector.Matchers) != 1 {
+		t.Errorf("prometheus alerts = %+v", b)
+	}
+	if caps := envs["production"].Capabilities(); len(caps) != 1 || caps[0] != api.CapabilityAlerts {
+		t.Errorf("capabilities = %v", caps)
+	}
+}
+
+func TestParseAlertErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"unscoped selector", [2]string{`'{service="api"}'`, `'{service!="billing"}'`}, "must contain an = or =~ matcher that rejects the empty value"},
+		{"selector that matches empty", [2]string{`'{job=~"api-.+"}'`, `'{job=~".*"}'`}, "must contain an = or =~ matcher"},
+		{"missing selector", [2]string{`alerts: { source: grafana, selector: '{service="api"}' }`, `alerts: { source: grafana }`}, "production.alerts.selector"},
+		{"extra field", [2]string{`alerts: { source: grafana, selector: '{service="api"}' }`, `alerts: { source: grafana, selector: '{service="api"}', script: w }`}, "alerts.script is not allowed for grafana sources"},
+		{"grafana as metrics source", [2]string{`alerts: { source: prom, selector: '{job=~"api-.+"}' }`, `metrics: { source: grafana, selector: '{job="api"}' }`}, "expected prometheus, cloudflare or aws"},
+		{"grafana without url", [2]string{"    url: https://grafana.example\n", ""}, "sources.grafana.url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(alertsConfig, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			_, err := Parse([]byte(strings.Replace(alertsConfig, tt.replace[0], tt.replace[1], 1)), env(map[string]string{"GRAFANA_TOKEN": "g"}))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

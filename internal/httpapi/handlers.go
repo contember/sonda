@@ -102,6 +102,11 @@ func (s *Server) workloads(r *http.Request) (any, error) {
 	return s.query.Workloads(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
 }
 
+// alerts takes only env: alerts are current state.
+func (s *Server) alerts(r *http.Request) (any, error) {
+	return s.query.Alerts(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"))
+}
+
 func (s *Server) result(r *http.Request) (any, error) {
 	var group *int
 	if r.URL.Query().Has("group") {

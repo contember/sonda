@@ -114,3 +114,24 @@ func TestRenderWorkloads(t *testing.T) {
 		t.Errorf("output:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+func TestRenderAlerts(t *testing.T) {
+	at := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	resp := api.Response[[]api.Alert]{
+		Meta: api.Meta{Service: "engine", Environment: "production"},
+		Data: []api.Alert{
+			{Name: "ErrorRate", State: "firing", StateReason: "Error", ActiveAt: &at, Annotations: map[string]string{"description": "5xx above 1%"}},
+			{Name: "HighLatency", State: "pending", ActiveAt: &at, Value: "2.4", Annotations: map[string]string{"summary": "p99 above 2s", "description": "long"}},
+		},
+	}
+	want := []string{
+		"# engine/production now",
+		"  firing (Error)  ErrorRate    since 2026-10-26T10:00:00Z  value=-    5xx above 1%",
+		"  pending         HighLatency  since 2026-10-26T10:00:00Z  value=2.4  p99 above 2s",
+	}
+	var out bytes.Buffer
+	renderAlerts(&out, resp)
+	if got := trimLines(out.String()); !slices.Equal(got, want) {
+		t.Errorf("output:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

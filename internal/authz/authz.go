@@ -112,6 +112,8 @@ func backends(env *config.Environment, capabilities []api.Capability) map[api.Ca
 			result[capability] = api.BackendInfo{Source: string(env.Traces.Source.Type), Dialect: env.Traces.Dialect()}
 		case api.CapabilityWorkloads:
 			result[capability] = api.BackendInfo{Source: string(env.Workloads.Source.Type)}
+		case api.CapabilityAlerts:
+			result[capability] = api.BackendInfo{Source: string(env.Alerts.Source.Type)}
 		}
 	}
 	return result
@@ -203,6 +205,15 @@ func (a *Authorizer) WorkloadScope(identity *Identity, service, env string) (Wor
 		return WorkloadScope{}, err
 	}
 	return WorkloadScope{Target: target, binding: environment.Workloads}, nil
+}
+
+// AlertScope restricts a ruler's alerts to those matching the service's selector.
+func (a *Authorizer) AlertScope(identity *Identity, service, env string) (SelectorScope, error) {
+	target, environment, err := a.resolve(identity, service, env, api.CapabilityAlerts)
+	if err != nil {
+		return SelectorScope{}, err
+	}
+	return SelectorScope{Target: target, source: environment.Alerts.Source, selector: environment.Alerts.Selector}, nil
 }
 
 // TraceVisibility reports which backend service names of the scope's source the identity may see in

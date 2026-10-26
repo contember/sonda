@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/connector/alerting"
 	"github.com/contember/sonda/internal/connector/aws"
 	"github.com/contember/sonda/internal/connector/cloudflare"
 	"github.com/contember/sonda/internal/connector/kubernetes"
@@ -22,6 +23,8 @@ type Connectors struct {
 	AWS        map[string]*aws.Client
 	Tempo      map[string]*tempo.Client
 	Kubernetes map[string]*kubernetes.Client
+	// Alerting holds a client for every Prometheus and Grafana source.
+	Alerting map[string]*alerting.Client
 }
 
 func NewConnectors(cfg *config.Config) (Connectors, error) {
@@ -33,6 +36,7 @@ func NewConnectors(cfg *config.Config) (Connectors, error) {
 		AWS:        map[string]*aws.Client{},
 		Tempo:      map[string]*tempo.Client{},
 		Kubernetes: map[string]*kubernetes.Client{},
+		Alerting:   map[string]*alerting.Client{},
 	}
 	for name, src := range cfg.Sources {
 		switch src.Type {
@@ -42,6 +46,7 @@ func NewConnectors(cfg *config.Config) (Connectors, error) {
 				return Connectors{}, err
 			}
 			c.Prometheus[name] = client
+			c.Alerting[name] = alerting.New(src)
 		case config.SourceLoki:
 			c.Loki[name] = loki.New(src)
 		case config.SourceSentry:
@@ -66,6 +71,8 @@ func NewConnectors(cfg *config.Config) (Connectors, error) {
 			c.Tempo[name] = client
 		case config.SourceKubernetes:
 			c.Kubernetes[name] = kubernetes.New(src)
+		case config.SourceGrafana:
+			c.Alerting[name] = alerting.New(src)
 		default:
 			return Connectors{}, fmt.Errorf("source %s: unsupported type %s", name, src.Type)
 		}

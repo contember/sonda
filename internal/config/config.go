@@ -46,6 +46,7 @@ const (
 	SourceAWS        SourceType = "aws"
 	SourceTempo      SourceType = "tempo"
 	SourceKubernetes SourceType = "kubernetes"
+	SourceGrafana    SourceType = "grafana"
 )
 
 type Source struct {
@@ -113,6 +114,14 @@ type Environment struct {
 	Metrics   *MetricBinding
 	Traces    *TraceBinding
 	Workloads *WorkloadBinding
+	Alerts    *AlertBinding
+}
+
+// AlertBinding scopes the alerts of a Prometheus-compatible ruler (Prometheus, Mimir, or
+// Grafana-managed alerting) to the alerts whose labels match Selector.
+type AlertBinding struct {
+	Source   *Source
+	Selector *Selector
 }
 
 type ErrorBinding struct {
@@ -216,6 +225,9 @@ func (e *Environment) Capabilities() []api.Capability {
 	}
 	if e.Workloads != nil {
 		caps = append(caps, api.CapabilityWorkloads)
+	}
+	if e.Alerts != nil {
+		caps = append(caps, api.CapabilityAlerts)
 	}
 	return caps
 }

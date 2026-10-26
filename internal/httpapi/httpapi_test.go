@@ -84,6 +84,14 @@ func (u *upstreams) handler() http.Handler {
 			{"metadata":{"namespace":"apps"},"involvedObject":{"kind":"Pod","name":"api-1a2b-x7k2p"},"type":"Warning","reason":"BackOff","count":3,"lastTimestamp":%[1]q},
 			{"metadata":{"namespace":"apps"},"involvedObject":{"kind":"Pod","name":"billing-9z8y-abcde"},"type":"Warning","reason":"BackOff","count":1,"lastTimestamp":%[1]q}]}`, last)
 	})
+	mux.HandleFunc("/api/prometheus/grafana/api/v1/alerts", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"alerts":[
+			{"labels":{"alertname":"HighLatency","service":"api"},"annotations":{"summary":"p99 above 2s, password=hunter2","__dashboardUid__":"abc"},"state":"Pending","activeAt":"2026-10-26T09:00:00Z","value":"2.4"},
+			{"labels":{"alertname":"ErrorRate","service":"api"},"annotations":{"summary":"5xx above 1%"},"state":"Alerting (Error)","activeAt":"2026-10-26T08:00:00Z","value":""},
+			{"labels":{"alertname":"Saturation","service":"api"},"state":"Normal"},
+			{"labels":{"alertname":"ErrorRate","service":"billing"},"state":"Alerting","activeAt":"2026-10-26T08:00:00Z"},
+			{"labels":{"alertname":"Heartbeat"},"state":"Alerting","activeAt":"2026-10-26T08:00:00Z"}]}}`)
+	})
 	return mux
 }
 
@@ -107,6 +115,7 @@ sources:
   tempo: { type: tempo, url: %[1]q }
   cf: { type: cloudflare, url: %[1]q, account_id: acc, auth: { type: bearer, token: t } }
   k8s: { type: kubernetes, url: %[1]q, auth: { type: bearer, token: k } }
+  grafana: { type: grafana, url: %[1]q, auth: { type: bearer, token: g } }
 services:
   api:
     environments:
@@ -116,6 +125,7 @@ services:
         metrics: { source: prom, selector: '{job="api"}' }
         traces: { source: tempo, service: api }
         workloads: { source: k8s, namespace: apps, labels: { app: api } }
+        alerts: { source: grafana, selector: '{service="api"}' }
     signals:
       rps: sum(rate(http_requests_total[5m]))
   billing:
@@ -147,6 +157,7 @@ services:
 				{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
 				{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
 				{Service: "api", Environment: "production", Capability: api.CapabilityWorkloads},
+				{Service: "api", Environment: "production", Capability: api.CapabilityAlerts},
 				{Service: "worker", Environment: "production", Capability: api.CapabilityLogs},
 			},
 		},
@@ -336,6 +347,37 @@ func TestOverviewReportsPartialFailures(t *testing.T) {
 	}
 	if o.Workloads == nil || o.Workloads.Items == nil || o.Workloads.Items.Pods != 1 || len(o.Workloads.Items.Problems) != 1 {
 		t.Errorf("workloads = %+v", o.Workloads)
+	}
+	if o.Alerts == nil || o.Alerts.Error != "" || len(o.Alerts.Items) != 2 {
+		t.Errorf("alerts = %+v", o.Alerts)
+	}
+}
+
+func TestAlertsAreScoped(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.Response[[]api.Alert]
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api/alerts", nil, &resp); status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	// Billing's alert, the alert without the service label and the normal alert are dropped;
+	// firing sorts before pending.
+	if len(resp.Data) != 2 {
+		t.Fatalf("alerts = %+v", resp.Data)
+	}
+	firing, pending := resp.Data[0], resp.Data[1]
+	if firing.Name != "ErrorRate" || firing.State != "firing" || firing.StateReason != "Error" || firing.Labels["service"] != "api" {
+		t.Errorf("firing = %+v", firing)
+	}
+	if pending.State != "pending" || pending.Value != "2.4" || pending.Annotations["summary"] != "p99 above 2s, password=[REDACTED]" {
+		t.Errorf("pending = %+v", pending)
+	}
+	if _, ok := pending.Annotations["__dashboardUid__"]; ok {
+		t.Errorf("internal annotation kept: %+v", pending.Annotations)
+	}
+
+	var errResp api.ErrorResponse
+	if status := env.call(t, "other-token", "GET", "/v1/services/api/alerts", nil, &errResp); status != http.StatusNotFound || errResp.Error.Code != api.CodeNotFound {
+		t.Errorf("ungranted alerts capability: %d %+v", status, errResp)
 	}
 }
 

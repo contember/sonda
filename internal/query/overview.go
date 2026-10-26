@@ -17,6 +17,7 @@ import (
 
 const (
 	overviewIssues       = 5
+	overviewAlerts       = 10
 	overviewSignalSeries = 5
 )
 
@@ -60,6 +61,13 @@ func (s *Service) Overview(ctx context.Context, identity *authz.Identity, servic
 			resp.Data.Workloads.Items, resp.Data.Workloads.Error = summary, partError(err)
 		})
 	}
+	if slices.Contains(env.Capabilities, api.CapabilityAlerts) {
+		resp.Data.Alerts = &api.OverviewPart[[]api.Alert]{}
+		wg.Go(func() {
+			alerts, err := s.Alerts(ctx, identity, service, env.Name)
+			resp.Data.Alerts.Items, resp.Data.Alerts.Error = alerts.Data[:min(len(alerts.Data), overviewAlerts)], partError(err)
+		})
+	}
 	if slices.Contains(env.Capabilities, api.CapabilityMetrics) {
 		names := make([]string, 0, len(svc.Signals))
 		for name := range svc.Signals {
@@ -76,7 +84,9 @@ func (s *Service) Overview(ctx context.Context, identity *authz.Identity, servic
 	wg.Wait()
 
 	resp.Meta = api.Meta{Service: service, Environment: env.Name, Range: &r}
-	resp.Meta.Untrusted = []string{"data.issues.items[].title", "data.issues.items[].culprit", "data.workloads.items.problems[]"}
+	resp.Meta.Untrusted = []string{"data.issues.items[].title", "data.issues.items[].culprit", "data.workloads.items.problems[]",
+		"data.alerts.items[].labels", "data.alerts.items[].annotations", "data.alerts.items[].value",
+	}
 	return resp, nil
 }
 

@@ -13,7 +13,7 @@ server:
 admin:
   token: "${SONDA_ADMIN_TOKEN}"
 
-# Optional. Used only to build Explore links in responses; Sonda never queries Grafana.
+# Optional. Used only to build Explore links in responses. A grafana source (below) is separate.
 grafana:
   url: https://grafana.example.com
 
@@ -69,6 +69,13 @@ sources:
   #   auth: { type: bearer, token: "${K8S_TOKEN}" }
   #   ca_file: /etc/sonda/k8s-prod-ca.crt
 
+  # Grafana serves the alerts of Grafana-managed alerting rules (the alerts capability). A
+  # prometheus source serves the alerts of its own rules. Use a Viewer service account token.
+  # grafana:
+  #   type: grafana
+  #   url: https://grafana.example.com
+  #   auth: { type: bearer, token: "${GRAFANA_TOKEN}" }
+
 services:
   engine-api:
     description: GraphQL API of the content engine
@@ -84,6 +91,8 @@ services:
         # traces: { source: tempo-prod, service: engine-api } # resource.service.name
         # Exact labels of the service's pods and ReplicaSets, in one namespace.
         # workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+        # The alerts whose labels match the selector, from a prometheus or grafana source.
+        # alerts: { source: grafana, selector: '{service="engine-api"}' }
     # Named PromQL expressions without service matchers; Sonda adds the selector.
     signals:
       rps: sum(rate(http_requests_total[5m]))
