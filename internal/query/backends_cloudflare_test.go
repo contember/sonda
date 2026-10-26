@@ -105,9 +105,9 @@ func TestCloudflareLogFieldsSorted(t *testing.T) {
 
 func TestCloudflareTraceSearchHonorsLimit(t *testing.T) {
 	_, traces, bodies := cloudflareBackends(t, `{"traces":[
-		{"traceId":"t1","service":["api-worker"],"traceStartMs":1},
-		{"traceId":"t2","service":["api-worker"],"traceStartMs":2},
-		{"traceId":"t3","service":["api-worker"],"traceStartMs":3}
+		{"traceId":"t1","services":["api-worker"],"traceStartMs":1},
+		{"traceId":"t2","services":["api-worker"],"traceStartMs":2},
+		{"traceId":"t3","services":["api-worker"],"traceStartMs":3}
 	]}`)
 	found, err := traces.search(context.Background(), cloudflareRange, policy.TraceFilter{}, 2)
 	if err != nil {
