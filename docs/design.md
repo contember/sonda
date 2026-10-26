@@ -922,12 +922,10 @@ Rules:
 - Source headers such as `X-Scope-OrgID` are sent as configured. Sonda does not check their
   values: a `|` in a tenant header can make a cross-tenant query where Loki or Tempo allows
   that, but headers are admin configuration, not agent input.
-- **Cloudflare token.** Cloudflare's documentation is unclear about the permission that
-  `/workers/observability/telemetry/query` needs: the API reference names "Workers
-  Observability Write", while the roles documentation says the read-only "Metadata
-  Read-Only" access grants observability. This must be verified against a
-  real account before production use; prefer the read-only permission if it works. GraphQL
-  Analytics needs "Account Analytics Read".
+- **Cloudflare token.** Use a token with only "Workers Observability Read" and "Account
+  Analytics Read" on the one account. The read permission is enough for
+  `/workers/observability/telemetry/query`, although the API reference names "Workers
+  Observability Write".
 - **Vercel token.** Create the token for the one team in `team_id`, with an expiry. Sonda sends
   only `POST /v1/observability/events`, a read; whether Vercel offers a read-only token scope is
   open (section 14). The token `vercel login` stores expires after hours and does not fit a
@@ -983,15 +981,16 @@ Rules:
    fallback, not the default direct connection.
 2. The log sample is the newest lines. For long ranges, a sample spread over the range would
    describe older patterns better, at the cost of more upstream requests.
-3. Which Cloudflare token permission does the Workers Observability query API need (section 12)?
-4. How does Cloudflare combine `needle` with `filters`? Sonda assumes AND. The scope is not
+3. How does Cloudflare combine `needle` with `filters`? Sonda assumes AND. The scope is not
    affected either way, because the script filter is in `filters` and the post-check verifies
    every event.
-5. Does the Cloudflare keys endpoint take the range as `from`/`to` or as `timeframe`? Sonda
+4. Does the Cloudflare keys endpoint take the range as `from`/`to` or as `timeframe`? Sonda
    sends `from`/`to`; a wrong guess affects only `logs fields`, not the scope.
-6. Can a Vercel access token be limited to reads? If not, the token can also change the team's
+5. Can a Vercel access token be limited to reads? If not, the token can also change the team's
    projects and deployments, and only Sonda's code keeps it read-only.
 
 Resolved: native queries use the same capability as the structured tools (section 1).
+The Workers Observability query API accepts a token with "Workers Observability Read"
+(section 12).
 `overview` ranks issues by event count in the range and marks issues first seen in the range
 with `new: true`.
