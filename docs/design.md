@@ -60,11 +60,12 @@ Identity ──< Grant (services × environments × capabilities)
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
   | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, optional `role_arn` + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
-  | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token, optional `ca_file`; without `url`, the pod's service account (in-cluster) |
+  | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster) |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
 
   Auth is `none`, `bearer` or `basic`. Extra headers carry e.g. `X-Scope-OrgID` for
-  multi-tenant Loki, Mimir or Tempo. AWS has no URL, auth or headers: credentials come from
+  multi-tenant Loki, Mimir or Tempo. `ca_file` (any source with a `url`) names PEM certificates
+  the server certificate must chain to, instead of the system roots. AWS has no URL, auth or headers: credentials come from
   the default credential chain (IRSA, environment, profile), or from assuming `role_arn`.
 - **Grafana** (optional): base URL and a datasource UID per source. Used only to build Explore
   links in responses. Sonda queries Grafana only through a `grafana` source, for alerts.

@@ -236,7 +236,6 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	v.onlyFor(path+".role_arn", raw.RoleARN != "", src.Type, SourceAWS)
 	v.onlyFor(path+".external_id", raw.ExternalID != "", src.Type, SourceAWS)
 	v.onlyFor(path+".max_scan_bytes", raw.MaxScanBytes != "", src.Type, SourceAWS)
-	v.onlyFor(path+".ca_file", raw.CAFile != "", src.Type, SourceKubernetes)
 	switch src.Type {
 	case SourceSentry:
 		if src.URL == "" {
@@ -267,13 +266,13 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		if raw.Auth.Type != string(AuthBearer) {
 			v.fail("%s.auth must be bearer for kubernetes sources with a url", path)
 		}
-		if raw.CAFile != "" {
-			src.RootCAs = v.caFile(path+".ca_file", raw.CAFile)
-		}
 	default:
 		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes or grafana, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
+	if raw.CAFile != "" {
+		src.RootCAs = v.caFile(path+".ca_file", raw.CAFile)
+	}
 	src.Auth = v.auth(path+".auth", raw.Auth)
 	for header, value := range raw.Headers {
 		src.Headers[header] = v.expand(path+".headers."+header, value)
@@ -334,6 +333,9 @@ func (v *validator) awsSource(path string, raw rawSource) *AWSSource {
 	}
 	if len(raw.Headers) > 0 {
 		v.fail("%s.headers is not allowed for aws sources", path)
+	}
+	if raw.CAFile != "" {
+		v.fail("%s.ca_file is not allowed for aws sources", path)
 	}
 	if raw.Region == "" {
 		v.fail("%s.region is required for aws sources", path)

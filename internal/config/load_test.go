@@ -374,6 +374,28 @@ func TestParseKubernetes(t *testing.T) {
 	}
 }
 
+func TestParseCAFileOnHTTPSource(t *testing.T) {
+	input := fmt.Sprintf(`
+sources:
+  tempo:
+    type: tempo
+    url: https://tempo.example
+    ca_file: %s
+services:
+  api:
+    environments:
+      production:
+        traces: { source: tempo, service: api }
+`, writeCA(t))
+	cfg, err := Parse([]byte(input), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sources["tempo"].RootCAs == nil {
+		t.Error("tempo source has no RootCAs")
+	}
+}
+
 func TestParseKubernetesErrors(t *testing.T) {
 	ca := writeCA(t)
 	notPEM := filepath.Join(t.TempDir(), "ca.crt")
@@ -396,7 +418,7 @@ func TestParseKubernetesErrors(t *testing.T) {
 			map[string]string{"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"},
 			"serviceaccount/ca.crt",
 		},
-		{"ca file on another source", [2]string{"type: kubernetes", "type: tempo"}, nil, "ca_file is allowed only for kubernetes sources"},
+		{"ca file on an aws source", [2]string{"type: kubernetes", "type: aws\n    region: eu-west-1"}, nil, "sources.k8s.ca_file is not allowed for aws sources"},
 		{"invalid namespace", [2]string{"namespace: engine", "namespace: Engine_Prod"}, nil, `namespace "Engine_Prod" must be a Kubernetes namespace name`},
 		{"no labels", [2]string{"labels: { app.kubernetes.io/name: engine-api }", "labels: {}"}, nil, "labels must have at least one label"},
 		{"empty label value", [2]string{"engine-api }", `"" }`}, nil, `must be a non-empty label value`},

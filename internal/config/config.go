@@ -63,7 +63,7 @@ type Source struct {
 	CloudflareAccountID string
 	// AWS is set for AWS sources only.
 	AWS *AWSSource
-	// RootCAs verifies the server certificate instead of the system roots; Kubernetes only.
+	// RootCAs verifies the server certificate instead of the system roots when set.
 	RootCAs *x509.CertPool
 }
 
