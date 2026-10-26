@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -34,15 +35,23 @@ func HTTPClient(src *config.Source) *http.Client {
 			TLSClientConfig:       &tls.Config{RootCAs: src.RootCAs, MinVersion: tls.VersionTLS12},
 		}
 	}
-	return &http.Client{Transport: &authTransport{source: src, base: base}}
+	// The config validates the URL; an unparsable one leaves origin nil and sends no credentials.
+	origin, _ := url.Parse(src.URL)
+	return &http.Client{Transport: &authTransport{source: src, origin: origin, base: base}}
 }
 
 type authTransport struct {
 	source *config.Source
+	origin *url.URL
 	base   http.RoundTripper
 }
 
 func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Redirects pass through the transport too; credentials and headers go only to the
+	// source's own origin, never to a host a response redirected to.
+	if t.origin == nil || req.URL.Scheme != t.origin.Scheme || req.URL.Host != t.origin.Host {
+		return t.base.RoundTrip(req)
+	}
 	req = req.Clone(req.Context())
 	for name, value := range t.source.Headers {
 		req.Header.Set(name, value)
