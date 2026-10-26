@@ -29,6 +29,7 @@ import (
 type rawConfig struct {
 	Server   rawServer             `yaml:"server"`
 	Admin    *rawAdmin             `yaml:"admin"`
+	Identity *rawIdentity          `yaml:"identity"`
 	Grafana  *rawGrafana           `yaml:"grafana"`
 	Sources  map[string]rawSource  `yaml:"sources"`
 	Services map[string]rawService `yaml:"services"`
@@ -45,6 +46,10 @@ type rawAdmin struct {
 	Token string `yaml:"token"`
 }
 
+type rawIdentity struct {
+	Issuer string `yaml:"issuer"`
+}
+
 type rawGrafana struct {
 	URL string `yaml:"url"`
 }
@@ -58,6 +63,7 @@ type rawSource struct {
 	GrafanaDatasourceUID string            `yaml:"grafana_datasource_uid"`
 	AccountID            string            `yaml:"account_id"`
 	Region               string            `yaml:"region"`
+	Credentials          string            `yaml:"credentials"`
 	RoleARN              string            `yaml:"role_arn"`
 	ExternalID           string            `yaml:"external_id"`
 	MaxScanBytes         string            `yaml:"max_scan_bytes"`
@@ -65,10 +71,12 @@ type rawSource struct {
 }
 
 type rawAuth struct {
-	Type     string `yaml:"type"`
-	Token    string `yaml:"token"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Type      string `yaml:"type"`
+	Token     string `yaml:"token"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+	Cluster   string `yaml:"cluster"`
+	AWSSource string `yaml:"aws_source"`
 }
 
 type rawService struct {
@@ -146,7 +154,8 @@ func LoadFile(path string) (*Config, error) {
 }
 
 // Parse validates the YAML configuration. lookupEnv resolves ${NAME} references, which are
-// allowed only in source URLs, credentials, account IDs, role ARNs, headers and the admin token.
+// allowed only in source URLs, credentials, account IDs, role ARNs, headers, the admin token
+// and the identity issuer.
 func Parse(data []byte, lookupEnv func(string) (string, bool)) (*Config, error) {
 	var raw rawConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -184,6 +193,9 @@ func (v *validator) config(raw rawConfig) *Config {
 	if raw.Admin != nil {
 		cfg.Admin = v.admin(*raw.Admin)
 	}
+	if raw.Identity != nil {
+		cfg.Identity = v.identity(*raw.Identity)
+	}
 	if raw.Grafana != nil {
 		v.url("grafana.url", raw.Grafana.URL)
 		cfg.Grafana = &Grafana{URL: raw.Grafana.URL}
@@ -195,6 +207,9 @@ func (v *validator) config(raw rawConfig) *Config {
 	}
 	for name, rs := range raw.Sources {
 		cfg.Sources[name] = v.source(name, rs)
+	}
+	for name, rs := range raw.Sources {
+		v.sourceReferences(name, rs, cfg)
 	}
 	for name, rs := range raw.Services {
 		cfg.Services[name] = v.service(name, rs, cfg.Sources)
@@ -212,6 +227,34 @@ func (v *validator) admin(raw rawAdmin) *Admin {
 		v.fail("admin.token must have at least %d characters (generate one with `openssl rand -hex 32`)", minAdminTokenLength)
 	}
 	return &Admin{Token: token}
+}
+
+func (v *validator) identity(raw rawIdentity) *Identity {
+	issuer := strings.TrimSuffix(v.expand("identity.issuer", raw.Issuer), "/")
+	u, err := url.Parse(issuer)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		v.fail("identity.issuer must be an https URL without credentials, query or fragment, got %q", raw.Issuer)
+	}
+	return &Identity{Issuer: issuer}
+}
+
+// sourceReferences checks what a source needs from the rest of the configuration, once all
+// sources exist.
+func (v *validator) sourceReferences(name string, raw rawSource, cfg *Config) {
+	path := "sources." + name
+	src := cfg.Sources[name]
+	if src.AWS != nil && src.AWS.Credentials == AWSIdentity && cfg.Identity == nil {
+		v.fail("%s.credentials: identity requires the identity section", path)
+	}
+	if src.Auth.Type != AuthEKS {
+		return
+	}
+	aws, ok := cfg.Sources[raw.Auth.AWSSource]
+	if !ok || aws.Type != SourceAWS {
+		v.fail("%s.auth.aws_source: %q is not an aws source", path, raw.Auth.AWSSource)
+		return
+	}
+	src.Auth.EKS.AWS = aws
 }
 
 const (
@@ -233,6 +276,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	v.onlyFor(path+".org", raw.Org != "", src.Type, SourceSentry)
 	v.onlyFor(path+".account_id", raw.AccountID != "", src.Type, SourceCloudflare)
 	v.onlyFor(path+".region", raw.Region != "", src.Type, SourceAWS)
+	v.onlyFor(path+".credentials", raw.Credentials != "", src.Type, SourceAWS)
 	v.onlyFor(path+".role_arn", raw.RoleARN != "", src.Type, SourceAWS)
 	v.onlyFor(path+".external_id", raw.ExternalID != "", src.Type, SourceAWS)
 	v.onlyFor(path+".max_scan_bytes", raw.MaxScanBytes != "", src.Type, SourceAWS)
@@ -263,8 +307,8 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		if src.URL == "" {
 			return v.inClusterSource(path, src, raw)
 		}
-		if raw.Auth.Type != string(AuthBearer) {
-			v.fail("%s.auth must be bearer for kubernetes sources with a url", path)
+		if raw.Auth.Type != string(AuthBearer) && raw.Auth.Type != string(AuthEKS) {
+			v.fail("%s.auth must be bearer or eks for kubernetes sources with a url", path)
 		}
 	default:
 		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes or grafana, got %q", path, raw.Type)
@@ -342,12 +386,25 @@ func (v *validator) awsSource(path string, raw rawSource) *AWSSource {
 	}
 	aws := &AWSSource{
 		Region:       raw.Region,
+		Credentials:  AWSCredentials(valueOr(raw.Credentials, string(AWSDefaultChain))),
 		RoleARN:      v.expand(path+".role_arn", raw.RoleARN),
 		ExternalID:   v.expand(path+".external_id", raw.ExternalID),
 		MaxScanBytes: defaultMaxScanBytes,
 	}
-	if raw.ExternalID != "" && raw.RoleARN == "" {
-		v.fail("%s.external_id is allowed only with role_arn", path)
+	switch aws.Credentials {
+	case AWSDefaultChain:
+		if raw.ExternalID != "" && raw.RoleARN == "" {
+			v.fail("%s.external_id is allowed only with role_arn", path)
+		}
+	case AWSIdentity:
+		if raw.RoleARN == "" {
+			v.fail("%s.role_arn is required with credentials: identity", path)
+		}
+		if raw.ExternalID != "" {
+			v.fail("%s.external_id is not allowed with credentials: identity", path)
+		}
+	default:
+		v.fail("%s.credentials must be default or identity, got %q", path, raw.Credentials)
 	}
 	if raw.MaxScanBytes != "" {
 		aws.MaxScanBytes = v.byteSize(path+".max_scan_bytes", raw.MaxScanBytes)
@@ -369,6 +426,9 @@ func (v *validator) auth(path string, raw rawAuth) Auth {
 		Username: v.expand(path+".username", raw.Username),
 		Password: v.expand(path+".password", raw.Password),
 	}
+	if auth.Type != AuthEKS && (raw.Cluster != "" || raw.AWSSource != "") {
+		v.fail("%s: cluster and aws_source are allowed only for eks auth", path)
+	}
 	switch auth.Type {
 	case AuthNone:
 		if auth.Token != "" || auth.Username != "" || auth.Password != "" {
@@ -382,8 +442,17 @@ func (v *validator) auth(path string, raw rawAuth) Auth {
 		if auth.Username == "" || auth.Password == "" {
 			v.fail("%s: username and password are required for basic auth", path)
 		}
+	case AuthEKS:
+		if auth.Token != "" || auth.Username != "" || auth.Password != "" {
+			v.fail("%s: eks auth takes no token, username or password", path)
+		}
+		if !eksClusterName.MatchString(raw.Cluster) {
+			v.fail("%s.cluster must be an EKS cluster name, got %q", path, raw.Cluster)
+		}
+		// sourceReferences resolves the aws source once all sources exist.
+		auth.EKS = &EKSAuth{Cluster: raw.Cluster}
 	default:
-		v.fail("%s.type must be none, bearer or basic, got %q", path, raw.Type)
+		v.fail("%s.type must be none, bearer, basic or eks, got %q", path, raw.Type)
 	}
 	return auth
 }
@@ -876,6 +945,8 @@ func (v *validator) url(path, raw string) {
 		v.fail("%s: invalid URL %q", path, raw)
 	}
 }
+
+var eksClusterName = regexp.MustCompile(`^[0-9A-Za-z][A-Za-z0-9_-]{0,99}$`)
 
 var envReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 

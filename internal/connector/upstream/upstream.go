@@ -21,7 +21,13 @@ import (
 
 const maxBodyBytes = 32 << 20
 
-func HTTPClient(src *config.Source) *http.Client {
+// TokenSource returns the bearer token of a source whose token changes, such as an EKS token.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+}
+
+// HTTPClient applies the source's auth and headers. tokens is required for eks auth only.
+func HTTPClient(src *config.Source, tokens TokenSource) *http.Client {
 	base := http.DefaultTransport
 	if src.RootCAs != nil {
 		// The settings of http.DefaultTransport, with the source's roots.
@@ -37,11 +43,12 @@ func HTTPClient(src *config.Source) *http.Client {
 	}
 	// The config validates the URL; an unparsable one leaves origin nil and sends no credentials.
 	origin, _ := url.Parse(src.URL)
-	return &http.Client{Transport: &authTransport{source: src, origin: origin, base: base}}
+	return &http.Client{Transport: &authTransport{source: src, tokens: tokens, origin: origin, base: base}}
 }
 
 type authTransport struct {
 	source *config.Source
+	tokens TokenSource
 	origin *url.URL
 	base   http.RoundTripper
 }
@@ -69,9 +76,27 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	case config.AuthBasic:
 		req.SetBasicAuth(t.source.Auth.Username, t.source.Auth.Password)
+	case config.AuthEKS:
+		if t.tokens == nil {
+			return nil, &credentialsError{errors.New("no token source for eks auth")}
+		}
+		token, err := t.tokens.Token(req.Context())
+		if err != nil {
+			return nil, &credentialsError{err}
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return t.base.RoundTrip(req)
 }
+
+// credentialsError is a failure to obtain a source's credentials. Its cause can name principals
+// or echo credentials, so Wrap keeps it out of client-visible errors.
+type credentialsError struct {
+	err error
+}
+
+func (e *credentialsError) Error() string { return "get credentials: " + e.err.Error() }
+func (e *credentialsError) Unwrap() error { return e.err }
 
 // StatusError is returned for non-2xx responses, so callers can react to 404.
 type StatusError struct {
@@ -122,6 +147,11 @@ func Wrap(source string, err error) error {
 	}
 	if _, ok := apierr.As(err); ok {
 		return err
+	}
+	// A plain error, which the HTTP layer logs and reports as internal.
+	var ce *credentialsError
+	if errors.As(err, &ce) {
+		return fmt.Errorf("source %s: %w", source, ce)
 	}
 	var se *StatusError
 	if errors.As(err, &se) {

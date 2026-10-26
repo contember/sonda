@@ -101,8 +101,8 @@ parts that matter for security:
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
-  chain. Use read-only tokens and roles; the Security section of `docs/design.md` lists the
-  Cloudflare permission and the AWS IAM actions.
+  chain or Sonda's own identity (below). Use read-only tokens and roles; the Security section of
+  `docs/design.md` lists the Cloudflare permission and the AWS IAM actions.
 - **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
   `/admin` only on a trusted network.
 
@@ -161,6 +161,38 @@ services:
 
 A signal is PromQL for Prometheus and a mapping for Cloudflare or CloudWatch. All metrics
 environments of a service with signals must use the same source type.
+
+### AWS without access keys, and backends in a private EKS cluster
+
+Sonda can be an OIDC issuer of its own identity, so AWS trusts it wherever it runs, without a
+long-lived access key and without the hosting platform's workload identity. The same AWS
+credentials sign EKS tokens, which reach a Loki, Prometheus or Tempo inside a cluster through
+the API server's service proxy; nothing new runs in the private network.
+
+```yaml
+identity:
+  issuer: https://sonda.example.com     # Sonda's public URL; serves /.well-known/openid-configuration
+
+sources:
+  aws-prod:
+    type: aws
+    region: eu-west-1
+    credentials: identity               # AssumeRoleWithWebIdentity with Sonda's own token
+    role_arn: arn:aws:iam::123456789012:role/sonda
+  loki-prod:
+    type: loki
+    url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com/api/v1/namespaces/logging/services/http:loki:3100/proxy
+    ca_file: /etc/sonda/eks-prod-ca.crt # certificateAuthority.data of the cluster, decoded
+    auth: { type: eks, cluster: prod, aws_source: aws-prod }
+```
+
+- In AWS: an IAM OIDC identity provider for the issuer URL with audience `sts.amazonaws.com`, and
+  a role that trusts it with conditions on `aud` (`sts.amazonaws.com`) and `sub` (`sonda`).
+- In the cluster: an access entry for the role in a Kubernetes group, and a Role in the
+  backend's namespace with `get` on `services/proxy` for `resourceNames: ["http:loki:3100"]`
+  (`get` and `create` for Prometheus).
+- The signing key lives in Sonda's database and the issuer URL is the trust anchor; see
+  Security in `docs/design.md`.
 
 ## Admin UI
 

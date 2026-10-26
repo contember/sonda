@@ -30,6 +30,8 @@ returns compact, evidence-carrying responses.
 | Identity store | `identities.Store` interface, implemented by `store` for SQLite and Postgres | SQLite only | Another database can be added without touching `authz` or the UI. |
 | Admin UI | Server-rendered `html/template` + htmx, embedded in `sonda-server` | React SPA | No JS toolchain, one binary. The UI is a few forms and tables. |
 | Provider secrets | Environment variable references in YAML; the AWS default credential chain | Encrypted in the database | No key management in v1. |
+| Cloud credentials | Sonda is an OIDC issuer of its own identity (`identity.issuer`); an aws source with `credentials: identity` assumes its role with `AssumeRoleWithWebIdentity` | The workload identity of the hosting platform (IRSA, a platform OIDC token); a long-lived IAM access key | Works on any platform, needs no secret at deploy time, and AWS issues only short-lived sessions. The signing key and the issuer URL become the trust anchor (section 12). |
+| Backends in a private network | Loki, Prometheus or Tempo in a Kubernetes cluster through the API server's service proxy, with `auth: eks` | A VPN or a relay inside the network | Nothing new runs in the private network; access is an IAM role, an EKS access entry and a Role on `services/proxy`. |
 | Internal storage | SQLite (`modernc.org/sqlite`, pure Go) by default; Postgres (`pgx`) when `server.database` is a `postgres://` URL | SQLite only | SQLite needs no extra service. Postgres suits deployments without a persistent volume. Both hold identities, the audit log and result handles in the same tables and run the same queries; only the schema types and the unique-violation check differ. Metadata caches live in memory. |
 | Loki/Prometheus/Tempo access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `detected_fields`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
 | Range limit | Reject ranges over `max_range` with `limit_exceeded` | Silently shorten the range | A shortened range would make counts look complete when they are not. |
@@ -58,15 +60,21 @@ Identity ──< Grant (services × environments × capabilities)
   | `loki` | Loki | logs | `url`, auth, headers |
   | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics, alerts | `url`, auth, headers |
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
-  | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, optional `role_arn` + `external_id`, `max_scan_bytes` (default 10 GB) |
+  | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster) |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
 
-  Auth is `none`, `bearer` or `basic`. Extra headers carry e.g. `X-Scope-OrgID` for
+  Auth is `none`, `bearer`, `basic` or `eks` (`cluster` and `aws_source`: an EKS token signed
+  with the credentials of that aws source). Extra headers carry e.g. `X-Scope-OrgID` for
   multi-tenant Loki, Mimir or Tempo. `ca_file` (any source with a `url`) names PEM certificates
-  the server certificate must chain to, instead of the system roots. AWS has no URL, auth or headers: credentials come from
-  the default credential chain (IRSA, environment, profile), or from assuming `role_arn`.
+  the server certificate must chain to, instead of the system roots. AWS has no URL, auth or
+  headers: with `credentials: default`, credentials come from the default credential chain
+  (IRSA, environment, profile), or from assuming `role_arn` with it; with
+  `credentials: identity`, Sonda assumes `role_arn` with a token of its own identity.
+- **Sonda's identity** (optional `identity` section): `issuer`, the public https URL of this
+  Sonda. Sonda then serves an OIDC discovery document and signs tokens of its own workload
+  identity (section 4).
 - **Grafana** (optional): base URL and a datasource UID per source. Used only to build Explore
   links in responses. Sonda queries Grafana only through a `grafana` source, for alerts.
 - **Service**: a logical application. Has a description, an optional repository, environments and
@@ -211,8 +219,10 @@ internal/logql     LogQL lexer that finds and rewrites stream selectors
 internal/traceql   TraceQL lexer that finds and rewrites spanset filters
 internal/insights  Logs Insights lexer that splits a query into stages
 internal/telemetry backend-neutral records: log streams, spans, trace summaries, structured metric queries
+internal/issuer    OIDC issuer of Sonda's own identity: signing keys, discovery, JWKS, tokens
 internal/connector
   upstream/        HTTP client per source: auth, headers, error mapping
+  awsauth/         AWS configuration per aws source (default chain or Sonda's identity), EKS tokens
   sentry/          Sentry REST client: issues, events, releases, spans
   loki/            Loki HTTP API client
   prometheus/      Prometheus HTTP API client (prometheus/client_golang)
@@ -224,7 +234,7 @@ internal/connector
 internal/query     use cases: overview, errors, logs, metrics, traces, workloads, alerts, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
-internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles
+internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles, signing keys
 internal/httpapi   routing, authentication, rate and concurrency limits, audit, JSON encoding
 internal/admin     admin UI: sign-in, identity management, audit log viewer
 ```
@@ -314,8 +324,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - Lookups by ID are fetched unscoped and checked before anything is returned: a Sentry issue
   must be of the scope's project, a trace must contain a span of the service (section 8).
 - One shared HTTP client per source (`upstream`) applies auth and extra headers, for Cloudflare
-  too. Connectors do not know how a source authenticates. The AWS connector uses the SDK with
-  the default credential chain.
+  too, and only to requests to the source's own origin, so a redirect never carries them to
+  another host. Connectors do not know how a source authenticates. The AWS connector uses the
+  SDK with the configuration from `awsauth`, one per aws source, which EKS tokens share.
 - A new backend adds a client, a `policy` scoping function and backend implementations in
   `query`. No generic plugin system.
 
@@ -367,6 +378,32 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   mounted `ca.crt` and reads the mounted service account token on every request, because the
   kubelet rotates it. With `url`, a bearer token is required (a service account token secret
   works for EKS) and `ca_file` names the cluster CA.
+
+### Sonda's identity and EKS
+
+- With `identity.issuer`, Sonda serves `<issuer>/.well-known/openid-configuration` and
+  `<issuer>/.well-known/jwks.json`. A relying party fetches both from the issuer URL, so it
+  must be Sonda's public https address.
+- Tokens are RS256 JWTs with `iss` the issuer, `sub` `sonda`, `aud` the relying party
+  (`sts.amazonaws.com` for AWS) and a lifetime of 5 minutes. They never leave Sonda except to
+  the relying party.
+- The signing key is a 2048-bit RSA key in the `signing_keys` table, created on the first
+  start; its ID is the RFC 7638 thumbprint. Sonda signs with the newest key and the JWKS lists
+  all keys, so replicas that started with different keys still verify. Rotation is not
+  automated in v1.
+- In AWS: an IAM OIDC identity provider for the issuer URL with audience `sts.amazonaws.com`,
+  and a role whose trust policy allows `sts:AssumeRoleWithWebIdentity` for that provider with
+  conditions on `<issuer host and path>:aud` = `sts.amazonaws.com` and `:sub` = `sonda`. Each
+  AWS account can trust the issuer directly, so no role chaining is needed.
+- `auth: eks` sends `k8s-aws-v1.` + a presigned STS `GetCallerIdentity` URL with the signed
+  header `x-k8s-aws-id: <cluster>`, as `aws eks get-token` does. EKS accepts it for 15 minutes
+  after signing; Sonda reuses it for 10.
+- A Loki, Prometheus or Tempo inside the cluster is reached through the API server's service
+  proxy: `url` is `https://<endpoint>/api/v1/namespaces/<ns>/services/<scheme>:<service>:<port>/proxy`
+  and `ca_file` is the cluster CA. The cluster needs an access entry for the role, mapped to a
+  Kubernetes group, and a Role that allows `get` on `services/proxy` with `resourceNames` set to
+  `<scheme>:<service>:<port>` (Prometheus also needs `create`: its client POSTs queries). The
+  same role and `auth: eks` serve a `kubernetes` source.
 
 ### Alerts specifics
 
@@ -857,11 +894,21 @@ Rules:
   organization, so the credential reads alerts of all services; Sonda's selector filter is the
   only scope. For Grafana, use a service account with the Viewer role in the organization that
   holds the rules.
+- **Sonda's identity.** The signing key in the database is a credential: whoever reads it can
+  assume every role that trusts the issuer, from anywhere. Whoever controls what the issuer URL
+  serves (DNS, TLS certificate, a proxy in front of Sonda) can publish their own key and do the
+  same. Trust policies must check both `aud` and `sub`. Redirects never carry a source's
+  credentials to another host.
+- **EKS access.** Map the role to a Kubernetes group without an EKS access policy, and allow
+  only `services/proxy` with exact `resourceNames`. The proxy forwards every path and method the
+  Role allows, so the backend's own write endpoints are reachable with `create`; Sonda sends
+  only read calls.
 - **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
   `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
   `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus
   `kms:Decrypt` on the keys of encrypted log groups. `sts:GetCallerIdentity` needs no
-  permission. With `role_arn`, the base credentials need `sts:AssumeRole` on that role.
+  permission. With `role_arn` and `credentials: default`, the base credentials need
+  `sts:AssumeRole` on that role.
   Restrict `logs:StartQuery` to the ARNs of the configured log groups. Then even a query that
   passed the command allowlist could not read other groups, independently of the
   `ListLogGroupsForQuery` post-check (section 6).
@@ -881,6 +928,7 @@ Rules:
 - Multi-workspace, SSO/OIDC for the admin UI, a token management API.
 - Editing sources and services at runtime.
 - Identity stores other than SQLite and Postgres (the `identities.Store` interface allows adding them).
+- Automated rotation of the signing key of Sonda's identity.
 
 ## 14. Open questions
 

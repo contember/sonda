@@ -13,6 +13,7 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/telemetry"
@@ -27,11 +28,8 @@ func testClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	client, err := New(&config.Source{Name: "tempo", Type: config.SourceTempo, URL: server.URL, Headers: map[string]string{"X-Scope-OrgID": "team"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client
+	src := &config.Source{Name: "tempo", Type: config.SourceTempo, URL: server.URL, Headers: map[string]string{"X-Scope-OrgID": "team"}}
+	return New(src, upstream.HTTPClient(src, nil))
 }
 
 const searchBody = `{"traces":[

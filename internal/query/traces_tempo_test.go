@@ -16,6 +16,7 @@ import (
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/tempo"
+	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/policy"
 )
@@ -51,10 +52,7 @@ services:
 		t.Fatal(err)
 	}
 	tempoScope, _ := scope.Tempo()
-	client, err := tempo.New(cfg.Sources["tempo"])
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := tempo.New(cfg.Sources["tempo"], upstream.HTTPClient(cfg.Sources["tempo"], nil))
 	return newTempoTraces(tempoScope, client, cfg.Grafana), &queries
 }
 

@@ -410,7 +410,7 @@ func TestParseKubernetesErrors(t *testing.T) {
 	}{
 		{"missing ca file", [2]string{ca, "/nonexistent/ca.crt"}, nil, "sources.k8s.ca_file: open /nonexistent/ca.crt"},
 		{"ca file without certificate", [2]string{ca, notPEM}, nil, "contains no PEM certificate"},
-		{"basic auth", [2]string{`{ type: bearer, token: "${K8S_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, nil, "auth must be bearer for kubernetes sources with a url"},
+		{"basic auth", [2]string{`{ type: bearer, token: "${K8S_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, nil, "auth must be bearer or eks for kubernetes sources with a url"},
 		{"in cluster outside a pod", [2]string{"    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca + "\n", ""}, nil, "url is required outside a Kubernetes pod"},
 		{"in cluster with auth", [2]string{"    url: https://k8s.example:6443\n", ""}, nil, "auth and ca_file require a url"},
 		{
@@ -435,6 +435,76 @@ func TestParseKubernetesErrors(t *testing.T) {
 			vars := map[string]string{"K8S_TOKEN": "k8s-secret"}
 			maps.Copy(vars, tt.env)
 			_, err := Parse([]byte(strings.Replace(base, tt.replace[0], tt.replace[1], 1)), env(vars))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const identityConfig = `
+identity:
+  issuer: https://sonda.example.com/
+sources:
+  aws:
+    type: aws
+    region: eu-west-1
+    credentials: identity
+    role_arn: arn:aws:iam::1:role/sonda
+  loki:
+    type: loki
+    url: https://eks.example/api/v1/namespaces/logging/services/http:loki:3100/proxy
+    auth: { type: eks, cluster: prod, aws_source: aws }
+services:
+  api:
+    environments:
+      production:
+        logs: { source: loki, selector: '{app="api"}' }
+`
+
+func TestParseIdentityAndEKS(t *testing.T) {
+	cfg, err := Parse([]byte(identityConfig), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Identity == nil || cfg.Identity.Issuer != "https://sonda.example.com" {
+		t.Errorf("identity = %+v", cfg.Identity)
+	}
+	if aws := cfg.Sources["aws"].AWS; aws.Credentials != AWSIdentity || aws.RoleARN != "arn:aws:iam::1:role/sonda" {
+		t.Errorf("aws source = %+v", aws)
+	}
+	auth := cfg.Sources["loki"].Auth
+	if auth.Type != AuthEKS || auth.EKS == nil || auth.EKS.Cluster != "prod" || auth.EKS.AWS != cfg.Sources["aws"] {
+		t.Errorf("loki auth = %+v", auth)
+	}
+}
+
+func TestParseIdentityAndEKSErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"http issuer", [2]string{"https://sonda.example.com/", "http://sonda.example.com"}, "identity.issuer must be an https URL"},
+		{"issuer with query", [2]string{"https://sonda.example.com/", "https://sonda.example.com/?a=b"}, "identity.issuer must be an https URL"},
+		{"identity credentials without identity", [2]string{"identity:\n  issuer: https://sonda.example.com/\n", ""}, "sources.aws.credentials: identity requires the identity section"},
+		{"identity credentials without role", [2]string{"    role_arn: arn:aws:iam::1:role/sonda\n", ""}, "sources.aws.role_arn is required with credentials: identity"},
+		{"identity credentials with external id", [2]string{"    role_arn:", "    external_id: x\n    role_arn:"}, "external_id is not allowed with credentials: identity"},
+		{"unknown credentials", [2]string{"credentials: identity", "credentials: static"}, "credentials must be default or identity"},
+		{"credentials on loki", [2]string{"type: loki\n", "type: loki\n    credentials: identity\n"}, "sources.loki.credentials is allowed only for aws sources"},
+		{"eks with token", [2]string{"type: eks,", "type: eks, token: t,"}, "eks auth takes no token"},
+		{"eks without cluster", [2]string{"cluster: prod, ", ""}, "sources.loki.auth.cluster must be an EKS cluster name"},
+		{"eks with invalid cluster", [2]string{"cluster: prod", "cluster: prod/x"}, "must be an EKS cluster name"},
+		{"eks without aws source", [2]string{", aws_source: aws", ""}, `sources.loki.auth.aws_source: "" is not an aws source`},
+		{"eks with another source type", [2]string{"aws_source: aws", "aws_source: loki"}, `"loki" is not an aws source`},
+		{"cluster on bearer auth", [2]string{"type: eks, cluster: prod, aws_source: aws", "type: bearer, token: t, cluster: prod"}, "cluster and aws_source are allowed only for eks auth"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(identityConfig, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			_, err := Parse([]byte(strings.Replace(identityConfig, tt.replace[0], tt.replace[1], 1)), env(nil))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

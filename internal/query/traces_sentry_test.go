@@ -15,6 +15,7 @@ import (
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/sentry"
+	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/policy"
 )
@@ -55,7 +56,7 @@ services:
 		t.Fatal(err)
 	}
 	sentryScope, _ := scope.Sentry()
-	return newSentryTraces(sentryScope, sentry.New(cfg.Sources["sentry"])), &requests
+	return newSentryTraces(sentryScope, sentry.New(cfg.Sources["sentry"], upstream.HTTPClient(cfg.Sources["sentry"], nil))), &requests
 }
 
 func spanRowJSON(trace, id, parent, project, env, transaction string) string {

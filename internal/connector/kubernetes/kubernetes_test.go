@@ -16,6 +16,7 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/identities"
 )
 
@@ -76,7 +77,7 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg.Sources["k8s"]), scope
+	return New(cfg.Sources["k8s"], upstream.HTTPClient(cfg.Sources["k8s"], nil)), scope
 }
 
 const scopedMeta = `"namespace":"engine","labels":{"app":"engine-api","tier":"web","pod-template-hash":"7d9f"}`
@@ -187,7 +188,7 @@ func TestTokenFileIsReadPerRequest(t *testing.T) {
 	t.Cleanup(server.Close)
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	src := &config.Source{Name: "k8s", Type: config.SourceKubernetes, URL: server.URL, Auth: config.Auth{Type: config.AuthBearer, TokenFile: tokenFile}}
-	client := New(src)
+	client := New(src, upstream.HTTPClient(src, nil))
 	_, scope := setup(t, &fakeAPI{})
 	for _, token := range []string{"first", "rotated"} {
 		if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0o600); err != nil {

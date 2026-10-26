@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -31,8 +32,8 @@ type Client struct {
 	metadataAt time.Time
 }
 
-func New(src *config.Source) (*Client, error) {
-	c, err := promapi.NewClient(promapi.Config{Address: src.URL, Client: upstream.HTTPClient(src)})
+func New(src *config.Source, client *http.Client) (*Client, error) {
+	c, err := promapi.NewClient(promapi.Config{Address: src.URL, Client: client})
 	if err != nil {
 		return nil, fmt.Errorf("prometheus source %s: %w", src.Name, err)
 	}

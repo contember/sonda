@@ -19,6 +19,7 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/telemetry"
@@ -72,11 +73,8 @@ services:
 		t.Fatal(err)
 	}
 	scope, _ := logScope.Cloudflare()
-	client, err := New(cfg.Sources["cf"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client, scope
+	src := cfg.Sources["cf"]
+	return New(src, upstream.HTTPClient(src, nil)), scope
 }
 
 func success(result string) string {
@@ -622,11 +620,8 @@ services:
 		t.Fatal(err)
 	}
 	scope, _ := metricScope.Cloudflare()
-	client, err := New(cfg.Sources["cf"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client, scope
+	src := cfg.Sources["cf"]
+	return New(src, upstream.HTTPClient(src, nil)), scope
 }
 
 func TestResourceMetric(t *testing.T) {

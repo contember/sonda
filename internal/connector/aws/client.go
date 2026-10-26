@@ -11,8 +11,6 @@ import (
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -21,8 +19,6 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
 )
-
-const roleSessionName = "sonda"
 
 // logsAPI is the part of the CloudWatch Logs client the connector uses.
 type logsAPI interface {
@@ -57,17 +53,9 @@ type Client struct {
 	maxPoll   time.Duration
 }
 
-// New loads the AWS configuration once. Credentials are resolved on the first request, so New
-// does not call AWS.
-func New(src *config.Source) (*Client, error) {
-	if src.AWS == nil {
-		return nil, fmt.Errorf("source %s has no AWS settings", src.Name)
-	}
-	cfg, err := loadConfig(context.Background(), src.AWS)
-	if err != nil {
-		return nil, fmt.Errorf("source %s: load AWS configuration: %w", src.Name, err)
-	}
-	return newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg)), nil
+// New uses cfg from awsauth.Config, whose credentials are resolved on the first request.
+func New(src *config.Source, cfg sdkaws.Config) *Client {
+	return newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg))
 }
 
 func newClient(src *config.Source, logs logsAPI, metrics metricsAPI, identity identityAPI) *Client {
@@ -79,25 +67,6 @@ func newClient(src *config.Source, logs logsAPI, metrics metricsAPI, identity id
 		firstPoll: 250 * time.Millisecond,
 		maxPoll:   2 * time.Second,
 	}
-}
-
-// loadConfig uses the default credential chain, and assumes the role on top of it when set.
-func loadConfig(ctx context.Context, settings *config.AWSSource) (sdkaws.Config, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(settings.Region))
-	if err != nil {
-		return sdkaws.Config{}, err
-	}
-	if settings.RoleARN == "" {
-		return cfg, nil
-	}
-	provider := stscreds.NewAssumeRoleProvider(sts.NewFromConfig(cfg), settings.RoleARN, func(o *stscreds.AssumeRoleOptions) {
-		o.RoleSessionName = roleSessionName
-		if settings.ExternalID != "" {
-			o.ExternalID = sdkaws.String(settings.ExternalID)
-		}
-	})
-	cfg.Credentials = sdkaws.NewCredentialsCache(provider)
-	return cfg, nil
 }
 
 var authErrorCodes = map[string]bool{

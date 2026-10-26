@@ -15,6 +15,7 @@ import (
 type Config struct {
 	Server   Server
 	Admin    *Admin
+	Identity *Identity
 	Grafana  *Grafana
 	Sources  map[string]*Source
 	Services map[string]*Service
@@ -30,6 +31,12 @@ type Server struct {
 // Admin enables the admin UI under /admin. Without it the UI is not served.
 type Admin struct {
 	Token string
+}
+
+// Identity makes Sonda an OIDC issuer of its own workload identity at Issuer, the public
+// https URL of this Sonda, so cloud providers can trust Sonda without long-lived credentials.
+type Identity struct {
+	Issuer string
 }
 
 type Grafana struct {
@@ -68,12 +75,23 @@ type Source struct {
 }
 
 type AWSSource struct {
-	Region     string
-	RoleARN    string // optional; the default credential chain is used without it
-	ExternalID string // optional, only with RoleARN
+	Region      string
+	Credentials AWSCredentials
+	RoleARN     string // optional with the default credential chain; required with the identity
+	ExternalID  string // optional, only with RoleARN and the default credential chain
 	// MaxScanBytes stops a Logs Insights query that scans more, because scanning is billed.
 	MaxScanBytes int64
 }
+
+// AWSCredentials selects what an AWS source authenticates with.
+type AWSCredentials string
+
+const (
+	// AWSDefaultChain uses the default credential chain, then assumes RoleARN when set.
+	AWSDefaultChain AWSCredentials = "default"
+	// AWSIdentity assumes RoleARN with a token of Sonda's own identity (AssumeRoleWithWebIdentity).
+	AWSIdentity AWSCredentials = "identity"
+)
 
 type AuthType string
 
@@ -81,6 +99,8 @@ const (
 	AuthNone   AuthType = "none"
 	AuthBearer AuthType = "bearer"
 	AuthBasic  AuthType = "basic"
+	// AuthEKS sends an EKS bearer token signed with the credentials of an AWS source.
+	AuthEKS AuthType = "eks"
 )
 
 type Auth struct {
@@ -91,6 +111,16 @@ type Auth struct {
 	TokenFile string
 	Username  string
 	Password  string
+	// EKS is set for eks auth only.
+	EKS *EKSAuth
+}
+
+// EKSAuth authenticates to the Kubernetes API of an EKS cluster, directly or through its
+// service proxy, as the IAM principal of an AWS source.
+type EKSAuth struct {
+	Cluster string
+	// AWS is the aws source whose credentials sign the token; its region is the cluster's.
+	AWS *Source
 }
 
 type Service struct {

@@ -13,6 +13,11 @@ server:
 admin:
   token: "${SONDA_ADMIN_TOKEN}"
 
+# Optional. Makes Sonda an OIDC issuer of its own identity, so AWS (credentials: identity
+# below) trusts it without access keys. The issuer must be Sonda's public https URL.
+# identity:
+#   issuer: https://sonda.example.com
+
 # Optional. Used only to build Explore links in responses. A grafana source (below) is separate.
 grafana:
   url: https://grafana.example.com
@@ -53,11 +58,13 @@ sources:
 
   # AWS serves CloudWatch Logs Insights and CloudWatch metrics. Credentials come from the
   # default AWS credential chain (IRSA, environment, profile), or from assuming role_arn.
+  # With credentials: identity, Sonda assumes role_arn with its own identity token instead.
   # aws-prod:
   #   type: aws
   #   region: eu-west-1
-  #   role_arn: "${SONDA_AWS_ROLE_ARN}" # optional
-  #   external_id: sonda # optional, only with role_arn
+  #   credentials: default # or identity, which needs the identity section and role_arn
+  #   role_arn: "${SONDA_AWS_ROLE_ARN}" # optional with default credentials
+  #   external_id: sonda # optional, only with role_arn and default credentials
   #   max_scan_bytes: 10GB # Logs Insights is billed by scanned bytes; larger queries stop
 
   # Kubernetes serves pods, rollouts and events (the workloads capability). Without a url,
@@ -68,6 +75,15 @@ sources:
   #   url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com
   #   auth: { type: bearer, token: "${K8S_TOKEN}" }
   #   ca_file: /etc/sonda/k8s-prod-ca.crt
+  #
+  # On EKS, eks auth signs tokens with the credentials of an aws source instead of a stored
+  # token, and the API server's service proxy reaches a Loki, Prometheus or Tempo inside the
+  # cluster. The role needs get on services/proxy for the one service.
+  # loki-eks:
+  #   type: loki
+  #   url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com/api/v1/namespaces/logging/services/http:loki:3100/proxy
+  #   ca_file: /etc/sonda/k8s-prod-ca.crt
+  #   auth: { type: eks, cluster: prod, aws_source: aws-prod }
 
   # Grafana serves the alerts of Grafana-managed alerting rules (the alerts capability). A
   # prometheus source serves the alerts of its own rules. Use a Viewer service account token.

@@ -1,5 +1,6 @@
-// Package store keeps Sonda's own state in SQLite or Postgres: identities, the audit log and result
-// handles. It holds no telemetry beyond the samples behind result handles, which expire.
+// Package store keeps Sonda's own state in SQLite or Postgres: identities, the audit log, result
+// handles and the signing keys of Sonda's workload identity. It holds no telemetry beyond the
+// samples behind result handles, which expire.
 package store
 
 import (

@@ -13,6 +13,7 @@ import (
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/cloudflare"
+	"github.com/contember/sonda/internal/connector/upstream"
 	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/policy"
 	"github.com/contember/sonda/internal/telemetry"
@@ -56,10 +57,7 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := cloudflare.New(cfg.Sources["cf"])
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := cloudflare.New(cfg.Sources["cf"], upstream.HTTPClient(cfg.Sources["cf"], nil))
 	logs, _ := logScope.Cloudflare()
 	traces, _ := traceScope.Cloudflare()
 	return newCloudflareLogs(logs, client), newCloudflareTraces(traces, client), &bodies
@@ -151,10 +149,7 @@ services:
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := cloudflare.New(cfg.Sources["cf"])
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := cloudflare.New(cfg.Sources["cf"], upstream.HTTPClient(cfg.Sources["cf"], nil))
 	cf, _ := scope.Cloudflare()
 	metrics := newCloudflareMetrics(cf, client)
 

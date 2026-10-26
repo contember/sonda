@@ -17,6 +17,7 @@ import (
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/httpapi"
+	"github.com/contember/sonda/internal/issuer"
 	"github.com/contember/sonda/internal/query"
 	"github.com/contember/sonda/internal/store"
 )
@@ -68,15 +69,22 @@ func serve(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	connectors, err := query.NewConnectors(cfg)
-	if err != nil {
-		return err
-	}
 	st, err := store.Open(cfg.Server.Database)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	var identity *issuer.Issuer
+	if cfg.Identity != nil {
+		identity, err = issuer.Open(ctx, cfg.Identity.Issuer, st)
+		if err != nil {
+			return err
+		}
+	}
+	connectors, err := query.NewConnectors(cfg, identity)
+	if err != nil {
+		return err
+	}
 	authorizer := authz.New(cfg, st)
 	q, err := query.New(cfg, authorizer, connectors, st)
 	if err != nil {
@@ -84,6 +92,11 @@ func serve(ctx context.Context, configPath string) error {
 	}
 	handler := http.NewServeMux()
 	handler.Handle("/", httpapi.New(q, authorizer, st, log))
+	if identity != nil {
+		if err := identity.Mount(handler); err != nil {
+			return err
+		}
+	}
 	if cfg.Admin != nil {
 		adminHandler, err := admin.New(cfg, st, st, log)
 		if err != nil {

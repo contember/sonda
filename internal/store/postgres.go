@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS identity_grants (
 	capability  TEXT NOT NULL,
 	PRIMARY KEY (identity, service, environment, capability)
 );
+
+CREATE TABLE IF NOT EXISTS signing_keys (
+	id          TEXT PRIMARY KEY,
+	private_key BYTEA NOT NULL,
+	created_at  BIGINT NOT NULL
+);
 `
 
 const postgresUniqueViolation = "23505"

@@ -11,6 +11,7 @@ import (
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/connector/upstream"
 )
 
 func TestAlertsPathBySourceType(t *testing.T) {
@@ -30,7 +31,7 @@ func TestAlertsPathBySourceType(t *testing.T) {
 			}))
 			defer server.Close()
 			src := &config.Source{Name: "rules", Type: tt.typ, URL: server.URL + "/prom/", Auth: config.Auth{Type: config.AuthBearer, Token: "secret"}}
-			alerts, err := New(src).Alerts(context.Background())
+			alerts, err := New(src, upstream.HTTPClient(src, nil)).Alerts(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +62,8 @@ func TestAlertsErrors(t *testing.T) {
 				_, _ = io.WriteString(w, tt.body)
 			}))
 			defer server.Close()
-			_, err := New(&config.Source{Name: "rules", Type: config.SourceGrafana, URL: server.URL}).Alerts(context.Background())
+			src := &config.Source{Name: "rules", Type: config.SourceGrafana, URL: server.URL}
+			_, err := New(src, upstream.HTTPClient(src, nil)).Alerts(context.Background())
 			e, ok := apierr.As(err)
 			if !ok || e.Code != api.CodeUpstreamError || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error = %v", err)

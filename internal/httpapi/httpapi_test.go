@@ -176,7 +176,7 @@ services:
 		}
 	}
 	authorizer := authz.New(cfg, st)
-	connectors, err := query.NewConnectors(cfg)
+	connectors, err := query.NewConnectors(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

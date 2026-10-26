@@ -27,8 +27,8 @@ type Client struct {
 	http   *http.Client
 }
 
-func New(src *config.Source) *Client {
-	return &Client{source: src, http: upstream.HTTPClient(src)}
+func New(src *config.Source, client *http.Client) *Client {
+	return &Client{source: src, http: client}
 }
 
 type Field struct {

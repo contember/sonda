@@ -25,8 +25,8 @@ type Client struct {
 	http   *http.Client
 }
 
-func New(src *config.Source) (*Client, error) {
-	return &Client{source: src, http: upstream.HTTPClient(src)}, nil
+func New(src *config.Source, client *http.Client) *Client {
+	return &Client{source: src, http: client}
 }
 
 // envelope is the response of every Cloudflare v4 API call.

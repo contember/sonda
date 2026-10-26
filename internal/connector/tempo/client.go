@@ -26,8 +26,8 @@ type Client struct {
 	http   *http.Client
 }
 
-func New(src *config.Source) (*Client, error) {
-	return &Client{source: src, http: upstream.HTTPClient(src)}, nil
+func New(src *config.Source, client *http.Client) *Client {
+	return &Client{source: src, http: client}
 }
 
 // Search returns at most limit traces that match the query. The matched spans carry no
