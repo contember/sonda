@@ -1,5 +1,6 @@
-// Package sentry reads issues, events and releases from the Sentry REST API.
-// It uses project-scoped endpoints, so a free-text query cannot reach other projects.
+// Package sentry reads issues, events, releases and spans from the Sentry REST API.
+// Issues use project-scoped endpoints, so a free-text query cannot reach other projects;
+// spans use the organization events endpoint and are checked against the scope.
 package sentry
 
 import (

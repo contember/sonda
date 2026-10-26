@@ -344,7 +344,7 @@ func (s MetricScope) CloudWatch() (CloudWatchMetricScope, bool) {
 	}, true
 }
 
-// TraceScope restricts a trace source to one service. Exactly one of Tempo and Cloudflare
+// TraceScope restricts a trace source to one service. Exactly one of Tempo, Cloudflare and Sentry
 // reports true, by source type.
 type TraceScope struct {
 	Target
@@ -371,12 +371,35 @@ func (s TraceScope) Cloudflare() (CloudflareScope, bool) {
 	return CloudflareScope{Target: s.Target, source: s.binding.Source, script: s.binding.Script}, true
 }
 
+func (s TraceScope) Sentry() (SentrySpanScope, bool) {
+	if s.binding.Source.Type != config.SourceSentry {
+		return SentrySpanScope{}, false
+	}
+	return SentrySpanScope{Target: s.Target, source: s.binding.Source, project: s.binding.Project, environment: s.binding.Environment}, true
+}
+
+// traceServiceName is the Tempo service name, the Cloudflare script or the Sentry project slug.
 func traceServiceName(b *config.TraceBinding) string {
-	if b.Source.Type == config.SourceCloudflare {
+	switch b.Source.Type {
+	case config.SourceCloudflare:
 		return b.Script
+	case config.SourceSentry:
+		return b.Project
 	}
 	return b.ServiceName
 }
+
+// SentrySpanScope restricts the Sentry spans dataset to one project and environment.
+type SentrySpanScope struct {
+	Target
+	source      *config.Source
+	project     string
+	environment string
+}
+
+func (s SentrySpanScope) Source() *config.Source    { return s.source }
+func (s SentrySpanScope) Project() string           { return s.project }
+func (s SentrySpanScope) SentryEnvironment() string { return s.environment }
 
 // CloudflareScope restricts a Cloudflare account to one Worker script and, for metrics, to
 // the account resources bound to the service.

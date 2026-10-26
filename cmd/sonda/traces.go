@@ -45,7 +45,7 @@ func (a *app) tracesSearchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&maxDuration, "max-duration", "", "only spans at most this long, e.g. 2s")
 	cmd.Flags().BoolVar(&errorsOnly, "errors", false, "only traces with an error span of the service")
 	cmd.Flags().StringVar(&name, "name", "", "span name must contain this text")
-	cmd.Flags().StringArrayVar(&where, "where", nil, "span condition, field=value or field!=value; for Tempo a TraceQL attribute like span.http.route (repeatable)")
+	cmd.Flags().StringArrayVar(&where, "where", nil, "span condition, field=value or field!=value; for Tempo a TraceQL attribute like span.http.route, for Sentry a span field like span.op (repeatable)")
 	cmd.Flags().IntVar(&limit, "limit", 0, "maximum traces (default 20)")
 	return cmd
 }
@@ -57,7 +57,8 @@ func (a *app) tracesQueryCmd() *cobra.Command {
 		Use:   "query <service> <query>",
 		Short: "Run a native trace query restricted to the service",
 		Long: "Run a native trace query restricted to the service. The dialect depends on the source\n" +
-			`(see describe): TraceQL for Tempo, query JSON with "view":"traces" for Cloudflare.`,
+			`(see describe): TraceQL for Tempo, query JSON with "view":"traces" for Cloudflare,` + "\n" +
+			"Sentry search syntax over spans for Sentry.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w, err := window.window()

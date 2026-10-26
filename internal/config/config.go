@@ -185,10 +185,14 @@ func (b *MetricBinding) Dialect() api.Dialect {
 
 // TraceBinding scopes a trace source to one service. Exactly one variant is set, by source
 // type: ServiceName (tempo, resource.service.name), Script (cloudflare).
+// TraceBinding scopes a trace source to one service. Exactly one variant is set, by source
+// type: ServiceName (tempo), Script (cloudflare), Project with Environment (sentry).
 type TraceBinding struct {
 	Source      *Source
 	ServiceName string
 	Script      string
+	Project     string
+	Environment string
 }
 
 func (b *TraceBinding) Dialect() api.Dialect {
@@ -197,6 +201,8 @@ func (b *TraceBinding) Dialect() api.Dialect {
 		return api.DialectTraceQL
 	case SourceCloudflare:
 		return api.DialectCloudflareQuery
+	case SourceSentry:
+		return api.DialectSentrySearch
 	}
 	return ""
 }

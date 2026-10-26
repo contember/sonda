@@ -9,7 +9,7 @@ compact responses with links back to the source.
 
 | Source | Capabilities |
 |---|---|
-| **Sentry** | errors, releases |
+| **Sentry** | errors, releases, traces |
 | **Loki** | logs |
 | **Prometheus** (and Mimir, Thanos, VictoriaMetrics, Grafana Cloud) | metrics, alerts |
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
@@ -91,6 +91,8 @@ parts that matter for security:
   - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns or ARNs.
   - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
+  - Sentry traces `project` and `environment`, as for errors. Sentry has no project-scoped
+    span search, so Sonda checks the project and environment of every span it returns.
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
   - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.
     The alerts API returns the alerts of every service, so this filter in Sonda is the scope.

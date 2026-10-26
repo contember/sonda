@@ -23,6 +23,7 @@ returns compact, evidence-carrying responses.
 | Cloudflare queries | A JSON subset of the Workers Observability query, AND-wrapped with the script filter | Passthrough of the full request body | `queryId` runs a saved query and `datasets` changes what is read; both could bypass the filters. |
 | Cloudflare metrics | Fixed catalog over GraphQL Analytics datasets of Workers, Durable Objects, D1, Queues and R2, query built by the server | Agent-written GraphQL | GraphQL can name any script, resource or account. The server sets `accountTag`, the bound script or resource IDs and the range as variables. |
 | Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
+| Sentry traces | The spans dataset of the organization events endpoint, with the project and environment as parameters and a post-check of every span | Project-scoped endpoints | Sentry has no project-scoped span search. The parameters are ANDed with the query text, and the post-check catches a filter that Sentry did not apply. |
 | Trace visibility | Spans of services without a `traces` grant become stubs | Reject traces that cross services; return them in full | A trace is useful only as a whole. Stubs show where time went without revealing names, attributes or events. |
 | Configuration | Sources, services and limits in one YAML file, loaded at startup | Everything in a database | Reviewable in git. These change rarely and define the security boundary (bindings). |
 | Identities | In the identity store, managed at runtime in the admin UI | In the YAML file | Tokens are created, rotated and revoked often; a restart for each change is impractical. |
@@ -53,7 +54,7 @@ Identity ──< Grant (services × environments × capabilities)
 
   | Type | Backend | Capabilities | Connection |
   |---|---|---|---|
-  | `sentry` | Sentry | errors | `url`, `org`, auth |
+  | `sentry` | Sentry | errors, traces | `url`, `org`, auth |
   | `loki` | Loki | logs | `url`, auth, headers |
   | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics, alerts | `url`, auth, headers |
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
@@ -83,12 +84,13 @@ Identity ──< Grant (services × environments × capabilities)
   | `metrics` | `aws` | `namespace` + `dimensions` (1 to 10) |
   | `traces` | `tempo` | `service` (`resource.service.name`) |
   | `traces` | `cloudflare` | `script` |
+  | `traces` | `sentry` | `project` + Sentry `environment` |
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty) |
   | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
 
 - **Dialect**: each binding has the query dialect of its native query endpoint: `logql`,
   `promql`, `traceql`, `cloudflare-query`, `cloudflare-metric`, `logs-insights`,
-  `cloudwatch-metric`. `describe` returns it per capability with the source type.
+  `cloudwatch-metric`, `sentry-search`. `describe` returns it per capability with the source type.
 - **Signal**: a named metrics query stored without scope, in the native dialect of the
   service's metrics backend. For Prometheus it is a PromQL string, e.g. `error_rate`; Sonda
   injects the environment selector the same way as for native queries. For Cloudflare and
@@ -210,7 +212,7 @@ internal/insights  Logs Insights lexer that splits a query into stages
 internal/telemetry backend-neutral records: log streams, spans, trace summaries, structured metric queries
 internal/connector
   upstream/        HTTP client per source: auth, headers, error mapping
-  sentry/          Sentry REST client
+  sentry/          Sentry REST client: issues, events, releases, spans
   loki/            Loki HTTP API client
   prometheus/      Prometheus HTTP API client (prometheus/client_golang)
   cloudflare/      Workers Observability and GraphQL Analytics client
@@ -337,6 +339,14 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - Verified against sentry.io: a `project:` or `environment:` term in the agent's query combines
   with the endpoint's project and the `environment` parameter by AND; it cannot widen them.
 - Required token scopes: `org:read`, `project:read`, `event:read`, `project:releases`.
+- Spans: `GET /api/0/organizations/{org}/events/?dataset=spans` with `projectSlug` and
+  `environment`, which Sentry ANDs with the query text (the project goes into the request
+  meta, the environment into the filter). Every returned span must have the scope's project
+  and environment; one outside them fails the request with `internal`. A search reads the 500
+  newest matching spans, groups them into traces (at most 3 matched spans each), and names each
+  trace by its root transaction from a second query `is_transaction:true trace:[…]` across all
+  projects (`project=-1`). Trace by ID is `trace:<id>` across all projects, at most 2000
+  spans; the trace must contain a span of the scope's project in the scope's environment.
 
 ### Kubernetes specifics
 
@@ -684,15 +694,15 @@ for 10 minutes. It holds no per-service data: names come from the scoped call on
 
 ## 8. Traces
 
-The `traces` capability is served by Tempo and Cloudflare. Connectors return the neutral
+The `traces` capability is served by Tempo, Cloudflare and Sentry. Connectors return the neutral
 `telemetry.Span` (trace, span and parent ID, service, name, kind, start, duration, status,
 status message, attributes, events) and `telemetry.TraceSummary`. The span's service is the
-OTel `service.name` for Tempo and the script name for Cloudflare.
+OTel `service.name` for Tempo, the script name for Cloudflare and the project slug for Sentry.
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /v1/services/{s}/traces/search` | `minDuration`, `maxDuration`, `errors`, `name` (contains), `where[]`, `limit` → trace summaries with the matched spans of the service |
-| `POST /v1/services/{s}/traces/query` | Native query: TraceQL, or Cloudflare query JSON with `view: traces` → trace summaries |
+| `POST /v1/services/{s}/traces/query` | Native query: TraceQL, Cloudflare query JSON with `view: traces`, or Sentry search syntax → trace summaries |
 | `GET /v1/services/{s}/traces/{id}` | One trace as a span tree |
 
 - Search and query return at most `limit` traces (default 20, maximum 50) and mark the
@@ -714,9 +724,10 @@ OTel `service.name` for Tempo and the script name for Cloudflare.
   Unlike an issue, a trace returns spans of other services on purpose, as stubs: visibility
   and stubs are applied in `shape` before the response is built. The Cloudflare event
   post-check is skipped for this query only, because other scripts' events are expected.
-  A Cloudflare trace of 2000 or more events is `limit_exceeded`, because one fetch cannot
-  return it whole.
-- Trace IDs are 16 or 32 hex characters, normalized to lower case.
+  A Cloudflare trace of 2000 or more events, or a Sentry trace of 2000 or more spans, is
+  `limit_exceeded`, because one fetch cannot return it whole. A Sentry trace by ID must also
+  contain a span in the scope's environment.
+- Trace IDs are 16 or 32 hex characters, normalized to lower case; Sentry takes only 32.
 - The tree is ordered depth-first from the roots; spans whose parent is missing become roots;
   children are ordered by start time. A trace response holds at most 300 spans and is marked
   `truncated` beyond that.

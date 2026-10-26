@@ -91,6 +91,7 @@ const (
 	DialectCloudflareMetric Dialect = "cloudflare-metric"
 	DialectLogsInsights     Dialect = "logs-insights"
 	DialectCloudWatchMetric Dialect = "cloudwatch-metric"
+	DialectSentrySearch     Dialect = "sentry-search"
 )
 
 // BackendInfo tells the agent which source type serves a capability and which query dialect

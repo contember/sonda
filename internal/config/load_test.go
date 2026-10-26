@@ -271,7 +271,7 @@ func TestParseBackendErrors(t *testing.T) {
 
 		{"tempo traces without service", [2]string{"{ source: tempo, service: engine-api }", "{ source: tempo }"}, "traces.service is required"},
 		{"tempo traces with script", [2]string{"{ source: tempo, service: engine-api }", "{ source: tempo, service: a, script: a }"}, "traces.script is not allowed for tempo sources"},
-		{"traces on aws", [2]string{"{ source: tempo, service: engine-api }", "{ source: aws, service: a }"}, "expected tempo or cloudflare"},
+		{"traces on aws", [2]string{"{ source: tempo, service: engine-api }", "{ source: aws, service: a }"}, "expected tempo, cloudflare or sentry"},
 
 		{"string signal on cloudflare", [2]string{"{ metric: requests, by: [status] }", "sum(up)"}, "a string signal is PromQL"},
 		{"unknown cloudflare metric", [2]string{"metric: requests", "metric: bytes"}, `unknown metric "bytes"`},
@@ -474,6 +474,37 @@ func TestParseAlertErrors(t *testing.T) {
 				t.Fatalf("replacement %q not found", tt.replace[0])
 			}
 			_, err := Parse([]byte(strings.Replace(alertsConfig, tt.replace[0], tt.replace[1], 1)), env(map[string]string{"GRAFANA_TOKEN": "g"}))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSentryTraces(t *testing.T) {
+	input := strings.Replace(validConfig, "    signals:\n", "        traces: { source: sentry, project: api, environment: production }\n    signals:\n", 1)
+	cfg, err := Parse([]byte(input), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := cfg.Services["api"].Environments["production"].Traces
+	if b.Project != "api" || b.Environment != "production" || b.Dialect() != api.DialectSentrySearch {
+		t.Errorf("sentry traces = %+v", b)
+	}
+
+	tests := []struct {
+		binding string
+		want    string
+	}{
+		{"{ source: sentry, project: api }", "traces.environment is required for sentry sources"},
+		{"{ source: sentry, environment: production }", "traces.project is required for sentry sources"},
+		{"{ source: sentry, project: api, environment: production, service: api }", "traces.service is not allowed for sentry sources"},
+		{"{ source: loki, project: api, environment: production }", "expected tempo, cloudflare or sentry"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.binding, func(t *testing.T) {
+			input := strings.Replace(validConfig, "    signals:\n", "        traces: "+tt.binding+"\n    signals:\n", 1)
+			_, err := Parse([]byte(input), env(validEnv()))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

@@ -114,6 +114,9 @@ func (s *Service) traceBackend(scope authz.TraceScope) (traceBackend, error) {
 	if cf, ok := scope.Cloudflare(); ok {
 		return newCloudflareTraces(cf, s.connectors.Cloudflare[cf.Source().Name]), nil
 	}
+	if sentry, ok := scope.Sentry(); ok {
+		return newSentryTraces(sentry, s.connectors.Sentry[sentry.Source().Name]), nil
+	}
 	return nil, unsupported("trace", scope.Source())
 }
 

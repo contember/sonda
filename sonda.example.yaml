@@ -89,6 +89,7 @@ services:
         logs: { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
         metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
         # traces: { source: tempo-prod, service: engine-api } # resource.service.name
+        # traces: { source: sentry, project: engine, environment: production } # or Sentry spans
         # Exact labels of the service's pods and ReplicaSets, in one namespace.
         # workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
         # The alerts whose labels match the selector, from a prometheus or grafana source.

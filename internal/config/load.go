@@ -103,13 +103,15 @@ type rawErrorBinding struct {
 // rawBinding holds the fields of every log, metric and trace binding variant; the source
 // type decides which of them are allowed.
 type rawBinding struct {
-	Source     string            `yaml:"source"`
-	Selector   string            `yaml:"selector"`
-	Script     string            `yaml:"script"`
-	LogGroups  []string          `yaml:"log_groups"`
-	Namespace  string            `yaml:"namespace"`
-	Dimensions map[string]string `yaml:"dimensions"`
-	Service    string            `yaml:"service"`
+	Source      string            `yaml:"source"`
+	Selector    string            `yaml:"selector"`
+	Script      string            `yaml:"script"`
+	LogGroups   []string          `yaml:"log_groups"`
+	Namespace   string            `yaml:"namespace"`
+	Dimensions  map[string]string `yaml:"dimensions"`
+	Service     string            `yaml:"service"`
+	Project     string            `yaml:"project"`
+	Environment string            `yaml:"environment"`
 
 	DurableObjectNamespaces map[string]string `yaml:"durable_object_namespaces"`
 	D1Databases             map[string]string `yaml:"d1_databases"`
@@ -612,7 +614,7 @@ func (v *validator) alertBinding(path string, raw rawBinding, sources map[string
 }
 
 func (v *validator) traceBinding(path string, raw rawBinding, sources map[string]*Source) *TraceBinding {
-	src := v.sourceRef(path+".source", raw.Source, sources, SourceTempo, SourceCloudflare)
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceTempo, SourceCloudflare, SourceSentry)
 	binding := &TraceBinding{Source: src}
 	if src == nil {
 		return binding
@@ -627,6 +629,15 @@ func (v *validator) traceBinding(path string, raw rawBinding, sources map[string
 	case SourceCloudflare:
 		v.bindingFields(path, raw, src, "script")
 		binding.Script = v.script(path, raw.Script)
+	case SourceSentry:
+		v.bindingFields(path, raw, src, "project", "environment")
+		if raw.Project == "" {
+			v.fail("%s.project is required for sentry sources", path)
+		}
+		if raw.Environment == "" {
+			v.fail("%s.environment is required for sentry sources", path)
+		}
+		binding.Project, binding.Environment = raw.Project, raw.Environment
 	}
 	return binding
 }
@@ -672,6 +683,8 @@ func (v *validator) bindingFields(path string, raw rawBinding, src *Source, allo
 		{"namespace", raw.Namespace != ""},
 		{"dimensions", raw.Dimensions != nil},
 		{"service", raw.Service != ""},
+		{"project", raw.Project != ""},
+		{"environment", raw.Environment != ""},
 		{"durable_object_namespaces", raw.DurableObjectNamespaces != nil},
 		{"d1_databases", raw.D1Databases != nil},
 		{"queues", raw.Queues != nil},
