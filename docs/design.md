@@ -437,7 +437,7 @@ Request flow:
 6. Post-check: results fetched by ID (Sentry issues, traces), Cloudflare events and the log
    groups a Logs Insights query scanned.
 7. Write the audit record: identity, endpoint, service, environment, final upstream query,
-   duration, result size, outcome.
+   duration, result size, outcome. The same fields go to the server log as a `request` line.
 
 Rules:
 

@@ -145,6 +145,18 @@ func (s *Server) writeAudit(r *http.Request, identity *authz.Identity, record *a
 	if identity != nil {
 		entry.Identity = identity.Name
 	}
+	s.log.Info("request",
+		"identity", entry.Identity,
+		"method", entry.Method,
+		"path", entry.Path,
+		"service", entry.Service,
+		"environment", entry.Environment,
+		"queries", queries,
+		"status", entry.Status,
+		"error_code", entry.ErrorCode,
+		"duration_ms", entry.Duration.Milliseconds(),
+		"response_bytes", entry.ResponseBytes,
+	)
 	if err := s.store.WriteAudit(context.WithoutCancel(r.Context()), entry); err != nil {
 		s.log.Error("audit write failed", "error", err)
 	}
