@@ -84,13 +84,24 @@ services:
   #   environments:
   #     production:
   #       logs: { source: cloudflare, script: web-worker }
-  #       metrics: { source: cloudflare, script: web-worker }
+  #       metrics:
+  #         source: cloudflare
+  #         script: web-worker
+  #         # Optional account resources of the service, name -> ID. Their metrics are
+  #         # labeled with the name. Durable Object namespace and queue IDs are 32 hex
+  #         # characters, D1 IDs are UUIDs, R2 takes the bucket name.
+  #         durable_object_namespaces: { sessions: 0123456789abcdef0123456789abcdef }
+  #         d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b }
+  #         queues: { emails: fedcba9876543210fedcba9876543210 }
+  #         r2_buckets: { uploads: web-uploads }
   #       traces: { source: cloudflare, script: web-worker }
   #   # With Cloudflare metrics, a signal is a mapping: a metric from the catalog
-  #   # (requests, errors, subrequests, cpu_time_p50, cpu_time_p99, duration_p50, duration_p99)
-  #   # and optional dimensions to group by (status, scriptVersion).
+  #   # (requests, errors, cpu_time_p99, duration_p99, …, do_errors, d1_query_time_p99,
+  #   # queue_backlog_messages, r2_requests, …) and optional dimensions to group by.
+  #   # A signal of a resource metric needs that resource kind in every environment.
   #   signals:
   #     errors: { metric: errors, by: [status] }
+  #     backlog: { metric: queue_backlog_messages }
 
   # An AWS-managed database. Logs come from exact log group names (1 to 50, no patterns);
   # metrics from one namespace, restricted by at least one dimension.

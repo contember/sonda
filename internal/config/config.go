@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 
 	"github.com/contember/sonda/api"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 type Config struct {
@@ -141,13 +142,16 @@ func (b *LogBinding) Dialect() api.Dialect {
 }
 
 // MetricBinding scopes a metrics source to one service. Exactly one variant is set, by source
-// type: Selector (prometheus), Script (cloudflare), Namespace with Dimensions (aws).
+// type: Selector (prometheus), Script with optional CloudflareResources (cloudflare),
+// Namespace with Dimensions (aws).
 type MetricBinding struct {
-	Source     *Source
-	Selector   *Selector
-	Script     string
-	Namespace  string
-	Dimensions map[string]string
+	Source   *Source
+	Selector *Selector
+	Script   string
+	// CloudflareResources maps resource names to IDs per kind; kinds without resources are absent.
+	CloudflareResources map[telemetry.CloudflareResource]map[string]string
+	Namespace           string
+	Dimensions          map[string]string
 }
 
 func (b *MetricBinding) Dialect() api.Dialect {

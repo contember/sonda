@@ -99,6 +99,20 @@ type rawBinding struct {
 	Namespace  string            `yaml:"namespace"`
 	Dimensions map[string]string `yaml:"dimensions"`
 	Service    string            `yaml:"service"`
+
+	DurableObjectNamespaces map[string]string `yaml:"durable_object_namespaces"`
+	D1Databases             map[string]string `yaml:"d1_databases"`
+	Queues                  map[string]string `yaml:"queues"`
+	R2Buckets               map[string]string `yaml:"r2_buckets"`
+}
+
+func (raw rawBinding) cloudflareResources() map[telemetry.CloudflareResource]map[string]string {
+	return map[telemetry.CloudflareResource]map[string]string{
+		telemetry.CloudflareDurableObjectNamespaces: raw.DurableObjectNamespaces,
+		telemetry.CloudflareD1Databases:             raw.D1Databases,
+		telemetry.CloudflareQueues:                  raw.Queues,
+		telemetry.CloudflareR2Buckets:               raw.R2Buckets,
+	}
 }
 
 type rawLimits struct {
@@ -376,9 +390,31 @@ func (v *validator) signals(path string, raw map[string]yaml.Node, envs map[stri
 			v.fail("%s.%s: %v", path, name, err)
 			continue
 		}
+		if dialect == api.DialectCloudflareMetric {
+			v.signalResources(path+"."+name, query, envs)
+		}
 		signals[name] = Signal{Dialect: dialect, Query: query}
 	}
 	return signals
+}
+
+// signalResources requires the resource kind a Cloudflare signal reads in every metrics
+// environment, so the signal does not fail in some of them only.
+func (v *validator) signalResources(path, query string, envs map[string]*Environment) {
+	q, err := telemetry.DecodeCloudflareMetricQuery(query)
+	if err != nil {
+		v.fail("%s: %v", path, err)
+		return
+	}
+	kind := telemetry.CloudflareMetrics[q.Metric].Resource
+	if kind == telemetry.CloudflareScript {
+		return
+	}
+	for envName, env := range envs {
+		if env.Metrics != nil && len(env.Metrics.CloudflareResources[kind]) == 0 {
+			v.fail("%s: metric %s needs %s in the metrics binding of environment %s", path, q.Metric, kind, envName)
+		}
+	}
 }
 
 // signalQuery returns the signal as query text of the dialect: PromQL as written, or the
@@ -481,8 +517,9 @@ func (v *validator) metricBinding(path string, raw rawBinding, sources map[strin
 		v.bindingFields(path, raw, src, "selector")
 		binding.Selector = v.selector(path, raw.Selector, parseMetricSelector)
 	case SourceCloudflare:
-		v.bindingFields(path, raw, src, "script")
+		v.bindingFields(path, raw, src, "script", "durable_object_namespaces", "d1_databases", "queues", "r2_buckets")
 		binding.Script = v.script(path, raw.Script)
+		binding.CloudflareResources = v.cloudflareResources(path, raw)
 	case SourceAWS:
 		v.bindingFields(path, raw, src, "namespace", "dimensions")
 		if raw.Namespace == "" {
@@ -526,6 +563,10 @@ func (v *validator) bindingFields(path string, raw rawBinding, src *Source, allo
 		{"namespace", raw.Namespace != ""},
 		{"dimensions", raw.Dimensions != nil},
 		{"service", raw.Service != ""},
+		{"durable_object_namespaces", raw.DurableObjectNamespaces != nil},
+		{"d1_databases", raw.D1Databases != nil},
+		{"queues", raw.Queues != nil},
+		{"r2_buckets", raw.R2Buckets != nil},
 	}
 	for _, field := range fields {
 		if field.set && !slices.Contains(allowed, field.name) {
@@ -549,6 +590,52 @@ func (v *validator) script(path, raw string) string {
 		v.fail("%s.script is required for cloudflare sources", path)
 	}
 	return raw
+}
+
+var (
+	cloudflareHexID   = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	cloudflareUUID    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	r2BucketName      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+	cloudflareIDForms = map[telemetry.CloudflareResource]struct {
+		pattern     *regexp.Regexp
+		description string
+	}{
+		telemetry.CloudflareDurableObjectNamespaces: {cloudflareHexID, "a namespace ID of 32 hex characters"},
+		telemetry.CloudflareD1Databases:             {cloudflareUUID, "a database UUID"},
+		telemetry.CloudflareQueues:                  {cloudflareHexID, "a queue ID of 32 hex characters, not the queue name"},
+		telemetry.CloudflareR2Buckets:               {r2BucketName, "a bucket name"},
+	}
+)
+
+// cloudflareResources validates the name-to-ID maps of a Cloudflare metrics binding. IDs must
+// have the exact form Cloudflare uses, so a name given in place of an ID fails here instead of
+// matching no data.
+func (v *validator) cloudflareResources(path string, raw rawBinding) map[telemetry.CloudflareResource]map[string]string {
+	resources := map[telemetry.CloudflareResource]map[string]string{}
+	for kind, named := range raw.cloudflareResources() {
+		if named == nil {
+			continue
+		}
+		if len(named) == 0 {
+			v.fail("%s.%s must not be empty", path, kind)
+			continue
+		}
+		form := cloudflareIDForms[kind]
+		seen := map[string]string{}
+		for name, id := range named {
+			switch {
+			case name == "":
+				v.fail("%s.%s: empty resource name", path, kind)
+			case !form.pattern.MatchString(id):
+				v.fail("%s.%s.%s: %q must be %s", path, kind, name, id, form.description)
+			case seen[id] != "":
+				v.fail("%s.%s: %s and %s have the same ID %q", path, kind, min(seen[id], name), max(seen[id], name), id)
+			}
+			seen[id] = name
+		}
+		resources[kind] = named
+	}
+	return resources
 }
 
 // maxLogGroups is the limit of log groups in one Logs Insights query.

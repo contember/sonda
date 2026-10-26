@@ -21,7 +21,7 @@ returns compact, evidence-carrying responses.
 | Logs Insights scoping | Own lexer `internal/insights` and an allowlist of commands | Rely on the `logGroupIdentifiers` API parameter alone | The query text can read other log groups itself (`SOURCE`, `join`, `appendcols`). AWS does not document which wins. |
 | CloudWatch metrics | Only `MetricStat`, from JSON `{metric, stat, dimensions}` | `Expression`, `SEARCH`, Metrics Insights | They cannot be scoped (section 6). |
 | Cloudflare queries | A JSON subset of the Workers Observability query, AND-wrapped with the script filter | Passthrough of the full request body | `queryId` runs a saved query and `datasets` changes what is read; both could bypass the filters. |
-| Cloudflare metrics | Fixed catalog over GraphQL `workersInvocationsAdaptive`, query built by the server | Agent-written GraphQL | GraphQL can name any script or account. The server sets `scriptName` and `accountTag` as variables. |
+| Cloudflare metrics | Fixed catalog over GraphQL Analytics datasets of Workers, Durable Objects, D1, Queues and R2, query built by the server | Agent-written GraphQL | GraphQL can name any script, resource or account. The server sets `accountTag`, the bound script or resource IDs and the range as variables. |
 | Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
 | Trace visibility | Spans of services without a `traces` grant become stubs | Reject traces that cross services; return them in full | A trace is useful only as a whole. Stubs show where time went without revealing names, attributes or events. |
 | Configuration | Sources, services and limits in one YAML file, loaded at startup | Everything in a database | Reviewable in git. These change rarely and define the security boundary (bindings). |
@@ -71,7 +71,7 @@ Identity ──< Grant (services × environments × capabilities)
   | `logs` | `cloudflare` | `script` (Worker script name) |
   | `logs` | `aws` | `log_groups`: 1 to 50 unique, exact names (not ARNs), no `*` |
   | `metrics` | `prometheus` | `selector`, e.g. `{job="engine", namespace="prod"}` |
-  | `metrics` | `cloudflare` | `script` |
+  | `metrics` | `cloudflare` | `script`; optional `durable_object_namespaces`, `d1_databases`, `queues`, `r2_buckets` (resource name → ID) |
   | `metrics` | `aws` | `namespace` + `dimensions` (1 to 10) |
   | `traces` | `tempo` | `service` (`resource.service.name`) |
   | `traces` | `cloudflare` | `script` |
@@ -363,7 +363,7 @@ Every native query is scoped by `policy`, in the way that the dialect allows:
 | TraceQL | Scope condition added to every spanset filter by `internal/traceql` | Re-lex, every filter ends with the condition; Tempo oracle tests |
 | Cloudflare query | Agent filters wrapped in a group, AND-combined with the script filter | Post-check of every event, aggregate and trace |
 | Logs Insights | Allowlist of commands, `SOURCE` and other cross-group words rejected; log groups set by the API parameter | Post-check with `ListLogGroupsForQuery` |
-| Cloudflare metric | No agent query text: the server builds GraphQL from a catalog | Post-check of every row's script |
+| Cloudflare metric | No agent query text: the server builds GraphQL from a catalog | Post-check of every row's script or resource ID |
 | CloudWatch metric | No agent query text: `MetricStat` with the scope's namespace and dimensions | — |
 
 Anything a scoping lexer or decoder does not understand is rejected with `invalid_query`, so
@@ -517,13 +517,31 @@ drop the scope. Matchers combine with AND, so:
 
 Neither accepts query text from the agent:
 
-- Cloudflare: `{metric, by}`. `metric` is one of `requests`, `errors`, `subrequests`,
-  `cpu_time_p50`, `cpu_time_p99` (CPU time, ms), `duration_p50`, `duration_p99` (request
-  duration, ms); `by` is from `status`, `scriptVersion`. The server builds the GraphQL query
-  over `workersInvocationsAdaptive` with `accountTag`, `scriptName` and the range as
-  variables, and checks the `scriptName` of every returned row. The time bucket is the finest
-  of minute, 15 minutes, hour or day that is at least the step; the response reports it as the
-  step. More than 10,000 rows (buckets × dimension values) is `limit_exceeded`.
+- Cloudflare: `{metric, by}`. Each catalog metric reads one GraphQL dataset and allows its own
+  `by` dimensions:
+
+  | Metrics | Dataset | Scope | `by` |
+  |---|---|---|---|
+  | `requests`, `errors`, `subrequests`, `cpu_time_p50`, `cpu_time_p99` (µs), `duration_p50`, `duration_p99` (ms) | `workersInvocationsAdaptive` | `script` | `status`, `scriptVersion` |
+  | `do_requests`, `do_errors`, `do_wall_time_p50`, `do_wall_time_p99` (ms) | `durableObjectsInvocationsAdaptiveGroups` | `durable_object_namespaces` | `status` |
+  | `do_cpu_time` (µs), `do_exceeded_cpu_errors`, `do_exceeded_memory_errors`, `do_fatal_internal_errors`, `do_sql_rows_read`, `do_sql_rows_written` | `durableObjectsPeriodicGroups` | `durable_object_namespaces` | |
+  | `do_sql_stored_bytes` | `durableObjectsSqlStorageGroups` | `durable_object_namespaces` | |
+  | `d1_read_queries`, `d1_write_queries`, `d1_rows_read`, `d1_rows_written`, `d1_query_time_p50`, `d1_query_time_p99` (ms) | `d1AnalyticsAdaptiveGroups` | `d1_databases` | `databaseRole` |
+  | `queue_backlog_messages`, `queue_backlog_bytes` | `queueBacklogAdaptiveGroups` | `queues` | |
+  | `queue_consumer_concurrency` | `queueConsumerMetricsAdaptiveGroups` | `queues` | |
+  | `queue_operations`, `queue_lag_time` (ms), `queue_retries` | `queueMessageOperationsAdaptiveGroups` | `queues` | `actionType`, `outcome`, `consumerType` |
+  | `r2_requests` | `r2OperationsAdaptiveGroups` | `r2_buckets` | `actionType`, `actionStatus` |
+  | `r2_stored_bytes`, `r2_objects` | `r2StorageAdaptiveGroups` | `r2_buckets` | `storageClass` |
+
+  The server builds the GraphQL query with `accountTag`, the range and the scope as variables:
+  the script, or the IDs of the bound resources of the metric's kind (`<field>_in`). It checks
+  the script or resource ID of every returned row. A metric of a kind the binding does not
+  bind is `invalid_query`; `metrics list` shows only the bound kinds. Resource metrics have one
+  series per resource, labeled `namespace`, `database`, `queue` or `bucket` with the resource
+  name from the binding. The account-wide `durableObjectsStorageGroups` has no namespace
+  dimension, so it is not in the catalog. The time bucket is the finest of minute, 15 minutes,
+  hour or day that is at least the step; the response reports it as the step. More than 10,000
+  rows (buckets × resources × dimension values) is `limit_exceeded`.
 - CloudWatch: `{metric, stat, dimensions}`. `stat` is `SampleCount`, `Average`, `Sum`,
   `Minimum`, `Maximum` or a percentile (`p99`, `p99.9`). The namespace and the scope dimensions
   come from the binding. An agent dimension with a scope key and a different value is

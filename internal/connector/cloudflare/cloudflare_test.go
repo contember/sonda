@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -422,12 +423,17 @@ func TestKeys(t *testing.T) {
 }
 
 type sentGraphQL struct {
-	Query     string            `json:"query"`
-	Variables map[string]string `json:"variables"`
+	Query     string `json:"query"`
+	Variables struct {
+		AccountTag    string   `json:"accountTag"`
+		Resources     []string `json:"resources"`
+		DatetimeStart string   `json:"datetimeStart"`
+		DatetimeEnd   string   `json:"datetimeEnd"`
+	} `json:"variables"`
 }
 
 func TestMetric(t *testing.T) {
-	f := &fake{response: `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"rows":[
 		{"sum":{"requests":5},"dimensions":{"scriptName":"api-worker","status":"success","datetimeFifteenMinutes":"2023-11-14T22:30:00Z"}},
 		{"sum":{"requests":2},"dimensions":{"scriptName":"api-worker","status":"clientError","datetimeFifteenMinutes":"2023-11-14T22:15:00Z"}},
 		{"sum":{"requests":7},"dimensions":{"scriptName":"api-worker","status":"success","datetimeFifteenMinutes":"2023-11-14T22:15:00Z"}}
@@ -450,21 +456,15 @@ func TestMetric(t *testing.T) {
 	if err := json.Unmarshal([]byte(sent.body), &body); err != nil {
 		t.Fatal(err)
 	}
-	wantVariables := map[string]string{
-		"accountTag":    "acc-1",
-		"scriptName":    "api-worker",
-		"datetimeStart": "2023-11-14T22:13:20Z",
-		"datetimeEnd":   "2023-11-14T23:13:20Z",
-	}
-	for name, value := range wantVariables {
-		if body.Variables[name] != value {
-			t.Errorf("variable %s = %q, want %q", name, body.Variables[name], value)
-		}
+	v := body.Variables
+	if v.AccountTag != "acc-1" || !reflect.DeepEqual(v.Resources, []string{"api-worker"}) ||
+		v.DatetimeStart != "2023-11-14T22:13:20Z" || v.DatetimeEnd != "2023-11-14T23:13:20Z" {
+		t.Errorf("variables = %+v", v)
 	}
 	if strings.Contains(body.Query, "api-worker") || strings.Contains(body.Query, "acc-1") {
 		t.Errorf("scope is interpolated into the query: %s", body.Query)
 	}
-	for _, part := range []string{"sum { requests }", "dimensions { scriptName datetimeFifteenMinutes status }", "scriptName: $scriptName", "orderBy: [datetimeFifteenMinutes_ASC]"} {
+	for _, part := range []string{"rows: workersInvocationsAdaptive(", "sum { requests }", "dimensions { scriptName datetimeFifteenMinutes status }", "scriptName_in: $resources", "orderBy: [datetimeFifteenMinutes_ASC]"} {
 		if !strings.Contains(body.Query, part) {
 			t.Errorf("query lacks %q: %s", part, body.Query)
 		}
@@ -512,7 +512,7 @@ func TestMetricBuckets(t *testing.T) {
 }
 
 func TestMetricRequestDurationByDay(t *testing.T) {
-	f := &fake{response: `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"rows":[
 		{"quantiles":{"requestDurationP99":2500},"dimensions":{"scriptName":"api-worker","date":"2023-11-14"}}
 	]}]}}}`}
 	client, scope := setup(t, f)
@@ -530,11 +530,11 @@ func TestMetricRequestDurationByDay(t *testing.T) {
 }
 
 func TestMetricRowLimit(t *testing.T) {
-	rows := make([]string, maxInvocationRows)
+	rows := make([]string, maxMetricRows)
 	for i := range rows {
 		rows[i] = `{"sum":{"requests":1},"dimensions":{"scriptName":"api-worker","datetimeMinute":"2023-11-14T22:15:00Z"}}`
 	}
-	f := &fake{response: `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[` + strings.Join(rows, ",") + `]}]}}}`}
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"rows":[` + strings.Join(rows, ",") + `]}]}}}`}
 	client, scope := setup(t, f)
 	matrix, _, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "requests"}, testRange, time.Minute)
 	if !isCode(err, api.CodeLimitExceeded) || matrix != nil {
@@ -543,14 +543,22 @@ func TestMetricRowLimit(t *testing.T) {
 }
 
 func TestMetricCatalogIsComplete(t *testing.T) {
-	for _, name := range telemetry.CloudflareMetrics {
-		if _, ok := metricFields[name]; !ok {
+	for name, metric := range telemetry.CloudflareMetrics {
+		field, ok := metricFields[name]
+		if !ok {
 			t.Errorf("metric %s has no GraphQL field", name)
+			continue
+		}
+		if field.dataset.resource != metric.Resource {
+			t.Errorf("metric %s reads %s, but the catalog says %s", name, field.dataset.resource, metric.Resource)
+		}
+		if slices.Contains(metric.Dimensions, field.dataset.label) {
+			t.Errorf("metric %s has dimension %s, which is its resource label", name, field.dataset.label)
 		}
 	}
-	for _, name := range telemetry.CloudflareDimensions {
-		if _, ok := dimensionFields[name]; !ok {
-			t.Errorf("dimension %s has no GraphQL field", name)
+	for name := range metricFields {
+		if _, ok := telemetry.CloudflareMetrics[name]; !ok {
+			t.Errorf("GraphQL field of %s is not in the catalog", name)
 		}
 	}
 }
@@ -564,7 +572,7 @@ func TestMetricErrors(t *testing.T) {
 	}{
 		{"graphql error", `{"data":null,"errors":[{"message":"not authorized for that account"}]}`, api.CodeUpstreamError, "not authorized"},
 		{"no data", `{"data":null,"errors":null}`, api.CodeUpstreamError, "no GraphQL data"},
-		{"foreign script", `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[{"sum":{"requests":1},"dimensions":{"scriptName":"other","datetimeMinute":"2023-11-14T22:15:00Z"}}]}]}}}`, api.CodeInternal, "outside the scope"},
+		{"foreign script", `{"data":{"viewer":{"accounts":[{"rows":[{"sum":{"requests":1},"dimensions":{"scriptName":"other","datetimeMinute":"2023-11-14T22:15:00Z"}}]}]}}}`, api.CodeInternal, "outside the scope"},
 	}
 	for _, tt := range tests {
 		f := &fake{response: tt.response}
@@ -579,4 +587,115 @@ func TestMetricErrors(t *testing.T) {
 func isCode(err error, code api.ErrorCode) bool {
 	e, ok := apierr.As(err)
 	return ok && e.Code == code
+}
+
+const (
+	mainDatabase  = "00000000-0000-4000-8000-000000000001"
+	auditDatabase = "00000000-0000-4000-8000-000000000002"
+)
+
+// setupMetrics returns a metric scope of a binding with two D1 databases and no other resources.
+func setupMetrics(t *testing.T, f *fake) (*Client, authz.CloudflareScope) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(f.handler))
+	t.Cleanup(server.Close)
+	cfg, err := config.Parse([]byte(`
+sources:
+  cf: { type: cloudflare, url: "`+server.URL+`/client/v4", account_id: acc-1, auth: { type: bearer, token: secret } }
+services:
+  api:
+    environments:
+      production:
+        metrics:
+          source: cf
+          script: api-worker
+          d1_databases: { main: `+mainDatabase+`, audit: `+auditDatabase+` }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
+		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+	}}
+	metricScope, err := authz.New(cfg, nil).MetricScope(identity, "api", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := metricScope.Cloudflare()
+	client, err := New(cfg.Sources["cf"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, scope
+}
+
+func TestResourceMetric(t *testing.T) {
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"rows":[
+		{"sum":{"rowsRead":10},"dimensions":{"databaseId":"` + mainDatabase + `","databaseRole":"primary","datetimeMinute":"2023-11-14T22:15:00Z"}},
+		{"sum":{"rowsRead":4},"dimensions":{"databaseId":"` + auditDatabase + `","databaseRole":"primary","datetimeMinute":"2023-11-14T22:15:00Z"}}
+	]}]}}}`}
+	client, scope := setupMetrics(t, f)
+	m := telemetry.CloudflareMetricQuery{Metric: "d1_rows_read", By: []string{"databaseRole"}}
+	matrix, _, err := client.Metric(context.Background(), scope, m, testRange, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body sentGraphQL
+	if err := json.Unmarshal([]byte(f.requests[0].body), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(body.Variables.Resources, []string{mainDatabase, auditDatabase}) {
+		t.Errorf("resources = %v", body.Variables.Resources)
+	}
+	for _, part := range []string{"rows: d1AnalyticsAdaptiveGroups(", "databaseId_in: $resources", "sum { rowsRead }", "dimensions { databaseId datetimeMinute databaseRole }"} {
+		if !strings.Contains(body.Query, part) {
+			t.Errorf("query lacks %q: %s", part, body.Query)
+		}
+	}
+	if strings.Contains(body.Query, mainDatabase) {
+		t.Errorf("scope is interpolated into the query: %s", body.Query)
+	}
+
+	got := map[string]float64{}
+	for _, s := range matrix {
+		if s.Metric["databaseRole"] != "primary" {
+			t.Errorf("series %v lacks the dimension", s.Metric)
+		}
+		got[string(s.Metric["database"])] = float64(s.Values[0].Value)
+	}
+	if !reflect.DeepEqual(got, map[string]float64{"main": 10, "audit": 4}) {
+		t.Errorf("series by database name = %v", got)
+	}
+}
+
+func TestResourceMetricScale(t *testing.T) {
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"rows":[
+		{"quantiles":{"queryBatchTimeMsP99":12.5},"dimensions":{"databaseId":"` + mainDatabase + `","datetimeHour":"2023-11-14T22:00:00Z"}}
+	]}]}}}`}
+	client, scope := setupMetrics(t, f)
+	matrix, _, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "d1_query_time_p99"}, testRange, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matrix) != 1 || matrix[0].Values[0].Value != 12.5 || matrix[0].Metric["database"] != "main" {
+		t.Errorf("matrix = %v", matrix)
+	}
+}
+
+func TestResourceMetricScope(t *testing.T) {
+	foreign := `{"data":{"viewer":{"accounts":[{"rows":[
+		{"sum":{"rowsRead":1},"dimensions":{"databaseId":"00000000-0000-4000-8000-000000000003","datetimeMinute":"2023-11-14T22:15:00Z"}}
+	]}]}}}`
+	client, scope := setupMetrics(t, &fake{response: foreign})
+	if _, _, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "d1_rows_read"}, testRange, time.Minute); !isCode(err, api.CodeInternal) {
+		t.Errorf("foreign database: error = %v", err)
+	}
+
+	f := &fake{response: `{"data":{"viewer":{"accounts":[{"rows":[]}]}}}`}
+	client, scope = setupMetrics(t, f)
+	_, _, err := client.Metric(context.Background(), scope, telemetry.CloudflareMetricQuery{Metric: "queue_backlog_messages"}, testRange, time.Minute)
+	if !isCode(err, api.CodeInvalidQuery) || !strings.Contains(err.Error(), "queues") || len(f.requests) != 0 {
+		t.Errorf("unbound queues: error = %v, %d requests", err, len(f.requests))
+	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/identities"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 type Authorizer struct {
@@ -307,7 +308,7 @@ func (s MetricScope) Cloudflare() (CloudflareScope, bool) {
 	if s.binding.Source.Type != config.SourceCloudflare {
 		return CloudflareScope{}, false
 	}
-	return CloudflareScope{Target: s.Target, source: s.binding.Source, script: s.binding.Script}, true
+	return CloudflareScope{Target: s.Target, source: s.binding.Source, script: s.binding.Script, resources: s.binding.CloudflareResources}, true
 }
 
 func (s MetricScope) CloudWatch() (CloudWatchMetricScope, bool) {
@@ -356,16 +357,23 @@ func traceServiceName(b *config.TraceBinding) string {
 	return b.ServiceName
 }
 
-// CloudflareScope restricts a Cloudflare account to one Worker script.
+// CloudflareScope restricts a Cloudflare account to one Worker script and, for metrics, to
+// the account resources bound to the service.
 type CloudflareScope struct {
 	Target
-	source *config.Source
-	script string
+	source    *config.Source
+	script    string
+	resources map[telemetry.CloudflareResource]map[string]string
 }
 
 func (s CloudflareScope) Source() *config.Source { return s.source }
 func (s CloudflareScope) AccountID() string      { return s.source.CloudflareAccountID }
 func (s CloudflareScope) Script() string         { return s.script }
+
+// Resources returns a copy of the bound resources of the kind, by name; empty if none are bound.
+func (s CloudflareScope) Resources(kind telemetry.CloudflareResource) map[string]string {
+	return maps.Clone(s.resources[kind])
+}
 
 // LogGroupScope restricts an AWS account to the service's CloudWatch log groups.
 type LogGroupScope struct {

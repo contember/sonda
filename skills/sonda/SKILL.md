@@ -86,9 +86,12 @@ write the service name, selector, script, log group or namespace yourself.
   write a field with such a name in backticks. Not supported: `/` as division, escaped quotes
   or slashes inside literals, `/` or `[` inside a regex `[...]` class. A `stats` query returns
   series.
-- `cloudflare-metric` metrics: `requests`, `errors`, `subrequests`, `cpu_time_p50`,
-  `cpu_time_p99`, `duration_p50`, `duration_p99` (times in ms); `by`: `status`,
-  `scriptVersion`. The step is rounded to minute, 15 minutes, hour or day.
+- `cloudflare-metric` metrics of the Worker: `requests`, `errors`, `subrequests`,
+  `cpu_time_p50`, `cpu_time_p99` (µs), `duration_p50`, `duration_p99` (ms); `by`: `status`,
+  `scriptVersion`. If the service binds them, also Durable Objects (`do_*`), D1 (`d1_*`),
+  Queues (`queue_*`) and R2 (`r2_*`), one series per resource name; `sonda metrics list`
+  shows what the service has, and an unknown `by` dimension is rejected with the allowed ones.
+  The step is rounded to minute, 15 minutes, hour or day.
 - `cloudwatch-metric` stats: `SampleCount`, `Average`, `Sum`, `Minimum`, `Maximum`, `p99`, …;
   optional `dimensions` narrow further. No metric math or `SEARCH`. The step is rounded up to
   whole minutes.

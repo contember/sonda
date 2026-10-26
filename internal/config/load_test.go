@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/contember/sonda/api"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 const validConfig = `
@@ -127,10 +128,15 @@ services:
     environments:
       production:
         logs: { source: cf, script: edge-worker }
-        metrics: { source: cf, script: edge-worker }
+        metrics:
+          source: cf
+          script: edge-worker
+          d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b }
+          queues: { jobs: 0123456789abcdef0123456789abcdef }
         traces: { source: cf, script: edge-worker }
     signals:
       requests: { metric: requests, by: [status] }
+      rows: { metric: d1_rows_read }
   db:
     environments:
       production:
@@ -168,6 +174,11 @@ func TestParseBackends(t *testing.T) {
 	}
 	if worker.Metrics.Dialect() != api.DialectCloudflareMetric || worker.Traces.Dialect() != api.DialectCloudflareQuery {
 		t.Errorf("cloudflare dialects = %s, %s", worker.Metrics.Dialect(), worker.Traces.Dialect())
+	}
+	resources := worker.Metrics.CloudflareResources
+	if len(resources) != 2 || resources[telemetry.CloudflareD1Databases]["main"] != "6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b" ||
+		resources[telemetry.CloudflareQueues]["jobs"] != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("cloudflare resources = %v", resources)
 	}
 	want := Signal{Dialect: api.DialectCloudflareMetric, Query: `{"metric":"requests","by":["status"]}`}
 	if got := cfg.Services["worker"].Signals["requests"]; got != want {
@@ -242,7 +253,15 @@ func TestParseBackendErrors(t *testing.T) {
 		{"aws metrics with too many dimensions", [2]string{"{ DBClusterIdentifier: engine }", "{ A: a, B: b, C: c, D: d, E: e, F: f, G: g, H: h, I: i, J: j, K: k }"}, "dimensions must have 1 to 10 entries"},
 		{"log group ARN", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[\"arn:aws:logs:eu-west-1:1:log-group:/aws/x\"]"}, "must be a log group name, not an ARN"},
 		{"aws metrics with empty dimension", [2]string{"{ DBClusterIdentifier: engine }", `{ DBClusterIdentifier: "" }`}, "must not be empty"},
-		{"metrics on tempo", [2]string{"metrics: { source: cf,", "metrics: { source: tempo,"}, "expected prometheus, cloudflare or aws"},
+		{"metrics on tempo", [2]string{"metrics:\n          source: cf", "metrics:\n          source: tempo"}, "expected prometheus, cloudflare or aws"},
+		{"d1 database name instead of ID", [2]string{"main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b", "main: main-db"}, `d1_databases.main: "main-db" must be a database UUID`},
+		{"queue name instead of ID", [2]string{"jobs: 0123456789abcdef0123456789abcdef", "jobs: jobs-queue"}, "must be a queue ID of 32 hex characters, not the queue name"},
+		{"invalid r2 bucket", [2]string{"queues: {", "r2_buckets: { assets: Assets_Bucket }\n          queues: {"}, `r2_buckets.assets: "Assets_Bucket" must be a bucket name`},
+		{"invalid durable object namespace", [2]string{"queues: {", "durable_object_namespaces: { rooms: ROOMS }\n          queues: {"}, "must be a namespace ID of 32 hex characters"},
+		{"duplicate resource ID", [2]string{"{ jobs: 0123456789abcdef0123456789abcdef }", "{ jobs: 0123456789abcdef0123456789abcdef, retry: 0123456789abcdef0123456789abcdef }"}, "queues: jobs and retry have the same ID"},
+		{"empty resources", [2]string{"{ jobs: 0123456789abcdef0123456789abcdef }", "{}"}, "metrics.queues must not be empty"},
+		{"resources on cloudflare logs", [2]string{"logs: { source: cf, script: edge-worker }", "logs: { source: cf, script: edge-worker, queues: { a: 0123456789abcdef0123456789abcdef } }"}, "logs.queues is not allowed for cloudflare sources"},
+		{"resources on aws metrics", [2]string{"dimensions: { DBClusterIdentifier: engine } }", "dimensions: { DBClusterIdentifier: engine }, r2_buckets: { a: assets } }"}, "metrics.r2_buckets is not allowed for aws sources"},
 
 		{"tempo traces without service", [2]string{"{ source: tempo, service: engine-api }", "{ source: tempo }"}, "traces.service is required"},
 		{"tempo traces with script", [2]string{"{ source: tempo, service: engine-api }", "{ source: tempo, service: a, script: a }"}, "traces.script is not allowed for tempo sources"},
@@ -250,6 +269,8 @@ func TestParseBackendErrors(t *testing.T) {
 
 		{"string signal on cloudflare", [2]string{"{ metric: requests, by: [status] }", "sum(up)"}, "a string signal is PromQL"},
 		{"unknown cloudflare metric", [2]string{"metric: requests", "metric: bytes"}, `unknown metric "bytes"`},
+		{"dimension of another dataset", [2]string{"metric: d1_rows_read }", "metric: d1_rows_read, by: [status] }"}, `unknown dimension "status" of metric d1_rows_read`},
+		{"signal of an unbound resource", [2]string{"metric: d1_rows_read }", "metric: r2_requests }"}, "signals.rows: metric r2_requests needs r2_buckets in the metrics binding of environment production"},
 		{"unknown signal field", [2]string{"by: [status]", "groupBy: [status]"}, "unknown field"},
 		{"invalid cloudwatch stat", [2]string{"stat: p99", "stat: median"}, `unknown stat "median"`},
 		{"signal list", [2]string{"{ metric: CPUUtilization, stat: p99 }", "[a]"}, "must be a PromQL string or a mapping"},

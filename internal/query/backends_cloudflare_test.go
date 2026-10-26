@@ -15,6 +15,7 @@ import (
 	"github.com/contember/sonda/internal/connector/cloudflare"
 	"github.com/contember/sonda/internal/identities"
 	"github.com/contember/sonda/internal/policy"
+	"github.com/contember/sonda/internal/telemetry"
 )
 
 var cloudflareRange = api.TimeRange{From: time.UnixMilli(1_700_000_000_000).UTC(), To: time.UnixMilli(1_700_003_600_000).UTC()}
@@ -126,7 +127,7 @@ func TestCloudflareTraceSearchHonorsLimit(t *testing.T) {
 
 func TestCloudflareMetricsReportBucketAsStep(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"data":{"viewer":{"accounts":[{"workersInvocationsAdaptive":[
+		_, _ = io.WriteString(w, `{"data":{"viewer":{"accounts":[{"rows":[
 			{"sum":{"requests":3},"dimensions":{"scriptName":"api-worker","datetimeHour":"2023-11-14T22:00:00Z"}}
 		]}]}}}`)
 	}))
@@ -175,6 +176,46 @@ services:
 	for _, info := range infos {
 		if info.Help == "" {
 			t.Errorf("metric %s has no help", info.Name)
+		}
+	}
+}
+
+func TestCloudflareMetricNamesFollowBoundResources(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+sources:
+  cf: { type: cloudflare, account_id: acc, auth: { type: bearer, token: t } }
+services:
+  api:
+    environments:
+      production:
+        metrics: { source: cf, script: api-worker, queues: { jobs: 0123456789abcdef0123456789abcdef } }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
+		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+	}}
+	scope, err := authz.New(cfg, nil).MetricScope(identity, "api", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, _ := scope.Cloudflare()
+	infos, err := newCloudflareMetrics(cf, nil).names(context.Background(), cloudflareRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, info := range infos {
+		listed[info.Name] = true
+	}
+	for name, metric := range telemetry.CloudflareMetrics {
+		bound := metric.Resource == telemetry.CloudflareScript || metric.Resource == telemetry.CloudflareQueues
+		if listed[name] != bound {
+			t.Errorf("metric %s listed %t, want %t", name, listed[name], bound)
+		}
+		if cloudflareMetricHelp[name] == "" {
+			t.Errorf("metric %s has no help", name)
 		}
 	}
 }

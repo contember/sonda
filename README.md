@@ -81,7 +81,9 @@ parts that matter for security:
 - **Bindings** are the scoping boundary. Every query of the service is restricted to them:
   - Loki and Prometheus `selector`: must contain an `=` or `=~` matcher that rejects the empty
     value, and the labels must really identify the service in your data.
-  - Cloudflare `script`: the Worker script name.
+  - Cloudflare `script`: the Worker script name. Metrics bindings can also map the service's
+    Durable Object namespaces, D1 databases, queues and R2 buckets by name to their IDs
+    (`durable_object_namespaces`, `d1_databases`, `queues`, `r2_buckets`).
   - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns or ARNs.
   - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
@@ -119,10 +121,11 @@ services:
     environments:
       production:
         logs:    { source: cloudflare, script: web-worker }
-        metrics: { source: cloudflare, script: web-worker }
+        metrics: { source: cloudflare, script: web-worker, d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b } }
         traces:  { source: cloudflare, script: web-worker }
     signals:
       errors: { metric: errors, by: [status] }  # Cloudflare signals are mappings
+      slow_queries: { metric: d1_query_time_p99 }
   engine-db:
     environments:
       production:
