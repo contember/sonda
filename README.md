@@ -17,9 +17,10 @@ compact responses with links back to the source.
 | **Grafana Tempo** | traces |
 | **Kubernetes** pods, ReplicaSets and events | workloads |
 | **Grafana** managed alerting | alerts |
+| **Vercel** runtime logs | logs |
 
 ```text
-agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo / Kubernetes / Grafana
+agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo / Kubernetes / Grafana / Vercel
           one token     authz, query scoping, grouping, limits, audit
 ```
 
@@ -27,13 +28,12 @@ agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus
 - **Service-centric.** Agents ask for `engine-api` in `production`; Sonda knows the Sentry
   project, the Loki selector, the Worker script, the log groups and the Tempo service name.
 - **Enforced scoping.** Native queries are allowed in each backend's own dialect (LogQL,
-  PromQL, TraceQL, Logs Insights, Cloudflare query JSON). Sonda adds the service scope to
+  PromQL, TraceQL, Logs Insights, Cloudflare query JSON, Vercel KQL). Sonda adds the service scope to
   every query, so a query cannot reach another service. `describe` tells the agent which
   dialect a capability takes.
-- **Compact answers.** Log search returns an exact count (an estimate for Cloudflare) and a
-  sample grouped into patterns;
-  metrics return summaries; a trace is a span tree. Large results stay on the server behind
-  result handles.
+- **Compact answers.** Log search returns an exact count (an estimate for Cloudflare, capped at
+  10,000 for Vercel) and a sample grouped into patterns; metrics return summaries; a trace is a
+  span tree. Large results stay on the server behind result handles.
 - **Audited and limited.** Every request is logged; time range, lines, response size,
   timeouts, rate and concurrency are limited per identity.
 
@@ -95,6 +95,8 @@ parts that matter for security:
   - Sentry traces `project` and `environment`, as for errors. Sentry has no project-scoped
     span search, so Sonda checks the project and environment of every span it returns.
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
+  - Vercel `project` and `environment`: the project ID (`prj_…`, not the name) and the Vercel
+    environment, e.g. `production` or `preview`.
   - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.
     The alerts API returns the alerts of every service, so this filter in Sonda is the scope.
 - **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `alerts`) in
@@ -109,7 +111,7 @@ parts that matter for security:
 - **Admin token** (`admin.token`) can create tokens for every project. Keep it secret and expose
   `/admin` only on a trusted network.
 
-Sources and bindings for Cloudflare, AWS, Tempo, Kubernetes and Grafana alerting:
+Sources and bindings for Cloudflare, AWS, Tempo, Kubernetes, Grafana alerting and Vercel:
 
 ```yaml
 sources:
@@ -136,6 +138,10 @@ sources:
     type: grafana                      # Grafana-managed alerts; a prometheus source serves its own rules' alerts
     url: https://grafana.example.com
     auth: { type: bearer, token: "${GRAFANA_TOKEN}" }  # a Viewer service account token
+  vercel:
+    type: vercel
+    team_id: team_abc123               # the team ID, not the slug
+    auth: { type: bearer, token: "${VERCEL_TOKEN}" }  # url defaults to https://api.vercel.com
 
 projects:
   web:
@@ -165,6 +171,14 @@ projects:
             traces: { source: tempo-prod, service: engine-api }  # resource.service.name
             workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
             alerts: { source: grafana, selector: '{service="engine-api"}' }
+  site:
+    services:
+      site-frontend:
+        environments:
+          production:
+            logs: { source: vercel, project: prj_abc123, environment: production }
+          preview:
+            logs: { source: vercel, project: prj_abc123, environment: preview }
 ```
 
 A signal is PromQL for Prometheus and a mapping for Cloudflare or CloudWatch. All metrics

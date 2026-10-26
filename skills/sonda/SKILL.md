@@ -1,6 +1,6 @@
 ---
 name: sonda
-description: Investigate production issues through the Sonda CLI - errors and traces (Sentry), logs, metrics, traces, Kubernetes workloads and active alerts of a service from Loki, Prometheus, Cloudflare Workers Observability, AWS CloudWatch, Tempo, Kubernetes and Grafana, with one credential. Use when the user asks what is happening in production or staging, why a service fails, whether a deploy broke something, or to check errors, logs, latency, error rates or traces of a service.
+description: Investigate production issues through the Sonda CLI - errors and traces (Sentry), logs, metrics, traces, Kubernetes workloads and active alerts of a service from Loki, Prometheus, Cloudflare Workers Observability, AWS CloudWatch, Tempo, Kubernetes, Grafana and Vercel, with one credential. Use when the user asks what is happening in production or staging, why a service fails, whether a deploy broke something, or to check errors, logs, latency, error rates or traces of a service.
 ---
 
 # Sonda
@@ -86,6 +86,7 @@ write the service name, selector, script, log group or namespace yourself.
 | `promql` | `metrics query` | `sum(rate(http_requests_total{code=~"5.."}[5m]))` |
 | `cloudflare-query` | `logs query`, `traces query` | `{"view":"events","filters":[{"key":"$workers.outcome","operation":"eq","type":"string","value":"exception"}],"needle":{"value":"timeout"}}` |
 | `logs-insights` | `logs query` | `fields @timestamp, @message \| filter @message like /deadlock/ \| sort @timestamp desc \| limit 50` |
+| `vercel-kql` | `logs query` | `level:error AND requestPath:*checkout* AND timeout` |
 | `cloudflare-metric` | `metrics query` | `{"metric":"requests","by":["status"]}` |
 | `cloudwatch-metric` | `metrics query` | `{"metric":"CPUUtilization","stat":"Average"}` |
 | `traceql` | `traces query` | `{ status = error && duration > 500ms }` |
@@ -101,6 +102,13 @@ write the service name, selector, script, log group or namespace yourself.
   write a field with such a name in backticks. Not supported: `/` as division, escaped quotes
   or slashes inside literals, `/` or `[` inside a regex `[...]` class. A `stats` query returns
   series.
+- `vercel-kql` is Vercel's subset of KQL over runtime logs: `field:value`, `field:(a OR b)`,
+  `field:*text*`, `field:*`, `NOT`, `AND`, `OR`, parentheses. A bare word matches a whole word
+  of the message, case-insensitive; a quoted phrase is not supported, escape spaces instead
+  (`connection\ refused`). Fields: `level`, `source`, `deploymentId`, `requestId`, `domain`,
+  `requestPath`, `requestMethod`, `region`, `traceId`, `runtime`, `stream`. Sonda sets the
+  project and environment. A query returns lines only; Vercel keeps logs for a day on Pro, and
+  a slow query fails after about 12 seconds, so keep ranges short.
 - `cloudflare-metric` metrics of the Worker: `requests`, `errors`, `subrequests`,
   `cpu_time_p50`, `cpu_time_p99` (µs), `duration_p50`, `duration_p99` (ms); `by`: `status`,
   `scriptVersion`. If the service binds them, also Durable Objects (`do_*`), D1 (`d1_*`),
@@ -125,7 +133,8 @@ write the service name, selector, script, log group or namespace yourself.
 - Scoping is automatic. In PromQL and LogQL, write `rate(http_requests_total[5m])`, not
   `{app="..."}`; adding labels narrows further. In TraceQL, every `{ … }` gets the service
   condition. Cloudflare filters are AND-combined with the script filter. Sentry queries run
-  in the service's project and environment.
+  in the service's project and environment. Vercel KQL is AND-combined with the environment;
+  keep its parentheses and quotes balanced.
 - `trace` returns the whole trace in `data.spans`. Spans of services you have no traces grant
   for have `"granted": false` and keep only IDs, service, timing and status. A trace without a span of the
   service is `not_found`, the same as a missing trace; widen `--since` if the trace may be
@@ -135,7 +144,8 @@ write the service name, selector, script, log group or namespace yourself.
   or filter more.
 - `logs search` groups only a sample (`meta.sampled: true`, `sampleRange`); group counts are
   estimates. `total` is exact for Loki and CloudWatch; Cloudflare samples events, so its
-  `total` is an estimate.
+  `total` is an estimate. Vercel counts up to 10,000; above that `totalLowerBound: true`.
+  On Vercel, `--contains` matches whole words, not substrings.
 - Secrets in lines are redacted as `[REDACTED]` where recognized; redaction is not complete.
 - Exit codes: 1 usage or invalid query, 2 not found or not authenticated, 3 limit or rate
   limit (wait and retry), 4 upstream or server error.

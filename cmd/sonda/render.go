@@ -148,7 +148,11 @@ func sparkline(points []api.Point) string {
 func renderLogSearch(w io.Writer, resp api.Response[api.LogSearchResult]) {
 	renderMeta(w, resp.Meta)
 	d := resp.Data
-	fmt.Fprintf(w, "# %s\n# %d matching lines, %d sampled", d.Query, d.Total, d.SampleSize)
+	atLeast := ""
+	if d.TotalLowerBound {
+		atLeast = "at least "
+	}
+	fmt.Fprintf(w, "# %s\n# %s%d matching lines, %d sampled", d.Query, atLeast, d.Total, d.SampleSize)
 	if d.SampleRange != nil {
 		fmt.Fprintf(w, " (%s → %s)", d.SampleRange.From.Format(time.RFC3339), d.SampleRange.To.Format(time.RFC3339))
 	}

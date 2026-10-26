@@ -18,6 +18,7 @@ import (
 	"github.com/contember/sonda/internal/connector/sentry"
 	"github.com/contember/sonda/internal/connector/tempo"
 	"github.com/contember/sonda/internal/connector/upstream"
+	"github.com/contember/sonda/internal/connector/vercel"
 	"github.com/contember/sonda/internal/issuer"
 )
 
@@ -30,6 +31,7 @@ type Connectors struct {
 	AWS        map[string]*aws.Client
 	Tempo      map[string]*tempo.Client
 	Kubernetes map[string]*kubernetes.Client
+	Vercel     map[string]*vercel.Client
 	// Alerting holds a client for every Prometheus and Grafana source.
 	Alerting map[string]*alerting.Client
 }
@@ -45,6 +47,7 @@ func NewConnectors(cfg *config.Config, identity *issuer.Issuer) (Connectors, err
 		AWS:        map[string]*aws.Client{},
 		Tempo:      map[string]*tempo.Client{},
 		Kubernetes: map[string]*kubernetes.Client{},
+		Vercel:     map[string]*vercel.Client{},
 		Alerting:   map[string]*alerting.Client{},
 	}
 	// One AWS configuration per aws source, shared by its CloudWatch client and by the sources
@@ -98,6 +101,8 @@ func (c Connectors) add(name string, src *config.Source, client *http.Client) er
 		c.Kubernetes[name] = kubernetes.New(src, client)
 	case config.SourceGrafana:
 		c.Alerting[name] = alerting.New(src, client)
+	case config.SourceVercel:
+		c.Vercel[name] = vercel.New(src, client)
 	default:
 		return fmt.Errorf("source %s: unsupported type %s", name, src.Type)
 	}

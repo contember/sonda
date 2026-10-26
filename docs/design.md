@@ -16,11 +16,12 @@ returns compact, evidence-carrying responses.
 | Language | Go | TypeScript/Bun | The Prometheus PromQL parser and the AWS SDK are Go. Single static binary. |
 | Binaries | `sonda-server` and `sonda` (CLI), one Go module | One binary with subcommands | The CLI imports only the `api` package, so it does not link the parsers, connectors or database drivers. |
 | Native queries | Allowed, in each backend's own dialect, scoped to one service by `policy` | Plain passthrough; string concatenation | Passthrough leaks other services. String concatenation protects only one selector. |
-| Query languages | Native dialect per backend (LogQL, PromQL, TraceQL, Logs Insights, Cloudflare query JSON, structured metric JSON) plus backend-neutral `logs search` and `traces search` | One Sonda query language translated to every backend | Agents already know the native dialects. A translated language covers only the common subset; the neutral search covers the common case. `describe` reports the dialect per capability. |
+| Query languages | Native dialect per backend (LogQL, PromQL, TraceQL, Logs Insights, Cloudflare query JSON, Vercel KQL, structured metric JSON) plus backend-neutral `logs search` and `traces search` | One Sonda query language translated to every backend | Agents already know the native dialects. A translated language covers only the common subset; the neutral search covers the common case. `describe` reports the dialect per capability. |
 | TraceQL scoping | Own lexer `internal/traceql` | Tempo's parser | Tempo is AGPL-licensed, like Loki. Sonda is MIT. Same approach as `internal/logql`. |
 | Logs Insights scoping | Own lexer `internal/insights` and an allowlist of commands | Rely on the `logGroupIdentifiers` API parameter alone | The query text can read other log groups itself (`SOURCE`, `join`, `appendcols`). AWS does not document which wins. |
 | CloudWatch metrics | Only `MetricStat`, from JSON `{metric, stat, dimensions}` | `Expression`, `SEARCH`, Metrics Insights | They cannot be scoped (section 6). |
 | Cloudflare queries | A JSON subset of the Workers Observability query, AND-wrapped with the script filter | Passthrough of the full request body | `queryId` runs a saved query and `datasets` changes what is read; both could bypass the filters. |
+| Vercel logs | The Observability events API that the Vercel CLI's `logs` command uses | The documented per-deployment runtime logs stream | The stream covers one deployment and has no filter or range. The events API is not in Vercel's public OpenAPI spec, so it may change without notice. |
 | Cloudflare metrics | Fixed catalog over GraphQL Analytics datasets of Workers, Durable Objects, D1, Queues and R2, query built by the server | Agent-written GraphQL | GraphQL can name any script, resource or account. The server sets `accountTag`, the bound script or resource IDs and the range as variables. |
 | Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
 | Sentry traces | The spans dataset of the organization events endpoint, with the project and environment as parameters and a post-check of every span | Project-scoped endpoints | Sentry has no project-scoped span search. The parameters are ANDed with the query text, and the post-check catches a filter that Sentry did not apply. |
@@ -65,6 +66,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster) |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
+  | `vercel` | Vercel Observability events | logs | `team_id` (`team_…`, not the slug), bearer token; `url` defaults to `https://api.vercel.com` |
 
   Auth is `none`, `bearer`, `basic` or `eks` (`cluster` and `aws_source`: an EKS token signed
   with the credentials of that aws source). Extra headers carry e.g. `X-Scope-OrgID` for
@@ -92,6 +94,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `logs` | `loki` | `selector`, e.g. `{app="engine", namespace="prod"}` |
   | `logs` | `cloudflare` | `script` (Worker script name) |
   | `logs` | `aws` | `log_groups`: 1 to 50 unique, exact names (not ARNs), no `*` |
+  | `logs` | `vercel` | `project` (the ID `prj_…`; Vercel returns nothing for a name) + Vercel `environment`, e.g. `production`, `preview` |
   | `metrics` | `prometheus` | `selector`, e.g. `{job="engine", namespace="prod"}` |
   | `metrics` | `cloudflare` | `script`; optional `durable_object_namespaces`, `d1_databases`, `queues`, `r2_buckets` (resource name → ID) |
   | `metrics` | `aws` | `namespace` + `dimensions` (1 to 10) |
@@ -103,7 +106,7 @@ Identity ──< Grant (projects × environments × capabilities)
 
 - **Dialect**: each binding has the query dialect of its native query endpoint: `logql`,
   `promql`, `traceql`, `cloudflare-query`, `cloudflare-metric`, `logs-insights`,
-  `cloudwatch-metric`, `sentry-search`. `describe` returns it per capability with the source type.
+  `cloudwatch-metric`, `sentry-search`, `vercel-kql`. `describe` returns it per capability with the source type.
 - **Signal**: a named metrics query stored without scope, in the native dialect of the
   service's metrics backend. For Prometheus it is a PromQL string, e.g. `error_rate`; Sonda
   injects the environment selector the same way as for native queries. For Cloudflare and
@@ -241,6 +244,7 @@ internal/connector
   tempo/           Tempo HTTP API client
   kubernetes/      Kubernetes API client: pods, ReplicaSets, events
   alerting/        Prometheus-compatible alerts API client (Prometheus, Mimir, Grafana)
+  vercel/          Vercel Observability events client: runtime logs
 internal/query     use cases: overview, errors, logs, metrics, traces, workloads, alerts, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
@@ -255,7 +259,7 @@ Boundaries:
   without a scope from `authz`.
 - `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
   `TraceScope`, `WorkloadScope` and `AlertScope` (a `SelectorScope`), which resolve to one typed variant per source type (`SelectorScope`,
-  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`). Connector methods
+  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
 - `policy` is the only code that turns agent text into upstream query text.
@@ -320,9 +324,10 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | `cloudflare` | `POST /accounts/{account}/workers/observability/telemetry/query` (events, calculations, invocations, traces), `…/telemetry/keys`, `POST /graphql` | `policy` Cloudflare query, `CloudflareScope`, `telemetry.CloudflareMetricQuery` |
 | `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
+| `vercel` | `POST /v1/observability/events` (event `vercel.log`) | `policy` Vercel query, `VercelScope` |
 
 - `policy` values (`policy.LogQL`, `policy.PromQL`, `policy.TraceQL`, the Cloudflare query,
-  the Insights query, the CloudWatch metric) can only be constructed by `policy`. A connector
+  the Insights query, the CloudWatch metric, the Vercel query) can only be constructed by `policy`. A connector
   cannot receive raw agent text.
 - Metadata calls are scoped. Loki and Prometheus pass the scope selector as `match[]` /
   `query`; without it, an agent would see names of other services. Loki labels come from the
@@ -330,7 +335,8 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   `metadata` is not scoped, so it is only used to look up names returned by the scoped
   `label/__name__/values` call. Cloudflare `keys` carries the script filter. CloudWatch
   `GetLogGroupFields` is called per scoped log group, `ListMetrics` with the scope's namespace
-  and dimensions. Cloudflare metric names are a fixed catalog.
+  and dimensions. Cloudflare metric names are a fixed catalog. Vercel log fields are a fixed
+  list, because Vercel has no endpoint for the fields seen in a range.
 - Lookups by ID are fetched unscoped and checked before anything is returned: a Sentry issue
   must be of the scope's project, a trace must contain a span of the service (section 8).
 - One shared HTTP client per source (`upstream`) applies auth and extra headers, for Cloudflare
@@ -445,8 +451,8 @@ Request flow:
    rate and concurrency limits.
 4. For native queries and signals: scope the query text (section 6).
 5. Execute through the connector with the scope.
-6. Post-check: results fetched by ID (Sentry issues, traces), Cloudflare events and the log
-   groups a Logs Insights query scanned.
+6. Post-check: results fetched by ID (Sentry issues, traces), Cloudflare events, Vercel logs
+   and the log groups a Logs Insights query scanned.
 7. Write the audit record: identity, endpoint, service, environment, final upstream query,
    duration, result size, outcome. The same fields go to the server log as a `request` line.
 
@@ -469,6 +475,7 @@ Every native query is scoped by `policy`, in the way that the dialect allows:
 | LogQL | Scope matchers injected into every stream selector by `internal/logql` | Re-lex, every selector carries the matchers; Loki oracle tests |
 | TraceQL | Scope condition added to every spanset filter by `internal/traceql` | Re-lex, every filter ends with the condition; Tempo oracle tests |
 | Cloudflare query | Agent filters wrapped in a group, AND-combined with the script filter | Post-check of every event, aggregate and trace |
+| Vercel KQL | Agent filter in parentheses, AND-combined with the environment; the project in the request scope | Post-check of every log's project and environment |
 | Logs Insights | Allowlist of commands, `SOURCE` and other cross-group words rejected; log groups set by the API parameter | Post-check with `ListLogGroupsForQuery` |
 | Cloudflare metric | No agent query text: the server builds GraphQL from a catalog | Post-check of every row's script or resource ID |
 | CloudWatch metric | No agent query text: `MetricStat` with the scope's namespace and dimensions | — |
@@ -620,6 +627,23 @@ drop the scope. Matchers combine with AND, so:
 - The IAM restriction of `logs:StartQuery` to the configured log groups adds an independent
   layer (section 12).
 
+### Vercel runtime logs
+
+- A request names the team as `ownerId` and the binding's project as the only entry of
+  `projectIds`. Vercel enforces it: a filter that names another project returns nothing.
+- The filter is `environment:"<env>" AND (<agent KQL>)`. The agent KQL must have balanced
+  parentheses outside double-quoted strings, closed strings and no trailing escape, read as
+  Vercel reads them: `\` escapes the next character inside and outside strings, and only `"`
+  delimits a string. Otherwise the group could be closed from inside and the environment
+  bypassed.
+- Post-check: every returned log must have the binding's project and environment, otherwise
+  the request fails with `internal`.
+- A query returns lines only. Vercel's aggregations (`/v2/observability/query`) need the
+  Observability Plus add-on.
+- How far back logs are kept depends on the Vercel plan (a day on Pro). Vercel rejects an older
+  range with HTTP 400, which Sonda returns as `invalid_query` with Vercel's message. A slow
+  query fails with HTTP 504 after about 12 seconds, returned as `upstream_error`.
+
 ### Cloudflare and CloudWatch metrics
 
 Neither accepts query text from the agent:
@@ -663,22 +687,28 @@ Neither accepts query text from the agent:
 `logs search` and `traces search` take structured filters that each backend translates. Values
 are always quoted or sent as JSON values, never pasted into query text.
 
-| Filter | Loki | Cloudflare | CloudWatch | Tempo |
-|---|---|---|---|---|
-| `contains` | `\|= "…"` | `needle`; further values as `$metadata.message includes` leaves | `filter @message like "…"` | — |
-| `where k=v` / `k!=v` | `\| k="v"` (label names only) | `eq` / `neq` string leaves | `filter k = "v"` / `!=` | `k = "v"` / `!=`; `k` is an attribute (`.k`, `span.k`, `resource.k`), `name`, `statusMessage` or `rootServiceName` |
-| `pipeline` | LogQL pipeline | `invalid_request` | `invalid_request` | — |
-| `minDuration`, `maxDuration` | — | `$metadata.duration` `gte` / `lte` | — | `duration >=` / `<=` |
-| `errors` | — | `$metadata.error exists` | — | `status = error` |
-| `name` | — | `$metadata.spanName includes` | — | `name =~ ".*<quoted>.*"` |
+| Filter | Loki | Cloudflare | CloudWatch | Vercel | Tempo |
+|---|---|---|---|---|---|
+| `contains` | `\|= "…"` | `needle`; further values as `$metadata.message includes` leaves | `filter @message like "…"` | one bare term, every character but letters and digits escaped | — |
+| `where k=v` / `k!=v` | `\| k="v"` (label names only) | `eq` / `neq` string leaves | `filter k = "v"` / `!=` | `k:"v"` / `NOT k:"v"` | `k = "v"` / `!=`; `k` is an attribute (`.k`, `span.k`, `resource.k`), `name`, `statusMessage` or `rootServiceName` |
+| `pipeline` | LogQL pipeline | `invalid_request` | `invalid_request` | `invalid_request` | — |
+| `minDuration`, `maxDuration` | — | `$metadata.duration` `gte` / `lte` | — | — | `duration >=` / `<=` |
+| `errors` | — | `$metadata.error exists` | — | — | `status = error` |
+| `name` | — | `$metadata.spanName includes` | — | — | `name =~ ".*<quoted>.*"` |
 
 Logs Insights strings cannot hold escaped quotes, so a CloudWatch value is quoted with the quote
 kind it does not contain; a value with both kinds is `invalid_request`. A Logs Insights search
 returns at most 10,000 lines.
 
+Vercel matches a bare term against whole words of the message, case-insensitive, and ignores
+punctuation; several words are a phrase. So `contains` on Vercel finds words, not substrings.
+`and`, `or` and `not` alone are operators, so their first letter is escaped too.
+
 The total of `logs search` is a Loki instant count query or `recordsMatched` of the same Logs
 Insights query, both exact. Cloudflare's is a `calculations` count with the same filters, which
-Cloudflare weights by each event's sampling rate, so it is an estimate.
+Cloudflare weights by each event's sampling rate, so it is an estimate. Vercel reports no total:
+when more logs match than the sample, Sonda pages through them with only the scope fields
+selected, up to 10,000, and then marks the total with `totalLowerBound`.
 
 ## 7. Agent-efficient responses
 
@@ -702,7 +732,8 @@ Every response uses one envelope:
 
 - `sources` are deep links for a human to verify the finding: Sentry; Grafana Explore for Loki,
   Prometheus and Tempo when `grafana` is configured; the Workers Observability dashboard for
-  Cloudflare; the Logs Insights console for CloudWatch Logs. Without a link, the source entry
+  Cloudflare; the Logs Insights console for CloudWatch Logs. Vercel has no link, because its
+  dashboard addresses teams and projects by slug, not ID. Without a link, the source entry
   carries the upstream query and range instead of a URL.
 - `untrusted` lists the fields that contain raw telemetry. Agents treat them as data, never as
   instructions.
@@ -714,7 +745,7 @@ Every response uses one envelope:
 ### Log search
 
 1. Total of the matching lines in the range: exact for Loki and CloudWatch, an estimate for
-   Cloudflare (section 6, backend-neutral search).
+   Cloudflare, exact up to 10,000 for Vercel (section 6, backend-neutral search).
 2. Sample: fetch up to `max_log_lines` of the newest matching lines. `sampleRange` reports the
    time span they cover.
 3. Redact the lines, then group them into patterns with Drain (`internal/shape/drain.go`). A
@@ -897,6 +928,10 @@ Rules:
   Read-Only" access grants observability. This must be verified against a
   real account before production use; prefer the read-only permission if it works. GraphQL
   Analytics needs "Account Analytics Read".
+- **Vercel token.** Create the token for the one team in `team_id`, with an expiry. Sonda sends
+  only `POST /v1/observability/events`, a read; whether Vercel offers a read-only token scope is
+  open (section 14). The token `vercel login` stores expires after hours and does not fit a
+  server.
 - **Kubernetes role.** Bind Sonda's service account to a Role in each bound namespace with
   only `get` and `list` on `pods`, `events` and `apps/replicasets`. Events are listed for the
   whole namespace and filtered by Sonda, so the role must not be broader than the namespaces in
@@ -954,6 +989,8 @@ Rules:
    every event.
 5. Does the Cloudflare keys endpoint take the range as `from`/`to` or as `timeframe`? Sonda
    sends `from`/`to`; a wrong guess affects only `logs fields`, not the scope.
+6. Can a Vercel access token be limited to reads? If not, the token can also change the team's
+   projects and deployments, and only Sonda's code keeps it read-only.
 
 Resolved: native queries use the same capability as the structured tools (section 1).
 `overview` ranks issues by event count in the range and marks issues first seen in the range

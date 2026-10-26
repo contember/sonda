@@ -27,10 +27,12 @@ type logBackend interface {
 }
 
 type logSearch struct {
-	query   string
-	total   int64
-	streams []telemetry.LogStream
-	source  api.SourceRef
+	query string
+	total int64
+	// totalLowerBound is true when the backend stopped counting before the last match.
+	totalLowerBound bool
+	streams         []telemetry.LogStream
+	source          api.SourceRef
 }
 
 // logQuery holds the result of a native log query. series is non-nil exactly when the query
@@ -90,6 +92,9 @@ func (s *Service) logBackend(scope authz.LogScope) (logBackend, error) {
 	}
 	if groups, ok := scope.CloudWatch(); ok {
 		return newCloudWatchLogs(groups, s.connectors.AWS[groups.Source().Name]), nil
+	}
+	if v, ok := scope.Vercel(); ok {
+		return newVercelLogs(v, s.connectors.Vercel[v.Source().Name]), nil
 	}
 	return nil, unsupported("log", scope.Source())
 }

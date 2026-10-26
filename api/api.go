@@ -92,6 +92,7 @@ const (
 	DialectLogsInsights     Dialect = "logs-insights"
 	DialectCloudWatchMetric Dialect = "cloudwatch-metric"
 	DialectSentrySearch     Dialect = "sentry-search"
+	DialectVercelKQL        Dialect = "vercel-kql"
 )
 
 // BackendInfo tells the agent which source type serves a capability and which query dialect
@@ -205,9 +206,11 @@ type LogSearchRequest struct {
 type LogSearchResult struct {
 	Query string `json:"query"`
 	// Total is the number of matching lines in the range: exact for Loki and CloudWatch, weighted
-	// by sampling for Cloudflare.
-	Total      int64 `json:"total"`
-	SampleSize int   `json:"sampleSize"`
+	// by sampling for Cloudflare, exact for Vercel up to a cap.
+	Total int64 `json:"total"`
+	// TotalLowerBound is true when the source stopped counting, so there are more than Total.
+	TotalLowerBound bool `json:"totalLowerBound,omitempty"`
+	SampleSize      int  `json:"sampleSize"`
 	// SampleRange is the time span of the sampled lines, which are the newest matches.
 	SampleRange *TimeRange `json:"sampleRange,omitempty"`
 	Groups      []LogGroup `json:"groups"`

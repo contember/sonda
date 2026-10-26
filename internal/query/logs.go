@@ -71,11 +71,12 @@ func (s *Service) SearchLogs(ctx context.Context, identity *authz.Identity, serv
 	}
 
 	resp.Data = api.LogSearchResult{
-		Query:      found.query,
-		Total:      found.total,
-		SampleSize: len(sample.Lines),
-		Groups:     groups.Groups,
-		Ungrouped:  groups.Ungrouped,
+		Query:           found.query,
+		Total:           found.total,
+		TotalLowerBound: found.totalLowerBound,
+		SampleSize:      len(sample.Lines),
+		Groups:          groups.Groups,
+		Ungrouped:       groups.Ungrouped,
 	}
 	if n := len(sample.Lines); n > 0 {
 		resp.Data.SampleRange = &api.TimeRange{From: sample.Lines[n-1].Time, To: sample.Lines[0].Time}

@@ -92,6 +92,13 @@ sources:
   #   url: https://grafana.example.com
   #   auth: { type: bearer, token: "${GRAFANA_TOKEN}" }
 
+  # Vercel serves runtime logs. team_id is the team ID (team_...), not the slug. The url
+  # defaults to https://api.vercel.com; the auth must be a bearer access token of the team.
+  # vercel:
+  #   type: vercel
+  #   team_id: team_abc123
+  #   auth: { type: bearer, token: "${VERCEL_TOKEN}" }
+
 # A project groups the services of one product, across platforms. Identities are granted
 # access per project: a grant of a capability in an environment covers every service of the
 # project that configures it there, including services added later. Service names are
@@ -157,6 +164,15 @@ projects:
       #   # With CloudWatch metrics, a signal is a mapping with a metric name and a statistic.
       #   signals:
       #     cpu: { metric: CPUUtilization, stat: Average }
+
+      # A Vercel project. Logs are restricted to the project ID (prj_..., not the name) and
+      # one Vercel environment.
+      # engine-web:
+      #   environments:
+      #     production:
+      #       logs: { source: vercel, project: prj_abc123, environment: production }
+      #     preview:
+      #       logs: { source: vercel, project: prj_abc123, environment: preview }
 
 # Server defaults; each identity can override them in the admin UI.
 limits:

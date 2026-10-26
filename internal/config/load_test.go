@@ -231,7 +231,7 @@ func TestParseBackendErrors(t *testing.T) {
 		replace [2]string
 		want    string
 	}{
-		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes or grafana"},
+		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes, grafana or vercel"},
 
 		{"cloudflare without account", [2]string{`    account_id: "${CF_ACCOUNT_ID}"` + "\n", ""}, "sources.cf.account_id is required"},
 		{"cloudflare basic auth", [2]string{`{ type: bearer, token: "${CF_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, "sources.cf.auth must be bearer"},
@@ -252,7 +252,7 @@ func TestParseBackendErrors(t *testing.T) {
 
 		{"cloudflare logs without script", [2]string{"logs: { source: cf, script: edge-worker }", "logs: { source: cf }"}, "logs.script is required"},
 		{"cloudflare logs with selector", [2]string{"logs: { source: cf, script: edge-worker }", `logs: { source: cf, script: w, selector: '{app="w"}' }`}, "logs.selector is not allowed for cloudflare sources"},
-		{"logs on tempo", [2]string{"logs: { source: cf,", "logs: { source: tempo,"}, `source "tempo" has type tempo, expected loki, cloudflare or aws`},
+		{"logs on tempo", [2]string{"logs: { source: cf,", "logs: { source: tempo,"}, `source "tempo" has type tempo, expected loki, cloudflare, aws or vercel`},
 		{"no log groups", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[]"}, "log_groups must have 1 to 50 entries"},
 		{"too many log groups", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[" + strings.Join(manyGroups, ", ") + "]"}, "log_groups must have 1 to 50 entries"},
 		{"log group pattern", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[/aws/rds/*]"}, "must be an exact name"},
@@ -299,6 +299,65 @@ func TestParseBackendErrors(t *testing.T) {
 			}
 			input := strings.Replace(backendsConfig, tt.replace[0], tt.replace[1], 1)
 			_, err := Parse([]byte(input), env(backendsEnv()))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const vercelConfig = `
+sources:
+  vercel:
+    type: vercel
+    team_id: team_abc123
+    auth: { type: bearer, token: "${VERCEL_TOKEN}" }
+projects:
+  web:
+    services:
+      web:
+        environments:
+          production:
+            logs: { source: vercel, project: prj_abc123, environment: production }
+`
+
+func TestParseVercel(t *testing.T) {
+	cfg, err := Parse([]byte(vercelConfig), env(map[string]string{"VERCEL_TOKEN": "secret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := cfg.Sources["vercel"]
+	if src.URL != "https://api.vercel.com" || src.VercelTeamID != "team_abc123" || src.Auth.Token != "secret" {
+		t.Errorf("vercel source = %+v", src)
+	}
+	logs := cfg.Services["web"].Environments["production"].Logs
+	if logs.Project != "prj_abc123" || logs.Environment != "production" || logs.Dialect() != api.DialectVercelKQL {
+		t.Errorf("vercel logs = %+v", logs)
+	}
+}
+
+func TestParseVercelErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"team slug", [2]string{"team_id: team_abc123", "team_id: acme"}, `sources.vercel.team_id must be a Vercel team ID like team_abc123, not the team slug, got "acme"`},
+		{"without team", [2]string{"    team_id: team_abc123\n", ""}, "sources.vercel.team_id must be a Vercel team ID"},
+		{"basic auth", [2]string{`{ type: bearer, token: "${VERCEL_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, "sources.vercel.auth must be bearer"},
+		{"team on another type", [2]string{"type: vercel\n", "type: loki\n    url: http://loki\n"}, "sources.vercel.team_id is allowed only for vercel sources"},
+		{"project name", [2]string{"project: prj_abc123", "project: web"}, `logs.project must be a Vercel project ID like prj_abc123, not the project name, got "web"`},
+		{"without environment", [2]string{", environment: production", ""}, "logs.environment must be a Vercel environment"},
+		{"environment with quote", [2]string{"environment: production", `environment: 'prod"'`}, "logs.environment must be a Vercel environment"},
+		{"with script", [2]string{"environment: production }", "environment: production, script: w }"}, "logs.script is not allowed for vercel sources"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(vercelConfig, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			input := strings.Replace(vercelConfig, tt.replace[0], tt.replace[1], 1)
+			_, err := Parse([]byte(input), env(map[string]string{"VERCEL_TOKEN": "secret"}))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

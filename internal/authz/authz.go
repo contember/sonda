@@ -278,8 +278,8 @@ func (s SelectorScope) Selector() string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-// LogScope restricts a log source to one service. Exactly one of Loki, Cloudflare and
-// CloudWatch reports true, by source type.
+// LogScope restricts a log source to one service. Exactly one of Loki, Cloudflare, CloudWatch
+// and Vercel reports true, by source type.
 type LogScope struct {
 	Target
 	binding *config.LogBinding
@@ -307,6 +307,13 @@ func (s LogScope) CloudWatch() (LogGroupScope, bool) {
 		return LogGroupScope{}, false
 	}
 	return LogGroupScope{Target: s.Target, source: s.binding.Source, groups: s.binding.LogGroups}, true
+}
+
+func (s LogScope) Vercel() (VercelScope, bool) {
+	if s.binding.Source.Type != config.SourceVercel {
+		return VercelScope{}, false
+	}
+	return VercelScope{Target: s.Target, source: s.binding.Source, project: s.binding.Project, environment: s.binding.Environment}, true
 }
 
 // MetricScope restricts a metrics source to one service. Exactly one of Prometheus,
@@ -419,6 +426,19 @@ func (s CloudflareScope) Script() string         { return s.script }
 func (s CloudflareScope) Resources(kind telemetry.CloudflareResource) map[string]string {
 	return maps.Clone(s.resources[kind])
 }
+
+// VercelScope restricts a Vercel team to one project and one of its environments.
+type VercelScope struct {
+	Target
+	source      *config.Source
+	project     string
+	environment string
+}
+
+func (s VercelScope) Source() *config.Source    { return s.source }
+func (s VercelScope) TeamID() string            { return s.source.VercelTeamID }
+func (s VercelScope) Project() string           { return s.project }
+func (s VercelScope) VercelEnvironment() string { return s.environment }
 
 // WorkloadScope restricts a Kubernetes cluster to the objects of one namespace that carry
 // all of the service's labels.

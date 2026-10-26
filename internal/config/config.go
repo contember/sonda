@@ -57,6 +57,7 @@ const (
 	SourceTempo      SourceType = "tempo"
 	SourceKubernetes SourceType = "kubernetes"
 	SourceGrafana    SourceType = "grafana"
+	SourceVercel     SourceType = "vercel"
 )
 
 type Source struct {
@@ -71,6 +72,8 @@ type Source struct {
 	GrafanaDatasourceUID string
 	// CloudflareAccountID is set for Cloudflare sources only.
 	CloudflareAccountID string
+	// VercelTeamID is set for Vercel sources only.
+	VercelTeamID string
 	// AWS is set for AWS sources only.
 	AWS *AWSSource
 	// RootCAs verifies the server certificate instead of the system roots when set.
@@ -190,12 +193,14 @@ type Selector struct {
 }
 
 // LogBinding scopes a log source to one service. Exactly one variant is set, by source type:
-// Selector (loki), Script (cloudflare), LogGroups (aws).
+// Selector (loki), Script (cloudflare), LogGroups (aws), Project with Environment (vercel).
 type LogBinding struct {
-	Source    *Source
-	Selector  *Selector
-	Script    string
-	LogGroups []string
+	Source      *Source
+	Selector    *Selector
+	Script      string
+	LogGroups   []string
+	Project     string
+	Environment string
 }
 
 func (b *LogBinding) Dialect() api.Dialect {
@@ -206,6 +211,8 @@ func (b *LogBinding) Dialect() api.Dialect {
 		return api.DialectCloudflareQuery
 	case SourceAWS:
 		return api.DialectLogsInsights
+	case SourceVercel:
+		return api.DialectVercelKQL
 	}
 	return ""
 }

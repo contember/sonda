@@ -63,6 +63,7 @@ type rawSource struct {
 	Headers              map[string]string `yaml:"headers"`
 	GrafanaDatasourceUID string            `yaml:"grafana_datasource_uid"`
 	AccountID            string            `yaml:"account_id"`
+	TeamID               string            `yaml:"team_id"`
 	Region               string            `yaml:"region"`
 	Credentials          string            `yaml:"credentials"`
 	RoleARN              string            `yaml:"role_arn"`
@@ -266,6 +267,7 @@ func (v *validator) sourceReferences(name string, raw rawSource, cfg *Config) {
 
 const (
 	defaultCloudflareURL = "https://api.cloudflare.com/client/v4"
+	defaultVercelURL     = "https://api.vercel.com"
 	defaultMaxScanBytes  = 10 * humanize.GByte
 )
 
@@ -279,9 +281,11 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		SentryOrg:            raw.Org,
 		GrafanaDatasourceUID: raw.GrafanaDatasourceUID,
 		CloudflareAccountID:  v.expand(path+".account_id", raw.AccountID),
+		VercelTeamID:         v.expand(path+".team_id", raw.TeamID),
 	}
 	v.onlyFor(path+".org", raw.Org != "", src.Type, SourceSentry)
 	v.onlyFor(path+".account_id", raw.AccountID != "", src.Type, SourceCloudflare)
+	v.onlyFor(path+".team_id", raw.TeamID != "", src.Type, SourceVercel)
 	v.onlyFor(path+".region", raw.Region != "", src.Type, SourceAWS)
 	v.onlyFor(path+".credentials", raw.Credentials != "", src.Type, SourceAWS)
 	v.onlyFor(path+".role_arn", raw.RoleARN != "", src.Type, SourceAWS)
@@ -306,6 +310,16 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		if raw.Auth.Type != string(AuthBearer) {
 			v.fail("%s.auth must be bearer for cloudflare sources", path)
 		}
+	case SourceVercel:
+		if src.URL == "" {
+			src.URL = defaultVercelURL
+		}
+		if !vercelTeamID.MatchString(src.VercelTeamID) {
+			v.fail("%s.team_id must be a Vercel team ID like team_abc123, not the team slug, got %q", path, src.VercelTeamID)
+		}
+		if raw.Auth.Type != string(AuthBearer) {
+			v.fail("%s.auth must be bearer for vercel sources", path)
+		}
 	case SourceAWS:
 		src.AWS = v.awsSource(path, raw)
 		src.Auth = Auth{Type: AuthNone}
@@ -318,7 +332,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 			v.fail("%s.auth must be bearer or eks for kubernetes sources with a url", path)
 		}
 	default:
-		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes or grafana, got %q", path, raw.Type)
+		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes, grafana or vercel, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
 	if raw.CAFile != "" {
@@ -644,7 +658,7 @@ func (v *validator) errorBinding(path string, raw rawErrorBinding, sources map[s
 }
 
 func (v *validator) logBinding(path string, raw rawBinding, sources map[string]*Source) *LogBinding {
-	src := v.sourceRef(path+".source", raw.Source, sources, SourceLoki, SourceCloudflare, SourceAWS)
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceLoki, SourceCloudflare, SourceAWS, SourceVercel)
 	binding := &LogBinding{Source: src}
 	if src == nil {
 		// The source type is unknown, but the fields can still be checked on their own.
@@ -666,6 +680,9 @@ func (v *validator) logBinding(path string, raw rawBinding, sources map[string]*
 	case SourceAWS:
 		v.bindingFields(path, raw, src, "log_groups")
 		binding.LogGroups = v.logGroups(path, raw.LogGroups)
+	case SourceVercel:
+		v.bindingFields(path, raw, src, "project", "environment")
+		binding.Project, binding.Environment = v.vercelProject(path, raw.Project, raw.Environment)
 	}
 	return binding
 }
@@ -804,6 +821,24 @@ func (v *validator) selector(path, raw string, parse func(string) ([]*labels.Mat
 		v.fail("%s.selector %q must contain an = or =~ matcher that rejects the empty value, e.g. app=\"name\"", path, raw)
 	}
 	return &Selector{Text: raw, Matchers: matchers}
+}
+
+var (
+	vercelTeamID      = regexp.MustCompile(`^team_[A-Za-z0-9]+$`)
+	vercelProjectID   = regexp.MustCompile(`^prj_[A-Za-z0-9]+$`)
+	vercelEnvironment = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+)
+
+// vercelProject requires the project ID, because Vercel returns no logs, not an error, for a
+// project name. The environment is a value of the logs' environment field.
+func (v *validator) vercelProject(path, project, environment string) (string, string) {
+	if !vercelProjectID.MatchString(project) {
+		v.fail("%s.project must be a Vercel project ID like prj_abc123, not the project name, got %q", path, project)
+	}
+	if !vercelEnvironment.MatchString(environment) {
+		v.fail("%s.environment must be a Vercel environment like production or preview, got %q", path, environment)
+	}
+	return project, environment
 }
 
 func (v *validator) script(path, raw string) string {
