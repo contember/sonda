@@ -190,7 +190,7 @@ func TestPostCheckRejectsForeignService(t *testing.T) {
 		t.Errorf("invocations: %v", err)
 	}
 
-	f = &fake{response: success(`{"traces":[{"traceId":"t1","service":["other"],"spans":1}]}`)}
+	f = &fake{response: success(`{"traces":[{"traceId":"t1","services":["other"],"spans":1}]}`)}
 	client, scope = setup(t, f)
 	if _, err := client.Traces(context.Background(), scope, scopedQuery(t, scope, `{}`, policy.CloudflareViewTraces), testRange); !isCode(err, api.CodeInternal) {
 		t.Errorf("traces: %v", err)
@@ -332,8 +332,8 @@ func TestCalculationsPostCheck(t *testing.T) {
 
 func TestTraces(t *testing.T) {
 	f := &fake{response: success(`{"traces":[
-		{"traceId":"t1","rootSpanName":"GET /","rootTransactionName":"tx","service":["api-worker"],"spans":4,"traceDurationMs":12.5,"traceStartMs":1700000000000,"traceEndMs":1700000000012,"errors":["boom"]},
-		{"traceId":"t2","rootSpanName":"","rootTransactionName":"queue","service":["gateway","api-worker"],"spans":2,"traceDurationMs":1,"traceStartMs":1700000001000}
+		{"traceId":"t1","rootSpanName":"GET /","rootTransactionName":"tx","services":["api-worker"],"spans":4,"traceDurationMs":12.5,"traceStartMs":1700000000000,"traceEndMs":1700000000012,"errors":["boom"]},
+		{"traceId":"t2","rootSpanName":"","rootTransactionName":"queue","services":["gateway","api-worker"],"spans":2,"traceDurationMs":1,"traceStartMs":1700000001000}
 	]}`)}
 	client, scope := setup(t, f)
 	q, err := policy.CloudflareTraceSearch(scope, policy.TraceFilter{Errors: true}, 3)

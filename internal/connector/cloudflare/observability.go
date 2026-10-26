@@ -104,7 +104,7 @@ type traceResult struct {
 	TraceID             string   `json:"traceId"`
 	RootSpanName        string   `json:"rootSpanName"`
 	RootTransactionName string   `json:"rootTransactionName"`
-	Service             []string `json:"service"`
+	Services            []string `json:"services"`
 	Spans               int      `json:"spans"`
 	TraceDurationMs     float64  `json:"traceDurationMs"`
 	TraceStartMs        float64  `json:"traceStartMs"`
@@ -281,7 +281,7 @@ func (c *Client) Traces(ctx context.Context, scope authz.CloudflareScope, q poli
 	}
 	summaries := make([]telemetry.TraceSummary, 0, len(result.Traces))
 	for _, t := range result.Traces {
-		if !slices.Contains(t.Service, scope.Script()) {
+		if !slices.Contains(t.Services, scope.Script()) {
 			return nil, c.outsideScope()
 		}
 		summaries = append(summaries, traceSummary(t))
@@ -302,8 +302,8 @@ func traceSummary(t traceResult) telemetry.TraceSummary {
 		summary.RootName = t.RootTransactionName
 	}
 	// The summary does not say which service owns the root span, unless only one is involved.
-	if len(t.Service) == 1 {
-		summary.RootService = t.Service[0]
+	if len(t.Services) == 1 {
+		summary.RootService = t.Services[0]
 	}
 	return summary
 }
