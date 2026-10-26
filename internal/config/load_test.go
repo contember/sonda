@@ -29,15 +29,17 @@ sources:
   prom:
     type: prometheus
     url: http://prometheus:9090
-services:
+projects:
   api:
-    environments:
-      production:
-        errors: { source: sentry, project: api, environment: production }
-        logs: { source: loki, selector: '{app="api"}' }
-        metrics: { source: prom, selector: '{job="api"}' }
-    signals:
-      rps: sum(rate(http_requests_total[5m]))
+    services:
+      api:
+        environments:
+          production:
+            errors: { source: sentry, project: api, environment: production }
+            logs: { source: loki, selector: '{app="api"}' }
+            metrics: { source: prom, selector: '{job="api"}' }
+        signals:
+          rps: sum(rate(http_requests_total[5m]))
 admin:
   token: "${ADMIN_TOKEN}"
 limits:
@@ -129,28 +131,32 @@ sources:
   tempo:
     type: tempo
     url: http://tempo:3200
-services:
+projects:
   worker:
-    environments:
-      production:
-        logs: { source: cf, script: edge-worker }
-        metrics:
-          source: cf
-          script: edge-worker
-          d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b }
-          queues: { jobs: 0123456789abcdef0123456789abcdef }
-        traces: { source: cf, script: edge-worker }
-    signals:
-      requests: { metric: requests, by: [status] }
-      rows: { metric: d1_rows_read }
+    services:
+      worker:
+        environments:
+          production:
+            logs: { source: cf, script: edge-worker }
+            metrics:
+              source: cf
+              script: edge-worker
+              d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b }
+              queues: { jobs: 0123456789abcdef0123456789abcdef }
+            traces: { source: cf, script: edge-worker }
+        signals:
+          requests: { metric: requests, by: [status] }
+          rows: { metric: d1_rows_read }
   db:
-    environments:
-      production:
-        logs: { source: aws, log_groups: [/aws/rds/cluster/engine/postgresql] }
-        metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
-        traces: { source: tempo, service: engine-api }
-    signals:
-      cpu: { metric: CPUUtilization, stat: p99 }
+    services:
+      db:
+        environments:
+          production:
+            logs: { source: aws, log_groups: [/aws/rds/cluster/engine/postgresql] }
+            metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
+            traces: { source: tempo, service: engine-api }
+        signals:
+          cpu: { metric: CPUUtilization, stat: p99 }
 `
 
 func backendsEnv() map[string]string {
@@ -259,11 +265,11 @@ func TestParseBackendErrors(t *testing.T) {
 		{"aws metrics with too many dimensions", [2]string{"{ DBClusterIdentifier: engine }", "{ A: a, B: b, C: c, D: d, E: e, F: f, G: g, H: h, I: i, J: j, K: k }"}, "dimensions must have 1 to 10 entries"},
 		{"log group ARN", [2]string{"[/aws/rds/cluster/engine/postgresql]", "[\"arn:aws:logs:eu-west-1:1:log-group:/aws/x\"]"}, "must be a log group name, not an ARN"},
 		{"aws metrics with empty dimension", [2]string{"{ DBClusterIdentifier: engine }", `{ DBClusterIdentifier: "" }`}, "must not be empty"},
-		{"metrics on tempo", [2]string{"metrics:\n          source: cf", "metrics:\n          source: tempo"}, "expected prometheus, cloudflare or aws"},
+		{"metrics on tempo", [2]string{"metrics:\n              source: cf", "metrics:\n              source: tempo"}, "expected prometheus, cloudflare or aws"},
 		{"d1 database name instead of ID", [2]string{"main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b", "main: main-db"}, `d1_databases.main: "main-db" must be a database UUID`},
 		{"queue name instead of ID", [2]string{"jobs: 0123456789abcdef0123456789abcdef", "jobs: jobs-queue"}, "must be a queue ID of 32 hex characters, not the queue name"},
-		{"invalid r2 bucket", [2]string{"queues: {", "r2_buckets: { assets: Assets_Bucket }\n          queues: {"}, `r2_buckets.assets: "Assets_Bucket" must be a bucket name`},
-		{"invalid durable object namespace", [2]string{"queues: {", "durable_object_namespaces: { rooms: ROOMS }\n          queues: {"}, "must be a namespace ID of 32 hex characters"},
+		{"invalid r2 bucket", [2]string{"queues: {", "r2_buckets: { assets: Assets_Bucket }\n              queues: {"}, `r2_buckets.assets: "Assets_Bucket" must be a bucket name`},
+		{"invalid durable object namespace", [2]string{"queues: {", "durable_object_namespaces: { rooms: ROOMS }\n              queues: {"}, "must be a namespace ID of 32 hex characters"},
 		{"duplicate resource ID", [2]string{"{ jobs: 0123456789abcdef0123456789abcdef }", "{ jobs: 0123456789abcdef0123456789abcdef, retry: 0123456789abcdef0123456789abcdef }"}, "queues: jobs and retry have the same ID"},
 		{"empty resources", [2]string{"{ jobs: 0123456789abcdef0123456789abcdef }", "{}"}, "metrics.queues must not be empty"},
 		{"resources on cloudflare logs", [2]string{"logs: { source: cf, script: edge-worker }", "logs: { source: cf, script: edge-worker, queues: { a: 0123456789abcdef0123456789abcdef } }"}, "logs.queues is not allowed for cloudflare sources"},
@@ -282,7 +288,7 @@ func TestParseBackendErrors(t *testing.T) {
 		{"signal list", [2]string{"{ metric: CPUUtilization, stat: p99 }", "[a]"}, "must be a PromQL string or a mapping"},
 		{
 			"mixed metrics backends",
-			[2]string{"    signals:\n      requests:", "      staging:\n        metrics: { source: aws, namespace: AWS/RDS, dimensions: { A: b } }\n    signals:\n      requests:"},
+			[2]string{"        signals:\n          requests:", "          staging:\n            metrics: { source: aws, namespace: AWS/RDS, dimensions: { A: b } }\n        signals:\n          requests:"},
 			"one source type, got aws, cloudflare",
 		},
 	}
@@ -309,11 +315,11 @@ func TestParseExistingSourceRules(t *testing.T) {
 		{"unknown log source and invalid selector", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: nope, selector: '{app=}' }`}, "logs.selector"},
 		{"unknown metric source and invalid selector", [2]string{`metrics: { source: prom, selector: '{job="api"}' }`, `metrics: { source: nope, selector: '{job=}' }`}, "metrics.selector"},
 		{"mapping signal on prometheus", [2]string{"rps: sum(rate(http_requests_total[5m]))", "rps: { metric: requests }"}, "a mapping signal needs cloudflare or aws metrics"},
-		{"signals without metrics", [2]string{"        metrics: { source: prom, selector: '{job=\"api\"}' }\n", ""}, "signals require an environment with metrics"},
+		{"signals without metrics", [2]string{"            metrics: { source: prom, selector: '{job=\"api\"}' }\n", ""}, "signals require an environment with metrics"},
 		{"prometheus with account", [2]string{"type: prometheus\n", "type: prometheus\n    account_id: acc\n"}, "sources.prom.account_id is allowed only for cloudflare sources"},
 		{"loki with region", [2]string{"type: loki\n", "type: loki\n    region: eu-west-1\n"}, "sources.loki.region is allowed only for aws sources"},
 		{"loki logs with script", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: loki, selector: '{app="api"}', script: w }`}, "logs.script is not allowed for loki sources"},
-		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics, traces, workloads or alerts is required"},
+		{"empty environment", [2]string{"            errors: { source: sentry, project: api, environment: production }\n            logs: { source: loki, selector: '{app=\"api\"}' }\n            metrics: { source: prom, selector: '{job=\"api\"}' }\n", "            {}\n"}, "at least one of errors, logs, metrics, traces, workloads or alerts is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -329,6 +335,51 @@ func TestParseExistingSourceRules(t *testing.T) {
 	}
 }
 
+func TestParseProjects(t *testing.T) {
+	cfg, err := Parse([]byte(validConfig), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc := cfg.Services["api"]; svc.Project != cfg.Projects["api"] || cfg.Projects["api"].Services["api"] != svc {
+		t.Errorf("service api is not linked to project api")
+	}
+
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"service name in two projects", `
+sources:
+  loki: { type: loki, url: http://loki:3100 }
+projects:
+  a:
+    services:
+      web: { environments: { production: { logs: { source: loki, selector: '{app="a"}' } } } }
+  b:
+    services:
+      web: { environments: { production: { logs: { source: loki, selector: '{app="b"}' } } } }
+`, "projects.b.services.web: service name is already used in project a"},
+		{"project without services", `
+projects:
+  a:
+    description: empty
+`, "projects.a.services: at least one service is required"},
+		{"top-level services", `
+services:
+  web: {}
+`, "field services not found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.yaml), env(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 const kubernetesConfig = `
 sources:
   k8s:
@@ -336,11 +387,13 @@ sources:
     url: https://k8s.example:6443
     auth: { type: bearer, token: "${K8S_TOKEN}" }
     ca_file: CA_FILE
-services:
+projects:
   engine:
-    environments:
-      production:
-        workloads: { source: k8s, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+    services:
+      engine:
+        environments:
+          production:
+            workloads: { source: k8s, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
 `
 
 func writeCA(t *testing.T) string {
@@ -381,11 +434,13 @@ sources:
     type: tempo
     url: https://tempo.example
     ca_file: %s
-services:
+projects:
   api:
-    environments:
-      production:
-        traces: { source: tempo, service: api }
+    services:
+      api:
+        environments:
+          production:
+            traces: { source: tempo, service: api }
 `, writeCA(t))
 	cfg, err := Parse([]byte(input), env(nil))
 	if err != nil {
@@ -455,11 +510,13 @@ sources:
     type: loki
     url: https://eks.example/api/v1/namespaces/logging/services/http:loki:3100/proxy
     auth: { type: eks, cluster: prod, aws_source: aws }
-services:
+projects:
   api:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="api"}' }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="api"}' }
 `
 
 func TestParseIdentityAndEKS(t *testing.T) {
@@ -521,13 +578,15 @@ sources:
   prom:
     type: prometheus
     url: http://prometheus:9090
-services:
+projects:
   api:
-    environments:
-      production:
-        alerts: { source: grafana, selector: '{service="api"}' }
-      staging:
-        alerts: { source: prom, selector: '{job=~"api-.+"}' }
+    services:
+      api:
+        environments:
+          production:
+            alerts: { source: grafana, selector: '{service="api"}' }
+          staging:
+            alerts: { source: prom, selector: '{job=~"api-.+"}' }
 `
 
 func TestParseAlerts(t *testing.T) {
@@ -574,7 +633,7 @@ func TestParseAlertErrors(t *testing.T) {
 }
 
 func TestParseSentryTraces(t *testing.T) {
-	input := strings.Replace(validConfig, "    signals:\n", "        traces: { source: sentry, project: api, environment: production }\n    signals:\n", 1)
+	input := strings.Replace(validConfig, "        signals:\n", "            traces: { source: sentry, project: api, environment: production }\n        signals:\n", 1)
 	cfg, err := Parse([]byte(input), env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +654,7 @@ func TestParseSentryTraces(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.binding, func(t *testing.T) {
-			input := strings.Replace(validConfig, "    signals:\n", "        traces: "+tt.binding+"\n    signals:\n", 1)
+			input := strings.Replace(validConfig, "        signals:\n", "            traces: "+tt.binding+"\n        signals:\n", 1)
 			_, err := Parse([]byte(input), env(validEnv()))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)

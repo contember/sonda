@@ -92,64 +92,71 @@ sources:
   #   url: https://grafana.example.com
   #   auth: { type: bearer, token: "${GRAFANA_TOKEN}" }
 
-services:
-  engine-api:
-    description: GraphQL API of the content engine
-    repository: github.com/acme/engine
-    environments:
-      production:
-        errors: { source: sentry, project: engine, environment: production }
-        # The selector is a security boundary: every log and metric query of this
-        # service gets these matchers. It must contain an = or =~ matcher that rejects
-        # the empty value.
-        logs: { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
-        metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
-        # traces: { source: tempo-prod, service: engine-api } # resource.service.name
-        # traces: { source: sentry, project: engine, environment: production } # or Sentry spans
-        # Exact labels of the service's pods and ReplicaSets, in one namespace.
-        # workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
-        # The alerts whose labels match the selector, from a prometheus or grafana source.
-        # alerts: { source: grafana, selector: '{service="engine-api"}' }
-    # Named PromQL expressions without service matchers; Sonda adds the selector.
-    signals:
-      rps: sum(rate(http_requests_total[5m]))
-      error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
-      p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+# A project groups the services of one product, across platforms. Identities are granted
+# access per project: a grant of a capability in an environment covers every service of the
+# project that configures it there, including services added later. Service names are
+# unique across projects.
+projects:
+  engine:
+    description: Content engine
+    services:
+      engine-api:
+        description: GraphQL API of the content engine
+        repository: github.com/acme/engine
+        environments:
+          production:
+            errors: { source: sentry, project: engine, environment: production }
+            # The selector is a security boundary: every log and metric query of this
+            # service gets these matchers. It must contain an = or =~ matcher that rejects
+            # the empty value.
+            logs: { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
+            metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
+            # traces: { source: tempo-prod, service: engine-api } # resource.service.name
+            # traces: { source: sentry, project: engine, environment: production } # or Sentry spans
+            # Exact labels of the service's pods and ReplicaSets, in one namespace.
+            # workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+            # The alerts whose labels match the selector, from a prometheus or grafana source.
+            # alerts: { source: grafana, selector: '{service="engine-api"}' }
+        # Named PromQL expressions without service matchers; Sonda adds the selector.
+        signals:
+          rps: sum(rate(http_requests_total[5m]))
+          error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+          p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
 
-  # A Cloudflare Worker. Every query is restricted to the script.
-  # web-worker:
-  #   environments:
-  #     production:
-  #       logs: { source: cloudflare, script: web-worker }
-  #       metrics:
-  #         source: cloudflare
-  #         script: web-worker
-  #         # Optional account resources of the service, name -> ID. Their metrics are
-  #         # labeled with the name. Durable Object namespace and queue IDs are 32 hex
-  #         # characters, D1 IDs are UUIDs, R2 takes the bucket name.
-  #         durable_object_namespaces: { sessions: 0123456789abcdef0123456789abcdef }
-  #         d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b }
-  #         queues: { emails: fedcba9876543210fedcba9876543210 }
-  #         r2_buckets: { uploads: web-uploads }
-  #       traces: { source: cloudflare, script: web-worker }
-  #   # With Cloudflare metrics, a signal is a mapping: a metric from the catalog
-  #   # (requests, errors, cpu_time_p99, duration_p99, …, do_errors, d1_query_time_p99,
-  #   # queue_backlog_messages, r2_requests, …) and optional dimensions to group by.
-  #   # A signal of a resource metric needs that resource kind in every environment.
-  #   signals:
-  #     errors: { metric: errors, by: [status] }
-  #     backlog: { metric: queue_backlog_messages }
+      # A Cloudflare Worker. Every query is restricted to the script.
+      # web-worker:
+      #   environments:
+      #     production:
+      #       logs: { source: cloudflare, script: web-worker }
+      #       metrics:
+      #         source: cloudflare
+      #         script: web-worker
+      #         # Optional account resources of the service, name -> ID. Their metrics are
+      #         # labeled with the name. Durable Object namespace and queue IDs are 32 hex
+      #         # characters, D1 IDs are UUIDs, R2 takes the bucket name.
+      #         durable_object_namespaces: { sessions: 0123456789abcdef0123456789abcdef }
+      #         d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b }
+      #         queues: { emails: fedcba9876543210fedcba9876543210 }
+      #         r2_buckets: { uploads: web-uploads }
+      #       traces: { source: cloudflare, script: web-worker }
+      #   # With Cloudflare metrics, a signal is a mapping: a metric from the catalog
+      #   # (requests, errors, cpu_time_p99, duration_p99, …, do_errors, d1_query_time_p99,
+      #   # queue_backlog_messages, r2_requests, …) and optional dimensions to group by.
+      #   # A signal of a resource metric needs that resource kind in every environment.
+      #   signals:
+      #     errors: { metric: errors, by: [status] }
+      #     backlog: { metric: queue_backlog_messages }
 
-  # An AWS-managed database. Logs come from exact log group names (1 to 50, no patterns);
-  # metrics from one namespace, restricted by at least one dimension.
-  # engine-db:
-  #   environments:
-  #     production:
-  #       logs: { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
-  #       metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
-  #   # With CloudWatch metrics, a signal is a mapping with a metric name and a statistic.
-  #   signals:
-  #     cpu: { metric: CPUUtilization, stat: Average }
+      # An AWS-managed database. Logs come from exact log group names (1 to 50, no patterns);
+      # metrics from one namespace, restricted by at least one dimension.
+      # engine-db:
+      #   environments:
+      #     production:
+      #       logs: { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
+      #       metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
+      #   # With CloudWatch metrics, a signal is a mapping with a metric name and a statistic.
+      #   signals:
+      #     cpu: { metric: CPUUtilization, stat: Average }
 
 # Server defaults; each identity can override them in the admin UI.
 limits:

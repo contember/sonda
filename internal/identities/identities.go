@@ -1,5 +1,5 @@
 // Package identities defines agent identities and the store that persists them. Identities
-// are managed at runtime through the admin UI; sources and services stay in the config file.
+// are managed at runtime through the admin UI; sources and projects stay in the config file.
 package identities
 
 import (
@@ -29,9 +29,9 @@ type Identity struct {
 	CreatedAt   time.Time
 }
 
-// Grant allows one capability of one service environment.
+// Grant allows one capability in one environment of every service of a project.
 type Grant struct {
-	Service     string
+	Project     string
 	Environment string
 	Capability  api.Capability
 }

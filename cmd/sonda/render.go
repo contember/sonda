@@ -20,9 +20,9 @@ func table(w io.Writer) *tabwriter.Writer {
 
 func renderServices(w io.Writer, resp api.Response[[]api.ServiceSummary]) {
 	t := table(w)
-	fmt.Fprintln(t, "SERVICE\tENVIRONMENTS\tDESCRIPTION")
+	fmt.Fprintln(t, "SERVICE\tPROJECT\tENVIRONMENTS\tDESCRIPTION")
 	for _, svc := range resp.Data {
-		fmt.Fprintf(t, "%s\t%s\t%s\n", svc.Name, strings.Join(svc.Environments, ","), svc.Description)
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", svc.Name, svc.Project, strings.Join(svc.Environments, ","), svc.Description)
 	}
 	t.Flush()
 }
@@ -30,6 +30,7 @@ func renderServices(w io.Writer, resp api.Response[[]api.ServiceSummary]) {
 func renderService(w io.Writer, resp api.Response[api.ServiceDetail]) {
 	svc := resp.Data
 	fmt.Fprintln(w, svc.Name)
+	fmt.Fprintln(w, "  project: "+svc.Project)
 	if svc.Description != "" {
 		fmt.Fprintln(w, "  "+svc.Description)
 	}

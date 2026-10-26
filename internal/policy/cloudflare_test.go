@@ -17,17 +17,19 @@ func cloudflareScope(t *testing.T) authz.CloudflareScope {
 	cfg, err := config.Parse([]byte(`
 sources:
   cf: { type: cloudflare, account_id: acc, auth: { type: bearer, token: t } }
-services:
+projects:
   api:
-    environments:
-      production:
-        logs: { source: cf, script: api-worker }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: cf, script: api-worker }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
+		{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
 	}}
 	logScope, err := authz.New(cfg, nil).LogScope(identity, "api", "production")
 	if err != nil {

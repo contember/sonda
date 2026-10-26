@@ -18,12 +18,14 @@ func scopes(t *testing.T) (logs, metrics authz.SelectorScope) {
 sources:
   loki: { type: loki, url: "http://loki" }
   prom: { type: prometheus, url: "http://prom" }
-services:
+projects:
   api:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="api"}' }
-        metrics: { source: prom, selector: '{job="api"}' }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="api"}' }
+            metrics: { source: prom, selector: '{job="api"}' }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -31,8 +33,8 @@ services:
 	// Scopes need no authentication, so no identity store.
 	a := authz.New(cfg, nil)
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
-		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+		{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
+		{Project: "api", Environment: "production", Capability: api.CapabilityMetrics},
 	}}
 	logScope, err := a.LogScope(identity, "api", "production")
 	if err != nil {

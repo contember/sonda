@@ -61,17 +61,19 @@ func setup(t *testing.T, f *fakeAPI) (*Client, authz.WorkloadScope) {
 	cfg, err := config.Parse([]byte(`
 sources:
   k8s: { type: kubernetes, url: "`+server.URL+`", auth: { type: bearer, token: secret }, ca_file: "`+ca+`" }
-services:
+projects:
   engine:
-    environments:
-      production:
-        workloads: { source: k8s, namespace: engine, labels: { app: engine-api, tier: web } }
+    services:
+      engine:
+        environments:
+          production:
+            workloads: { source: k8s, namespace: engine, labels: { app: engine-api, tier: web } }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "engine", Environment: "production", Capability: api.CapabilityWorkloads},
+		{Project: "engine", Environment: "production", Capability: api.CapabilityWorkloads},
 	}}
 	scope, err := authz.New(cfg, nil).WorkloadScope(identity, "engine", "production")
 	if err != nil {

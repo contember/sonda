@@ -42,14 +42,15 @@ returns compact, evidence-carrying responses.
 | Alerts source | The Prometheus-compatible alerts API of Prometheus/Mimir (`/api/v1/alerts`) or of Grafana-managed alerting (a `grafana` source) | Alertmanager; Grafana's own alerting API | One response shape for both. Alertmanager holds only firing alerts, after grouping and silencing. |
 | Alerts scope | A Prometheus `selector` over the alert labels, applied by Sonda | Upstream filtering | The alerts API has no label filter; it returns every alert the token can read, and Sonda drops those that do not match. |
 | Alerts capability | A new capability `alerts` | Serve alerts under `metrics` | Alerts may come from another source than metrics (Grafana), and a grant should name it. |
+| Access unit | A project owns services; grants are `(project, environment, capability)` | Grants per service; named sets of service grants; a project with several bindings per capability instead of services | A product spans several platforms, and its agents need all of them. Grants per service must be repeated for every new service. A project with several bindings per capability would lose the one dialect per capability that native queries and signals rely on. |
 | Workspaces | One server = one workspace | Multi-workspace in v1 | No current need. Nothing in the model prevents adding it later. |
 
 ## 2. Domain model
 
 ```text
-Source ──< Binding >── Environment ──< Service
-                                         │
-Identity ──< Grant (services × environments × capabilities)
+Source ──< Binding >── Environment ──< Service >── Project
+                                                     │
+Identity ──< Grant (projects × environments × capabilities)
 ```
 
 - **Source**: a connection to a backend. Types:
@@ -77,8 +78,11 @@ Identity ──< Grant (services × environments × capabilities)
   identity (section 4).
 - **Grafana** (optional): base URL and a datasource UID per source. Used only to build Explore
   links in responses. Sonda queries Grafana only through a `grafana` source, for alerts.
-- **Service**: a logical application. Has a description, an optional repository, environments and
-  signals.
+- **Project**: a product whose services may run on several platforms. Has a description and
+  services. Identities are granted access per project.
+- **Service**: a logical application in one project. Has a description, an optional repository,
+  environments and signals. Service names are unique across projects, so queries, audit records
+  and result handles address a service by name alone.
 - **Environment**: per service, maps each capability to a source and a binding. The binding is
   the scope. Its fields depend on the source type; fields of another type are rejected.
 
@@ -108,10 +112,12 @@ Identity ──< Grant (services × environments × capabilities)
   signals must use the same source type.
 - **Identity**: an agent service account. Authenticated by a bearer token. The identity store
   keeps only the SHA-256 of the token. Managed in the admin UI (section 11), not in the config.
-- **Grant**: one `(service, environment, capability)`. Capabilities: `errors`, `logs`,
+- **Grant**: one `(project, environment, capability)`. It covers every service of the project
+  that configures the capability in that environment, including services added to the project
+  later. It never covers another environment or capability. Capabilities: `errors`, `logs`,
   `metrics`, `traces`, `workloads`, `alerts`. A native query requires the same capability as the structured tool for
-  that signal type. A `traces` grant also makes the service's spans visible in full inside
-  traces fetched through other services (section 8). A grant for a service or capability that
+  that signal type. A `traces` grant also makes the project's spans visible in full inside
+  traces fetched through other services (section 8). A grant for a project or capability that
   is no longer configured has no effect.
 - **Limits**: server defaults from the config plus per-identity overrides from the store.
 
@@ -156,34 +162,37 @@ sources:
 grafana:
   url: https://grafana.example.com
 
-services:
-  engine-api:
-    description: GraphQL API of the content engine
-    repository: github.com/acme/engine
-    environments:
-      production:
-        errors:  { source: sentry, project: engine, environment: production }
-        logs:    { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
-        metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
-        traces:  { source: tempo-prod, service: engine-api }
-    signals:
-      error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
-      p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
-  web-worker:
-    environments:
-      production:
-        logs:    { source: cloudflare, script: web-worker }
-        metrics: { source: cloudflare, script: web-worker }
-        traces:  { source: cloudflare, script: web-worker }
-    signals:
-      errors: { metric: errors, by: [status] }
-  engine-db:
-    environments:
-      production:
-        logs:    { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
-        metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
-    signals:
-      cpu: { metric: CPUUtilization, stat: Average }
+projects:
+  engine:
+    description: Content engine
+    services:
+      engine-api:
+        description: GraphQL API of the content engine
+        repository: github.com/acme/engine
+        environments:
+          production:
+            errors:  { source: sentry, project: engine, environment: production }
+            logs:    { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
+            metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
+            traces:  { source: tempo-prod, service: engine-api }
+        signals:
+          error_rate: sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+          p95_latency: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+      web-worker:
+        environments:
+          production:
+            logs:    { source: cloudflare, script: web-worker }
+            metrics: { source: cloudflare, script: web-worker }
+            traces:  { source: cloudflare, script: web-worker }
+        signals:
+          errors: { metric: errors, by: [status] }
+      engine-db:
+        environments:
+          production:
+            logs:    { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
+            metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
+        signals:
+          cpu: { metric: CPUUtilization, stat: Average }
 
 limits:
   max_range: 7d
@@ -194,7 +203,8 @@ limits:
   requests_per_minute: 60
 ```
 
-Config validation at startup fails on: unknown fields, unknown source references, unset
+Config validation at startup fails on: unknown fields, unknown source references, a project
+without services, a service name used in two projects, unset
 environment variables, a source type not allowed for the capability, binding fields of another
 source type, unparsable selectors or signals, selectors without an `=` or `=~` matcher that
 rejects the empty value (e.g. `{job!=""}` selects nearly everything), log group lists that are
@@ -429,7 +439,8 @@ Request flow:
 1. Authenticate: bearer token → SHA-256 → identity store lookup → Identity with effective
    limits. Changes in the admin UI apply to the next request. A constant-time compare is not
    needed: timing can reveal at most the hash, not the token.
-2. Authorize: `(identity, service, environment, capability)` against the grants → `Scope`.
+2. Authorize: `(identity, project of the service, environment, capability)` against the grants
+   → `Scope`.
 3. Limit: reject ranges over `max_range`, cap lines at `max_log_lines`, apply `query_timeout`,
    rate and concurrency limits.
 4. For native queries and signals: scope the query text (section 6).
@@ -780,8 +791,8 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 
 | Endpoint | Capability | Purpose |
 |---|---|---|
-| `/v1/services` | any grant | Services the identity can access |
-| `/v1/services/{s}` | any grant | Environments, capabilities with backend and dialect, signals, repository |
+| `/v1/services` | any grant | Services the identity can access, with their project |
+| `/v1/services/{s}` | any grant | Project, environments, capabilities with backend and dialect, signals, repository |
 | `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values, workload health, active alerts. The usual first call. |
 | `/v1/services/{s}/errors` | `errors` | Issues: title, count, users, first/last seen, link |
 | `/v1/services/{s}/errors/{id}` | `errors` | Issue + latest event in `env` with stack trace (in-app frames, newest first) and trace ID |
@@ -845,8 +856,8 @@ sonda result res_8KcW --group 2
 Served under `/admin` only when `admin.token` is set. Pages:
 
 - **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
-  Grants are a matrix of configured service environments × capabilities; unconfigured cells
-  cannot be selected. A new or rotated token is shown once; only its SHA-256 is stored.
+  Grants are a matrix of project environments × capabilities, with the services each row
+  covers; a cell no service of the project configures cannot be selected. A new or rotated token is shown once; only its SHA-256 is stored.
 - **Audit log**: newest first, filterable by identity, 100 records per page.
 
 Rules:
@@ -926,7 +937,7 @@ Rules:
   trace IDs and timestamps.
 - General query-result cache shared across identities.
 - Multi-workspace, SSO/OIDC for the admin UI, a token management API.
-- Editing sources and services at runtime.
+- Editing sources, projects and services at runtime.
 - Identity stores other than SQLite and Postgres (the `identities.Store` interface allows adding them).
 - Automated rotation of the signing key of Sonda's identity.
 

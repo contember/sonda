@@ -4,6 +4,7 @@ package config
 
 import (
 	"crypto/x509"
+	"slices"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -18,6 +19,8 @@ type Config struct {
 	Identity *Identity
 	Grafana  *Grafana
 	Sources  map[string]*Source
+	Projects map[string]*Project
+	// Services holds the services of all projects; service names are unique across projects.
 	Services map[string]*Service
 	Limits   Limits
 	Redact   []string
@@ -123,8 +126,27 @@ type EKSAuth struct {
 	AWS *Source
 }
 
+// Project groups the services of one product. Identities are granted access per project, so
+// a grant covers every service of the project that configures the granted capability.
+type Project struct {
+	Name        string
+	Description string
+	Services    map[string]*Service
+}
+
+// Offers reports whether any service of the project configures the capability in the environment.
+func (p *Project) Offers(env string, capability api.Capability) bool {
+	for _, svc := range p.Services {
+		if e, ok := svc.Environments[env]; ok && slices.Contains(e.Capabilities(), capability) {
+			return true
+		}
+	}
+	return false
+}
+
 type Service struct {
 	Name         string
+	Project      *Project
 	Description  string
 	Repository   string
 	Environments map[string]*Environment

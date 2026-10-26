@@ -41,16 +41,18 @@ func newTestSentryTraces(t *testing.T, handler func(w http.ResponseWriter, q url
 	cfg, err := config.Parse([]byte(fmt.Sprintf(`
 sources:
   sentry: { type: sentry, url: %q, org: acme, auth: { type: bearer, token: s } }
-services:
+projects:
   api:
-    environments:
-      production:
-        traces: { source: sentry, project: api, environment: production }
+    services:
+      api:
+        environments:
+          production:
+            traces: { source: sentry, project: api, environment: production }
 `, server.URL)), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := &authz.Identity{Grants: []identities.Grant{{Service: "api", Environment: "production", Capability: api.CapabilityTraces}}}
+	identity := &authz.Identity{Grants: []identities.Grant{{Project: "api", Environment: "production", Capability: api.CapabilityTraces}}}
 	scope, err := authz.New(cfg, nil).TraceScope(identity, "api", "production")
 	if err != nil {
 		t.Fatal(err)

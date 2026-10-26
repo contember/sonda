@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"net/url"
@@ -32,7 +33,7 @@ type rawConfig struct {
 	Identity *rawIdentity          `yaml:"identity"`
 	Grafana  *rawGrafana           `yaml:"grafana"`
 	Sources  map[string]rawSource  `yaml:"sources"`
-	Services map[string]rawService `yaml:"services"`
+	Projects map[string]rawProject `yaml:"projects"`
 	Limits   rawLimits             `yaml:"limits"`
 	Redact   []string              `yaml:"redact"`
 }
@@ -77,6 +78,11 @@ type rawAuth struct {
 	Password  string `yaml:"password"`
 	Cluster   string `yaml:"cluster"`
 	AWSSource string `yaml:"aws_source"`
+}
+
+type rawProject struct {
+	Description string                `yaml:"description"`
+	Services    map[string]rawService `yaml:"services"`
 }
 
 type rawService struct {
@@ -187,6 +193,7 @@ func (v *validator) config(raw rawConfig) *Config {
 			Database: valueOr(raw.Server.Database, "sonda.db"),
 		},
 		Sources:  map[string]*Source{},
+		Projects: map[string]*Project{},
 		Services: map[string]*Service{},
 		Redact:   raw.Redact,
 	}
@@ -211,8 +218,8 @@ func (v *validator) config(raw rawConfig) *Config {
 	for name, rs := range raw.Sources {
 		v.sourceReferences(name, rs, cfg)
 	}
-	for name, rs := range raw.Services {
-		cfg.Services[name] = v.service(name, rs, cfg.Sources)
+	for _, name := range slices.Sorted(maps.Keys(raw.Projects)) {
+		cfg.Projects[name] = v.project(name, raw.Projects[name], cfg)
 	}
 	cfg.Limits = v.limits("limits", raw.Limits, DefaultLimits)
 	return cfg
@@ -457,8 +464,29 @@ func (v *validator) auth(path string, raw rawAuth) Auth {
 	return auth
 }
 
-func (v *validator) service(name string, raw rawService, sources map[string]*Source) *Service {
-	path := "services." + name
+// project adds the project's services to cfg.Services. Service names are global, because
+// queries, audit records and result handles address a service by name alone.
+func (v *validator) project(name string, raw rawProject, cfg *Config) *Project {
+	path := "projects." + name
+	project := &Project{Name: name, Description: raw.Description, Services: map[string]*Service{}}
+	if len(raw.Services) == 0 {
+		v.fail("%s.services: at least one service is required", path)
+	}
+	for _, svcName := range slices.Sorted(maps.Keys(raw.Services)) {
+		svcPath := path + ".services." + svcName
+		if other, ok := cfg.Services[svcName]; ok {
+			v.fail("%s: service name is already used in project %s", svcPath, other.Project.Name)
+			continue
+		}
+		svc := v.service(svcPath, svcName, raw.Services[svcName], cfg.Sources)
+		svc.Project = project
+		project.Services[svcName] = svc
+		cfg.Services[svcName] = svc
+	}
+	return project
+}
+
+func (v *validator) service(path, name string, raw rawService, sources map[string]*Source) *Service {
 	svc := &Service{
 		Name:         name,
 		Description:  raw.Description,

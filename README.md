@@ -78,7 +78,8 @@ The CLI prints JSON when its output is piped and compact text in a terminal.
 
 ## Configuration
 
-Sources, services and server limits are in `sonda.yaml` (see `sonda.example.yaml`). The server
+Sources, projects with their services, and server limits are in `sonda.yaml` (see
+`sonda.example.yaml`). A project groups the services of one product, across platforms. The server
 reads it at startup. Agent identities are in the database and are managed in the admin UI. The
 parts that matter for security:
 
@@ -96,14 +97,16 @@ parts that matter for security:
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
   - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.
     The alerts API returns the alerts of every service, so this filter in Sonda is the scope.
-- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `alerts`) for service
-  environments. Anything else is not found. A `traces` grant also decides which spans of a
+- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `alerts`) in
+  project environments, e.g. `logs` in `production` of project `engine`. A grant covers every
+  service of the project that configures the capability in that environment, including services
+  added to the project later. Anything else is not found. A `traces` grant also decides which spans of a
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
   chain or Sonda's own identity (below). Use read-only tokens and roles; the Security section of
   `docs/design.md` lists the Cloudflare permission and the AWS IAM actions.
-- **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
+- **Admin token** (`admin.token`) can create tokens for every project. Keep it secret and expose
   `/admin` only on a trusted network.
 
 Sources and bindings for Cloudflare, AWS, Tempo, Kubernetes and Grafana alerting:
@@ -134,29 +137,34 @@ sources:
     url: https://grafana.example.com
     auth: { type: bearer, token: "${GRAFANA_TOKEN}" }  # a Viewer service account token
 
-services:
-  web-worker:
-    environments:
-      production:
-        logs:    { source: cloudflare, script: web-worker }
-        metrics: { source: cloudflare, script: web-worker, d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b } }
-        traces:  { source: cloudflare, script: web-worker }
-    signals:
-      errors: { metric: errors, by: [status] }  # Cloudflare signals are mappings
-      slow_queries: { metric: d1_query_time_p99 }
-  engine-db:
-    environments:
-      production:
-        logs:    { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
-        metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
-    signals:
-      cpu: { metric: CPUUtilization, stat: Average }
-  engine-api:
-    environments:
-      production:
-        traces: { source: tempo-prod, service: engine-api }  # resource.service.name
-        workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
-        alerts: { source: grafana, selector: '{service="engine-api"}' }
+projects:
+  web:
+    services:
+      web-worker:
+        environments:
+          production:
+            logs:    { source: cloudflare, script: web-worker }
+            metrics: { source: cloudflare, script: web-worker, d1_databases: { main: 6f1c2b9e-3d4a-4e5f-8a7b-0c1d2e3f4a5b } }
+            traces:  { source: cloudflare, script: web-worker }
+        signals:
+          errors: { metric: errors, by: [status] }  # Cloudflare signals are mappings
+          slow_queries: { metric: d1_query_time_p99 }
+  engine:
+    description: Content engine
+    services:
+      engine-db:
+        environments:
+          production:
+            logs:    { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
+            metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
+        signals:
+          cpu: { metric: CPUUtilization, stat: Average }
+      engine-api:
+        environments:
+          production:
+            traces: { source: tempo-prod, service: engine-api }  # resource.service.name
+            workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+            alerts: { source: grafana, selector: '{service="engine-api"}' }
 ```
 
 A signal is PromQL for Prometheus and a mapping for Cloudflare or CloudWatch. All metrics
@@ -198,7 +206,7 @@ sources:
 
 Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.
 
-- **Identities**: create an identity, select its grants in a service × capability matrix,
+- **Identities**: create an identity, select its grants in a project environment × capability matrix,
   override limits, rotate or revoke its token. Changes apply to the next request; no restart.
   A token is shown once; Sonda stores only its SHA-256.
 - **Audit log**: every agent request and every admin action, filterable by identity.

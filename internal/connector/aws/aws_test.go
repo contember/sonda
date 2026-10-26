@@ -38,20 +38,22 @@ func scopes(t *testing.T) (*config.Config, authz.LogGroupScope, authz.CloudWatch
 	cfg, err := config.Parse([]byte(`
 sources:
   aws: { type: aws, region: eu-west-1, max_scan_bytes: "1000" }
-services:
+projects:
   db:
-    environments:
-      production:
-        logs: { source: aws, log_groups: [`+engineGroup+`, `+auditGroup+`] }
-        metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine, Role: WRITER } }
+    services:
+      db:
+        environments:
+          production:
+            logs: { source: aws, log_groups: [`+engineGroup+`, `+auditGroup+`] }
+            metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine, Role: WRITER } }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := authz.New(cfg, nil)
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "db", Environment: "production", Capability: api.CapabilityLogs},
-		{Service: "db", Environment: "production", Capability: api.CapabilityMetrics},
+		{Project: "db", Environment: "production", Capability: api.CapabilityLogs},
+		{Project: "db", Environment: "production", Capability: api.CapabilityMetrics},
 	}}
 	logScope, err := a.LogScope(identity, "db", "production")
 	if err != nil {

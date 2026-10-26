@@ -24,8 +24,8 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 		Name:        "agent",
 		TokenSHA256: sha256.Sum256([]byte("one")),
 		Grants: []identities.Grant{
-			{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
-			{Service: "api", Environment: "production", Capability: api.CapabilityErrors},
+			{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
+			{Project: "api", Environment: "production", Capability: api.CapabilityErrors},
 		},
 		Limits:    identities.LimitOverrides{MaxRange: &maxRange, MaxLogLines: &lines},
 		CreatedAt: time.UnixMilli(1_700_000_000_000),
@@ -55,7 +55,7 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 		t.Errorf("duplicate token: %v", err)
 	}
 
-	newGrants := []identities.Grant{{Service: "billing", Environment: "staging", Capability: api.CapabilityMetrics}}
+	newGrants := []identities.Grant{{Project: "billing", Environment: "staging", Capability: api.CapabilityMetrics}}
 	if err := st.Update(ctx, "agent", newGrants, identities.LimitOverrides{}); err != nil {
 		t.Fatal(err)
 	}

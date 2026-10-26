@@ -112,12 +112,14 @@ type Window struct {
 
 type ServiceSummary struct {
 	Name         string   `json:"name"`
+	Project      string   `json:"project"`
 	Description  string   `json:"description,omitempty"`
 	Environments []string `json:"environments"`
 }
 
 type ServiceDetail struct {
 	Name         string              `json:"name"`
+	Project      string              `json:"project"`
 	Description  string              `json:"description,omitempty"`
 	Repository   string              `json:"repository,omitempty"`
 	Environments []EnvironmentDetail `json:"environments"`

@@ -125,7 +125,7 @@ func (a *Authorizer) environments(identity *Identity, svc *config.Service) map[s
 	result := map[string][]api.Capability{}
 	for envName, env := range svc.Environments {
 		for _, capability := range env.Capabilities() {
-			if a.granted(identity, svc.Name, envName, capability) {
+			if a.granted(identity, svc, envName, capability) {
 				result[envName] = append(result[envName], capability)
 			}
 		}
@@ -133,8 +133,9 @@ func (a *Authorizer) environments(identity *Identity, svc *config.Service) map[s
 	return result
 }
 
-func (a *Authorizer) granted(identity *Identity, service, env string, capability api.Capability) bool {
-	return slices.Contains(identity.Grants, identities.Grant{Service: service, Environment: env, Capability: capability})
+// granted reports whether the identity holds the grant of the service's project.
+func (a *Authorizer) granted(identity *Identity, svc *config.Service, env string, capability api.Capability) bool {
+	return slices.Contains(identity.Grants, identities.Grant{Project: svc.Project.Name, Environment: env, Capability: capability})
 }
 
 // resolve finds the environment for a capability. An empty environment name is allowed
@@ -226,7 +227,7 @@ func (a *Authorizer) TraceVisibility(identity *Identity, scope TraceScope) func(
 			if env.Traces == nil || env.Traces.Source != scope.Source() {
 				continue
 			}
-			if a.granted(identity, svc.Name, envName, api.CapabilityTraces) {
+			if a.granted(identity, svc, envName, api.CapabilityTraces) {
 				visible[traceServiceName(env.Traces)] = true
 			}
 		}

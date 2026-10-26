@@ -51,10 +51,10 @@ CREATE TABLE IF NOT EXISTS identities (
 
 CREATE TABLE IF NOT EXISTS identity_grants (
 	identity    TEXT NOT NULL REFERENCES identities (name) ON DELETE CASCADE,
-	service     TEXT NOT NULL,
+	project     TEXT NOT NULL,
 	environment TEXT NOT NULL,
 	capability  TEXT NOT NULL,
-	PRIMARY KEY (identity, service, environment, capability)
+	PRIMARY KEY (identity, project, environment, capability)
 );
 
 CREATE TABLE IF NOT EXISTS signing_keys (

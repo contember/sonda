@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,18 +23,22 @@ func testAuthorizer(t *testing.T) *Authorizer {
 sources:
   loki: { type: loki, url: "http://loki:3100" }
   prom: { type: prometheus, url: "http://prom:9090" }
-services:
+projects:
   api:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="api", env="prod"}' }
-        metrics: { source: prom, selector: '{job="api"}' }
-      staging:
-        logs: { source: loki, selector: '{app="api", env="staging"}' }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="api", env="prod"}' }
+            metrics: { source: prom, selector: '{job="api"}' }
+          staging:
+            logs: { source: loki, selector: '{app="api", env="staging"}' }
   billing:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="billing"}' }
+    services:
+      billing:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="billing"}' }
 limits:
   max_log_lines: 200
 `
@@ -51,9 +56,9 @@ limits:
 		Name:        "agent",
 		TokenSHA256: sha256.Sum256([]byte("token-a")),
 		Grants: []identities.Grant{
-			{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
-			{Service: "api", Environment: "staging", Capability: api.CapabilityLogs},
-			{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+			{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
+			{Project: "api", Environment: "staging", Capability: api.CapabilityLogs},
+			{Project: "api", Environment: "production", Capability: api.CapabilityMetrics},
 		},
 		Limits:    identities.LimitOverrides{RequestsPerMinute: &requestsPerMinute},
 		CreatedAt: time.Now(),
@@ -148,6 +153,57 @@ func TestServicesListsOnlyGranted(t *testing.T) {
 	}
 }
 
+func TestProjectGrantCoversItsServices(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+sources:
+  loki: { type: loki, url: "http://loki:3100" }
+  prom: { type: prometheus, url: "http://prom:9090" }
+projects:
+  shop:
+    services:
+      shop-web:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="web"}' }
+      shop-api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="api"}' }
+            metrics: { source: prom, selector: '{job="api"}' }
+  billing:
+    services:
+      billing:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="billing"}' }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, nil)
+	identity := &Identity{Name: "agent", Grants: []identities.Grant{
+		{Project: "shop", Environment: "production", Capability: api.CapabilityLogs},
+	}}
+	for _, service := range []string{"shop-web", "shop-api"} {
+		if _, err := a.LogScope(identity, service, "production"); err != nil {
+			t.Errorf("logs of %s: %v", service, err)
+		}
+	}
+	if _, err := a.LogScope(identity, "billing", "production"); !hasCode(err, api.CodeNotFound) {
+		t.Errorf("logs of another project: %v", err)
+	}
+	if _, err := a.MetricScope(identity, "shop-api", "production"); !hasCode(err, api.CodeNotFound) {
+		t.Errorf("ungranted capability of the project: %v", err)
+	}
+	var names []string
+	for _, svc := range a.Services(identity) {
+		names = append(names, svc.Name)
+	}
+	if got := strings.Join(names, ","); got != "shop-api,shop-web" {
+		t.Errorf("services = %s", got)
+	}
+}
+
 func lokiScope(t *testing.T, scope LogScope) SelectorScope {
 	t.Helper()
 	loki, ok := scope.Loki()
@@ -173,34 +229,44 @@ sources:
   aws: { type: aws, region: eu-west-1 }
   tempo: { type: tempo, url: "http://tempo" }
   tempo-eu: { type: tempo, url: "http://tempo-eu" }
-services:
+projects:
   worker:
-    environments:
-      production:
-        logs: { source: cf, script: worker }
-        metrics: { source: cf, script: worker }
-        traces: { source: cf, script: worker }
+    services:
+      worker:
+        environments:
+          production:
+            logs: { source: cf, script: worker }
+            metrics: { source: cf, script: worker }
+            traces: { source: cf, script: worker }
   db:
-    environments:
-      production:
-        errors: { source: sentry, project: db, environment: production }
-        logs: { source: aws, log_groups: [/aws/rds/db] }
-        metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: db } }
-        traces: { source: tempo, service: db }
+    services:
+      db:
+        environments:
+          production:
+            errors: { source: sentry, project: db, environment: production }
+            logs: { source: aws, log_groups: [/aws/rds/db] }
+            metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: db } }
+            traces: { source: tempo, service: db }
   api:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="api"}' }
-        metrics: { source: prom, selector: '{job="api"}' }
-        traces: { source: tempo, service: api }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="api"}' }
+            metrics: { source: prom, selector: '{job="api"}' }
+            traces: { source: tempo, service: api }
   billing:
-    environments:
-      production:
-        traces: { source: tempo, service: billing }
+    services:
+      billing:
+        environments:
+          production:
+            traces: { source: tempo, service: billing }
   billing-eu:
-    environments:
-      production:
-        traces: { source: tempo-eu, service: billing }
+    services:
+      billing-eu:
+        environments:
+          production:
+            traces: { source: tempo-eu, service: billing }
 `
 	cfg, err := config.Parse([]byte(yaml), func(string) (string, bool) { return "", false })
 	if err != nil {
@@ -213,7 +279,7 @@ func grantAll(services ...string) *Identity {
 	identity := &Identity{Name: "agent"}
 	for _, svc := range services {
 		for _, capability := range []api.Capability{api.CapabilityErrors, api.CapabilityLogs, api.CapabilityMetrics, api.CapabilityTraces} {
-			identity.Grants = append(identity.Grants, identities.Grant{Service: svc, Environment: "production", Capability: capability})
+			identity.Grants = append(identity.Grants, identities.Grant{Project: svc, Environment: "production", Capability: capability})
 		}
 	}
 	return identity
@@ -355,8 +421,8 @@ func TestTraceVisibility(t *testing.T) {
 	}
 
 	onlyLogs := &Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
-		{Service: "db", Environment: "production", Capability: api.CapabilityLogs},
+		{Project: "api", Environment: "production", Capability: api.CapabilityTraces},
+		{Project: "db", Environment: "production", Capability: api.CapabilityLogs},
 	}}
 	scope, err = a.TraceScope(onlyLogs, "api", "")
 	if err != nil {

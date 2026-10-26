@@ -37,16 +37,18 @@ func newTestTempoTraces(t *testing.T, handler http.HandlerFunc) (traceBackend, *
 grafana: { url: "https://grafana.example" }
 sources:
   tempo: { type: tempo, url: %q, grafana_datasource_uid: tempo-uid }
-services:
+projects:
   api:
-    environments:
-      production:
-        traces: { source: tempo, service: engine-api }
+    services:
+      api:
+        environments:
+          production:
+            traces: { source: tempo, service: engine-api }
 `, server.URL)), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := &authz.Identity{Grants: []identities.Grant{{Service: "api", Environment: "production", Capability: api.CapabilityTraces}}}
+	identity := &authz.Identity{Grants: []identities.Grant{{Project: "api", Environment: "production", Capability: api.CapabilityTraces}}}
 	scope, err := authz.New(cfg, nil).TraceScope(identity, "api", "production")
 	if err != nil {
 		t.Fatal(err)

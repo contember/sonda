@@ -17,20 +17,22 @@ func cloudWatchScopes(t *testing.T) (authz.LogGroupScope, authz.CloudWatchMetric
 	cfg, err := config.Parse([]byte(`
 sources:
   aws: { type: aws, region: eu-west-1 }
-services:
+projects:
   db:
-    environments:
-      production:
-        logs: { source: aws, log_groups: [/aws/rds/cluster/engine/postgresql] }
-        metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
+    services:
+      db:
+        environments:
+          production:
+            logs: { source: aws, log_groups: [/aws/rds/cluster/engine/postgresql] }
+            metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := authz.New(cfg, nil)
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "db", Environment: "production", Capability: api.CapabilityLogs},
-		{Service: "db", Environment: "production", Capability: api.CapabilityMetrics},
+		{Project: "db", Environment: "production", Capability: api.CapabilityLogs},
+		{Project: "db", Environment: "production", Capability: api.CapabilityMetrics},
 	}}
 	logScope, err := a.LogScope(identity, "db", "production")
 	if err != nil {

@@ -116,26 +116,32 @@ sources:
   cf: { type: cloudflare, url: %[1]q, account_id: acc, auth: { type: bearer, token: t } }
   k8s: { type: kubernetes, url: %[1]q, auth: { type: bearer, token: k } }
   grafana: { type: grafana, url: %[1]q, auth: { type: bearer, token: g } }
-services:
+projects:
   api:
-    environments:
-      production:
-        errors: { source: sentry, project: api, environment: production }
-        logs: { source: loki, selector: '{app="api"}' }
-        metrics: { source: prom, selector: '{job="api"}' }
-        traces: { source: tempo, service: api }
-        workloads: { source: k8s, namespace: apps, labels: { app: api } }
-        alerts: { source: grafana, selector: '{service="api"}' }
-    signals:
-      rps: sum(rate(http_requests_total[5m]))
+    services:
+      api:
+        environments:
+          production:
+            errors: { source: sentry, project: api, environment: production }
+            logs: { source: loki, selector: '{app="api"}' }
+            metrics: { source: prom, selector: '{job="api"}' }
+            traces: { source: tempo, service: api }
+            workloads: { source: k8s, namespace: apps, labels: { app: api } }
+            alerts: { source: grafana, selector: '{service="api"}' }
+        signals:
+          rps: sum(rate(http_requests_total[5m]))
   billing:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="billing"}' }
+    services:
+      billing:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="billing"}' }
   worker:
-    environments:
-      production:
-        logs: { source: cf, script: worker }
+    services:
+      worker:
+        environments:
+          production:
+            logs: { source: cf, script: worker }
 `, fake.URL)), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -152,21 +158,21 @@ services:
 			Name:        "agent",
 			TokenSHA256: sha256.Sum256([]byte("agent-token")),
 			Grants: []identities.Grant{
-				{Service: "api", Environment: "production", Capability: api.CapabilityErrors},
-				{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
-				{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
-				{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
-				{Service: "api", Environment: "production", Capability: api.CapabilityWorkloads},
-				{Service: "api", Environment: "production", Capability: api.CapabilityAlerts},
-				{Service: "worker", Environment: "production", Capability: api.CapabilityLogs},
+				{Project: "api", Environment: "production", Capability: api.CapabilityErrors},
+				{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
+				{Project: "api", Environment: "production", Capability: api.CapabilityMetrics},
+				{Project: "api", Environment: "production", Capability: api.CapabilityTraces},
+				{Project: "api", Environment: "production", Capability: api.CapabilityWorkloads},
+				{Project: "api", Environment: "production", Capability: api.CapabilityAlerts},
+				{Project: "worker", Environment: "production", Capability: api.CapabilityLogs},
 			},
 		},
 		{
 			Name:        "other",
 			TokenSHA256: sha256.Sum256([]byte("other-token")),
 			Grants: []identities.Grant{
-				{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
-				{Service: "billing", Environment: "production", Capability: api.CapabilityLogs},
+				{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
+				{Project: "billing", Environment: "production", Capability: api.CapabilityLogs},
 			},
 			Limits: identities.LimitOverrides{RequestsPerMinute: &requestsPerMinute},
 		},

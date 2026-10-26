@@ -12,16 +12,17 @@
   <div class="scroll">
   <table class="matrix">
     <thead>
-      <tr><th>Service</th><th>Environment</th>{{range .Capabilities}}<th class="check">{{.}}</th>{{end}}</tr>
+      <tr><th>Project</th><th>Environment</th><th>Services</th>{{range .Capabilities}}<th class="check">{{.}}</th>{{end}}</tr>
     </thead>
     <tbody>
     {{range .Matrix}}
       <tr>
-        <td>{{.Service}}</td>
+        <td>{{.Project}}</td>
         <td>{{.Environment}}</td>
+        <td class="muted">{{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</td>
         {{$row := .}}
         {{range $i, $cell := .Cells}}
-        <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="muted" title="Not configured for this environment">–</span>{{end}}</td>
+        <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Project}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="muted" title="No service of the project configures this in this environment">–</span>{{end}}</td>
         {{end}}
       </tr>
     {{end}}
@@ -29,11 +30,11 @@
   </table>
   </div>
   {{else}}
-  <p class="muted">The configuration has no services.</p>
+  <p class="muted">The configuration has no projects.</p>
   {{end}}
   {{if .Stale}}
   <div class="warning">
-    <p>These stored grants refer to services or capabilities that are no longer in the configuration. They have no effect, and saving removes them:</p>
+    <p>These stored grants refer to projects or capabilities that are no longer in the configuration. They have no effect, and saving removes them:</p>
     <ul>{{range .Stale}}<li>{{.}}</li>{{end}}</ul>
   </div>
   {{end}}

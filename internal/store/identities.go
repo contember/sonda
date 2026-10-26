@@ -33,7 +33,7 @@ func (s *Store) getIdentity(ctx context.Context, query string, arg any) (identit
 	if err != nil {
 		return identities.Identity{}, err
 	}
-	grants, err := s.grants(ctx, `SELECT identity, service, environment, capability FROM identity_grants WHERE identity = $1`, identity.Name)
+	grants, err := s.grants(ctx, `SELECT identity, project, environment, capability FROM identity_grants WHERE identity = $1`, identity.Name)
 	identity.Grants = grants[identity.Name]
 	return identity, err
 }
@@ -56,7 +56,7 @@ func (s *Store) List(ctx context.Context) ([]identities.Identity, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	grants, err := s.grants(ctx, `SELECT identity, service, environment, capability FROM identity_grants`)
+	grants, err := s.grants(ctx, `SELECT identity, project, environment, capability FROM identity_grants`)
 	if err != nil {
 		return nil, err
 	}
@@ -116,22 +116,22 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 }
 
 func (s *Store) grants(ctx context.Context, query string, args ...any) (map[string][]identities.Grant, error) {
-	rows, err := s.db.QueryContext(ctx, query+` ORDER BY service, environment, capability`, args...)
+	rows, err := s.db.QueryContext(ctx, query+` ORDER BY project, environment, capability`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	byIdentity := map[string][]identities.Grant{}
 	for rows.Next() {
-		var identity, service, environment, capability string
-		if err := rows.Scan(&identity, &service, &environment, &capability); err != nil {
+		var identity, project, environment, capability string
+		if err := rows.Scan(&identity, &project, &environment, &capability); err != nil {
 			return nil, err
 		}
 		parsed, err := api.ParseCapability(capability)
 		if err != nil {
 			return nil, fmt.Errorf("stored grant of identity %q: %w", identity, err)
 		}
-		byIdentity[identity] = append(byIdentity[identity], identities.Grant{Service: service, Environment: environment, Capability: parsed})
+		byIdentity[identity] = append(byIdentity[identity], identities.Grant{Project: project, Environment: environment, Capability: parsed})
 	}
 	return byIdentity, rows.Err()
 }
@@ -139,9 +139,9 @@ func (s *Store) grants(ctx context.Context, query string, args ...any) (map[stri
 func insertGrants(ctx context.Context, tx *sql.Tx, name string, grants []identities.Grant) error {
 	for _, g := range grants {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO identity_grants (identity, service, environment, capability) VALUES ($1, $2, $3, $4)
+			`INSERT INTO identity_grants (identity, project, environment, capability) VALUES ($1, $2, $3, $4)
 			 ON CONFLICT DO NOTHING`,
-			name, g.Service, g.Environment, string(g.Capability)); err != nil {
+			name, g.Project, g.Environment, string(g.Capability)); err != nil {
 			return err
 		}
 	}

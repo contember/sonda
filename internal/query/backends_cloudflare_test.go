@@ -34,20 +34,22 @@ func cloudflareBackends(t *testing.T, response string) (logBackend, traceBackend
 	cfg, err := config.Parse([]byte(`
 sources:
   cf: { type: cloudflare, url: "`+server.URL+`", account_id: acc, auth: { type: bearer, token: t } }
-services:
+projects:
   api:
-    environments:
-      production:
-        logs: { source: cf, script: api-worker }
-        traces: { source: cf, script: api-worker }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: cf, script: api-worker }
+            traces: { source: cf, script: api-worker }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := authz.New(cfg, nil)
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
-		{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
+		{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
+		{Project: "api", Environment: "production", Capability: api.CapabilityTraces},
 	}}
 	logScope, err := a.LogScope(identity, "api", "production")
 	if err != nil {
@@ -133,17 +135,19 @@ func TestCloudflareMetricsReportBucketAsStep(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
 sources:
   cf: { type: cloudflare, url: "`+server.URL+`", account_id: acc, auth: { type: bearer, token: t } }
-services:
+projects:
   api:
-    environments:
-      production:
-        metrics: { source: cf, script: api-worker }
+    services:
+      api:
+        environments:
+          production:
+            metrics: { source: cf, script: api-worker }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+		{Project: "api", Environment: "production", Capability: api.CapabilityMetrics},
 	}}
 	scope, err := authz.New(cfg, nil).MetricScope(identity, "api", "production")
 	if err != nil {
@@ -179,17 +183,19 @@ func TestCloudflareMetricNamesFollowBoundResources(t *testing.T) {
 	cfg, err := config.Parse([]byte(`
 sources:
   cf: { type: cloudflare, account_id: acc, auth: { type: bearer, token: t } }
-services:
+projects:
   api:
-    environments:
-      production:
-        metrics: { source: cf, script: api-worker, queues: { jobs: 0123456789abcdef0123456789abcdef } }
+    services:
+      api:
+        environments:
+          production:
+            metrics: { source: cf, script: api-worker, queues: { jobs: 0123456789abcdef0123456789abcdef } }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
-		{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
+		{Project: "api", Environment: "production", Capability: api.CapabilityMetrics},
 	}}
 	scope, err := authz.New(cfg, nil).MetricScope(identity, "api", "production")
 	if err != nil {

@@ -36,11 +36,13 @@ admin:
   token: `+adminToken+`
 sources:
   loki: { type: loki, url: "http://loki:3100" }
-services:
+projects:
   api:
-    environments:
-      production:
-        logs: { source: loki, selector: '{app="api"}' }
+    services:
+      api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="api"}' }
 `), func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +98,7 @@ func shownToken(t *testing.T, body string) string {
 }
 
 func logsGrant() string {
-	return grantValue(identities.Grant{Service: "api", Environment: "production", Capability: api.CapabilityLogs})
+	return grantValue(identities.Grant{Project: "api", Environment: "production", Capability: api.CapabilityLogs})
 }
 
 func TestRequiresSession(t *testing.T) {
@@ -178,7 +180,7 @@ func TestCreateRotateAndDeleteIdentity(t *testing.T) {
 func TestRejectsInvalidInput(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
-	unconfigured := grantValue(identities.Grant{Service: "api", Environment: "production", Capability: api.CapabilityMetrics})
+	unconfigured := grantValue(identities.Grant{Project: "api", Environment: "production", Capability: api.CapabilityMetrics})
 	tests := []struct {
 		name string
 		form url.Values

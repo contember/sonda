@@ -43,7 +43,7 @@ func (s *Service) ListServices(identity *authz.Identity) api.Response[[]api.Serv
 	services := s.authz.Services(identity)
 	summaries := make([]api.ServiceSummary, 0, len(services))
 	for _, svc := range services {
-		summary := api.ServiceSummary{Name: svc.Name, Description: svc.Description}
+		summary := api.ServiceSummary{Name: svc.Name, Project: svc.Project.Name, Description: svc.Description}
 		for _, env := range s.authz.Environments(identity, svc) {
 			summary.Environments = append(summary.Environments, env.Name)
 		}
@@ -59,6 +59,7 @@ func (s *Service) DescribeService(identity *authz.Identity, name string) (api.Re
 	}
 	detail := api.ServiceDetail{
 		Name:         svc.Name,
+		Project:      svc.Project.Name,
 		Description:  svc.Description,
 		Repository:   svc.Repository,
 		Environments: s.authz.Environments(identity, svc),
