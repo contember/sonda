@@ -49,6 +49,7 @@ func main() {
 		a.logsCmd(), a.resultCmd(),
 		a.metricsCmd(), a.signalCmd(),
 		a.tracesCmd(), a.traceCmd(),
+		a.workloadsCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

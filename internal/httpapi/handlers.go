@@ -94,6 +94,14 @@ func (s *Server) getTrace(r *http.Request) (any, error) {
 	return s.query.GetTrace(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.PathValue("id"), w)
 }
 
+func (s *Server) workloads(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.Workloads(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
+}
+
 func (s *Server) result(r *http.Request) (any, error) {
 	var group *int
 	if r.URL.Query().Has("group") {

@@ -15,9 +15,10 @@ compact responses with links back to the source.
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
 | **Grafana Tempo** | traces |
+| **Kubernetes** pods, ReplicaSets and events | workloads |
 
 ```text
-agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo
+agent ──sonda CLI──► sonda-server ──► Sentry / Loki / Prometheus / Cloudflare / CloudWatch / Tempo / Kubernetes
           one token     authz, query scoping, grouping, limits, audit
 ```
 
@@ -69,6 +70,7 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | `sonda logs search/query/fields <svc>`, `sonda result <id>` | Logs |
 | `sonda metrics list/query <svc>`, `sonda signal <svc> <name>` | Metrics |
 | `sonda traces search/query <svc>`, `sonda trace <svc> <id>` | Traces |
+| `sonda workloads <svc>` | Kubernetes pods, rollouts and events |
 
 The CLI prints JSON when its output is piped and compact text in a terminal.
 
@@ -87,7 +89,8 @@ parts that matter for security:
   - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns or ARNs.
   - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
-- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`) for service
+  - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
+- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`) for service
   environments. Anything else is not found. A `traces` grant also decides which spans of a
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
@@ -97,7 +100,7 @@ parts that matter for security:
 - **Admin token** (`admin.token`) can create tokens for every service. Keep it secret and expose
   `/admin` only on a trusted network.
 
-Sources and bindings for Cloudflare, AWS and Tempo:
+Sources and bindings for Cloudflare, AWS, Tempo and Kubernetes:
 
 ```yaml
 sources:
@@ -115,6 +118,11 @@ sources:
     url: http://tempo.monitoring.svc:3200
     headers: { X-Scope-OrgID: prod }   # multi-tenant Tempo only
     grafana_datasource_uid: tempo-prod
+  k8s-prod:
+    type: kubernetes                   # without url: the pod's service account (in-cluster)
+    url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com
+    auth: { type: bearer, token: "${K8S_TOKEN}" }  # a read-only service account token
+    ca_file: /etc/sonda/k8s-prod-ca.crt
 
 services:
   web-worker:
@@ -137,6 +145,7 @@ services:
     environments:
       production:
         traces: { source: tempo-prod, service: engine-api }  # resource.service.name
+        workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
 ```
 
 A signal is PromQL for Prometheus and a mapping for Cloudflare or CloudWatch. All metrics

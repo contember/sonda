@@ -4,12 +4,15 @@ package upstream
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/config"
@@ -18,7 +21,20 @@ import (
 const maxBodyBytes = 32 << 20
 
 func HTTPClient(src *config.Source) *http.Client {
-	return &http.Client{Transport: &authTransport{source: src, base: http.DefaultTransport}}
+	base := http.DefaultTransport
+	if src.RootCAs != nil {
+		// The settings of http.DefaultTransport, with the source's roots.
+		base = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+			TLSClientConfig:       &tls.Config{RootCAs: src.RootCAs, MinVersion: tls.VersionTLS12},
+		}
+	}
+	return &http.Client{Transport: &authTransport{source: src, base: base}}
 }
 
 type authTransport struct {
@@ -33,7 +49,15 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	switch t.source.Auth.Type {
 	case config.AuthBearer:
-		req.Header.Set("Authorization", "Bearer "+t.source.Auth.Token)
+		token := t.source.Auth.Token
+		if t.source.Auth.TokenFile != "" {
+			data, err := os.ReadFile(t.source.Auth.TokenFile)
+			if err != nil {
+				return nil, fmt.Errorf("read token: %w", err)
+			}
+			token = strings.TrimSpace(string(data))
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	case config.AuthBasic:
 		req.SetBasicAuth(t.source.Auth.Username, t.source.Auth.Password)
 	}

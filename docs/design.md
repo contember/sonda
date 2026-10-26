@@ -33,6 +33,9 @@ returns compact, evidence-carrying responses.
 | Loki/Prometheus/Tempo access | Direct connection to the native HTTP API | Through Grafana (`/api/ds/query` or the datasource proxy) | No dependency on Grafana, full API (e.g. `detected_fields`), clearer upstream errors. The Grafana datasource proxy still works as a plain `url` when Grafana is the only reachable endpoint. |
 | Range limit | Reject ranges over `max_range` with `limit_exceeded` | Silently shorten the range | A shortened range would make counts look complete when they are not. |
 | Native query capability | Same capability as the structured tools (`logs`, `metrics`, `traces`) | Separate `logs:native` / `metrics:native` | Native queries are scoped the same way; cost is bounded by limits. |
+| Kubernetes access | Plain HTTP against the API server: pods and ReplicaSets by namespace and label selector, events of the namespace filtered by object | `client-go`; Kubernetes events through Loki | Three list calls need no client library. Events are not in the log pipelines we run, and the API keeps them for about an hour. |
+| Kubernetes scope | A namespace and exact labels (`key: value`) | A free label selector | Exact labels are both the upstream selector and an exact post-check, and cannot express "everything except". |
+| Workloads capability | A new capability `workloads` | Serve pods under `logs` or `metrics` | Pod state, rollouts and events are a separate kind of data; a grant should name it. |
 | Workspaces | One server = one workspace | Multi-workspace in v1 | No current need. Nothing in the model prevents adding it later. |
 
 ## 2. Domain model
@@ -53,6 +56,7 @@ Identity ──< Grant (services × environments × capabilities)
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
   | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, optional `role_arn` + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
+  | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token, optional `ca_file`; without `url`, the pod's service account (in-cluster) |
 
   Auth is `none`, `bearer` or `basic`. Extra headers carry e.g. `X-Scope-OrgID` for
   multi-tenant Loki, Mimir or Tempo. AWS has no URL, auth or headers: credentials come from
@@ -75,6 +79,7 @@ Identity ──< Grant (services × environments × capabilities)
   | `metrics` | `aws` | `namespace` + `dimensions` (1 to 10) |
   | `traces` | `tempo` | `service` (`resource.service.name`) |
   | `traces` | `cloudflare` | `script` |
+  | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty) |
 
 - **Dialect**: each binding has the query dialect of its native query endpoint: `logql`,
   `promql`, `traceql`, `cloudflare-query`, `cloudflare-metric`, `logs-insights`,
@@ -88,7 +93,7 @@ Identity ──< Grant (services × environments × capabilities)
 - **Identity**: an agent service account. Authenticated by a bearer token. The identity store
   keeps only the SHA-256 of the token. Managed in the admin UI (section 11), not in the config.
 - **Grant**: one `(service, environment, capability)`. Capabilities: `errors`, `logs`,
-  `metrics`, `traces`. A native query requires the same capability as the structured tool for
+  `metrics`, `traces`, `workloads`. A native query requires the same capability as the structured tool for
   that signal type. A `traces` grant also makes the service's spans visible in full inside
   traces fetched through other services (section 8). A grant for a service or capability that
   is no longer configured has no effect.
@@ -206,7 +211,8 @@ internal/connector
   cloudflare/      Workers Observability and GraphQL Analytics client
   aws/             CloudWatch Logs and CloudWatch client (aws-sdk-go-v2)
   tempo/           Tempo HTTP API client
-internal/query     use cases: overview, errors, logs, metrics, traces, results; one backend per source type
+  kubernetes/      Kubernetes API client: pods, ReplicaSets, events
+internal/query     use cases: overview, errors, logs, metrics, traces, workloads, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles
@@ -218,8 +224,8 @@ Boundaries:
 
 - `httpapi` parses requests into `api` types and calls `query`. Nothing reaches a connector
   without a scope from `authz`.
-- `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope` and
-  `TraceScope`, which resolve to one typed variant per source type (`SelectorScope`,
+- `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
+  `TraceScope` and `WorkloadScope`, which resolve to one typed variant per source type (`SelectorScope`,
   `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
@@ -325,6 +331,25 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - Verified against sentry.io: a `project:` or `environment:` term in the agent's query combines
   with the endpoint's project and the `environment` parameter by AND; it cannot widen them.
 - Required token scopes: `org:read`, `project:read`, `event:read`, `project:releases`.
+
+### Kubernetes specifics
+
+- Endpoints used: `GET /api/v1/namespaces/{ns}/pods` and
+  `/apis/apps/v1/namespaces/{ns}/replicasets` with `labelSelector` built from the binding's
+  labels, and `/api/v1/namespaces/{ns}/events` without one, each paged with `limit` and
+  `continue`. Lists stop at 500 pods, 500 ReplicaSets and 2000 events and mark the response
+  `truncated`.
+- Every returned pod and ReplicaSet is checked against the namespace and every label; one
+  outside them fails the request with `internal`. Events carry no labels, so `query` keeps only
+  events of the scope's pods and ReplicaSets, the Deployments that own those ReplicaSets, and
+  pods named `<ReplicaSet>-<5 characters>`. The last rule keeps events of crashed pods that no
+  longer exist; the fixed suffix length keeps out pods of a longer ReplicaSet name.
+- Pods and rollouts are the current state, whatever the range; events are those overlapping
+  the range. Kubernetes keeps events for about an hour by default (`--event-ttl`).
+- In-cluster: without `url`, the source connects to `KUBERNETES_SERVICE_HOST`/`PORT`, trusts the
+  mounted `ca.crt` and reads the mounted service account token on every request, because the
+  kubelet rotates it. With `url`, a bearer token is required (a service account token secret
+  works for EKS) and `ca_file` names the cluster CA.
 
 ## 5. Authorization
 
@@ -685,7 +710,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 |---|---|---|
 | `/v1/services` | any grant | Services the identity can access |
 | `/v1/services/{s}` | any grant | Environments, capabilities with backend and dialect, signals, repository |
-| `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values. The usual first call. |
+| `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values, workload health. The usual first call. |
 | `/v1/services/{s}/errors` | `errors` | Issues: title, count, users, first/last seen, link |
 | `/v1/services/{s}/errors/{id}` | `errors` | Issue + latest event in `env` with stack trace (in-app frames, newest first) and trace ID |
 | `/v1/services/{s}/releases` | `errors` | Releases and deploys in range |
@@ -698,6 +723,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `POST /v1/services/{s}/traces/search` | `traces` | Duration, error, name and attribute filters → trace summaries |
 | `POST /v1/services/{s}/traces/query` | `traces` | Native query in the backend's dialect (scoped) → trace summaries |
 | `/v1/services/{s}/traces/{id}` | `traces` | Span tree; spans of services without a grant are stubs |
+| `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states, last termination) and rollouts now; events of the service's objects in range |
 | `/v1/results/{id}` | owner | Page through or drill into a stored result |
 
 `metrics/query` takes the query as a string in every dialect; for Cloudflare and CloudWatch it
@@ -726,6 +752,7 @@ sonda metrics query engine-db '{"metric":"CPUUtilization","stat":"Average"}'
 sonda traces search engine-api --since 1h --min-duration 500ms --errors
 sonda traces query engine-api '{ status = error && duration > 500ms }'
 sonda trace engine-api 4bf92f3577b34da6a3ce929d0e0e4736 --since 6h
+sonda workloads engine-api -e production --since 1h
 sonda result res_8KcW --group 2
 ```
 
@@ -785,6 +812,10 @@ Rules:
   Read-Only" access grants observability. This must be verified against a
   real account before production use; prefer the read-only permission if it works. GraphQL
   Analytics needs "Account Analytics Read".
+- **Kubernetes role.** Bind Sonda's service account to a Role in each bound namespace with
+  only `get` and `list` on `pods`, `events` and `apps/replicasets`. Events are listed for the
+  whole namespace and filtered by Sonda, so the role must not be broader than the namespaces in
+  the config. Container and event messages are redacted and marked untrusted.
 - **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
   `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
   `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus

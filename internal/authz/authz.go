@@ -110,6 +110,8 @@ func backends(env *config.Environment, capabilities []api.Capability) map[api.Ca
 			result[capability] = api.BackendInfo{Source: string(env.Metrics.Source.Type), Dialect: env.Metrics.Dialect()}
 		case api.CapabilityTraces:
 			result[capability] = api.BackendInfo{Source: string(env.Traces.Source.Type), Dialect: env.Traces.Dialect()}
+		case api.CapabilityWorkloads:
+			result[capability] = api.BackendInfo{Source: string(env.Workloads.Source.Type)}
 		}
 	}
 	return result
@@ -193,6 +195,14 @@ func (a *Authorizer) TraceScope(identity *Identity, service, env string) (TraceS
 		return TraceScope{}, err
 	}
 	return TraceScope{Target: target, binding: environment.Traces}, nil
+}
+
+func (a *Authorizer) WorkloadScope(identity *Identity, service, env string) (WorkloadScope, error) {
+	target, environment, err := a.resolve(identity, service, env, api.CapabilityWorkloads)
+	if err != nil {
+		return WorkloadScope{}, err
+	}
+	return WorkloadScope{Target: target, binding: environment.Workloads}, nil
 }
 
 // TraceVisibility reports which backend service names of the scope's source the identity may see in
@@ -374,6 +384,19 @@ func (s CloudflareScope) Script() string         { return s.script }
 func (s CloudflareScope) Resources(kind telemetry.CloudflareResource) map[string]string {
 	return maps.Clone(s.resources[kind])
 }
+
+// WorkloadScope restricts a Kubernetes cluster to the objects of one namespace that carry
+// all of the service's labels.
+type WorkloadScope struct {
+	Target
+	binding *config.WorkloadBinding
+}
+
+func (s WorkloadScope) Source() *config.Source { return s.binding.Source }
+func (s WorkloadScope) Namespace() string      { return s.binding.Namespace }
+
+// Labels returns a copy, so callers cannot change the scope.
+func (s WorkloadScope) Labels() map[string]string { return maps.Clone(s.binding.Labels) }
 
 // LogGroupScope restricts an AWS account to the service's CloudWatch log groups.
 type LogGroupScope struct {

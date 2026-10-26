@@ -53,6 +53,13 @@ func (s *Service) Overview(ctx context.Context, identity *authz.Identity, servic
 			resp.Data.Issues.Items, resp.Data.Issues.Error = issues.Data, partError(err)
 		})
 	}
+	if slices.Contains(env.Capabilities, api.CapabilityWorkloads) {
+		resp.Data.Workloads = &api.OverviewPart[*api.WorkloadSummary]{}
+		wg.Go(func() {
+			summary, err := s.WorkloadSummary(ctx, identity, service, w)
+			resp.Data.Workloads.Items, resp.Data.Workloads.Error = summary, partError(err)
+		})
+	}
 	if slices.Contains(env.Capabilities, api.CapabilityMetrics) {
 		names := make([]string, 0, len(svc.Signals))
 		for name := range svc.Signals {
@@ -69,7 +76,7 @@ func (s *Service) Overview(ctx context.Context, identity *authz.Identity, servic
 	wg.Wait()
 
 	resp.Meta = api.Meta{Service: service, Environment: env.Name, Range: &r}
-	resp.Meta.Untrusted = []string{"data.issues.items[].title", "data.issues.items[].culprit"}
+	resp.Meta.Untrusted = []string{"data.issues.items[].title", "data.issues.items[].culprit", "data.workloads.items.problems[]"}
 	return resp, nil
 }
 

@@ -64,18 +64,19 @@ const (
 type Capability string
 
 const (
-	CapabilityErrors  Capability = "errors"
-	CapabilityLogs    Capability = "logs"
-	CapabilityMetrics Capability = "metrics"
-	CapabilityTraces  Capability = "traces"
+	CapabilityErrors    Capability = "errors"
+	CapabilityLogs      Capability = "logs"
+	CapabilityMetrics   Capability = "metrics"
+	CapabilityTraces    Capability = "traces"
+	CapabilityWorkloads Capability = "workloads"
 )
 
 func ParseCapability(s string) (Capability, error) {
 	switch c := Capability(s); c {
-	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces:
+	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads:
 		return c, nil
 	}
-	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics or traces)", s)
+	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces or workloads)", s)
 }
 
 // Dialect names the query language of a native query endpoint.
@@ -329,9 +330,10 @@ type MetricInfo struct {
 }
 
 type Overview struct {
-	Releases *OverviewPart[[]Release] `json:"releases,omitempty"`
-	Issues   *OverviewPart[[]Issue]   `json:"issues,omitempty"`
-	Signals  []SignalOverview         `json:"signals,omitempty"`
+	Releases  *OverviewPart[[]Release]        `json:"releases,omitempty"`
+	Issues    *OverviewPart[[]Issue]          `json:"issues,omitempty"`
+	Signals   []SignalOverview                `json:"signals,omitempty"`
+	Workloads *OverviewPart[*WorkloadSummary] `json:"workloads,omitempty"`
 }
 
 // OverviewPart carries either items or the error that prevented loading them, so one
@@ -426,4 +428,78 @@ type ResultPage struct {
 	NextOffset *int                `json:"nextOffset,omitempty"`
 	Streams    []map[string]string `json:"streams,omitempty"`
 	Lines      []LogLine           `json:"lines"`
+}
+
+// Workloads is the current state of the service's pods and rollouts, and the events of its
+// objects in the requested range.
+type Workloads struct {
+	Pods []Pod `json:"pods"`
+	// Rollouts are the service's ReplicaSets, newest first.
+	Rollouts []Rollout `json:"rollouts"`
+	// Events are newest first; repeated events are counted, not listed.
+	Events []WorkloadEvent `json:"events"`
+}
+
+type Pod struct {
+	Name  string `json:"name"`
+	Phase string `json:"phase"`
+	Ready bool   `json:"ready"`
+	// Restarts sums the container restarts since the pod was created.
+	Restarts   int         `json:"restarts"`
+	Owner      string      `json:"owner,omitempty"` // e.g. ReplicaSet/engine-api-7d9f
+	Node       string      `json:"node,omitempty"`
+	Started    *time.Time  `json:"started,omitempty"`
+	Reason     string      `json:"reason,omitempty"` // e.g. Evicted
+	Containers []Container `json:"containers"`
+}
+
+type Container struct {
+	Name     string `json:"name"`
+	Image    string `json:"image"`
+	Ready    bool   `json:"ready"`
+	Restarts int    `json:"restarts"`
+	// State is running, waiting or terminated; Reason explains waiting and terminated states.
+	State           string       `json:"state"`
+	Reason          string       `json:"reason,omitempty"`
+	Message         string       `json:"message,omitempty"`
+	LastTermination *Termination `json:"lastTermination,omitempty"`
+}
+
+type Termination struct {
+	Reason   string    `json:"reason,omitempty"` // e.g. OOMKilled, Error
+	ExitCode int       `json:"exitCode"`
+	Finished time.Time `json:"finished"`
+	Message  string    `json:"message,omitempty"`
+}
+
+type Rollout struct {
+	Name          string    `json:"name"`
+	Owner         string    `json:"owner,omitempty"` // e.g. Deployment/engine-api
+	Revision      string    `json:"revision,omitempty"`
+	Images        []string  `json:"images"`
+	Created       time.Time `json:"created"`
+	Replicas      int       `json:"replicas"`
+	ReadyReplicas int       `json:"readyReplicas"`
+}
+
+type WorkloadEvent struct {
+	Type      string    `json:"type"` // Normal or Warning
+	Reason    string    `json:"reason"`
+	Object    string    `json:"object"` // e.g. Pod/engine-api-7d9f-x2k4p
+	Message   string    `json:"message"`
+	Count     int       `json:"count"`
+	FirstSeen time.Time `json:"firstSeen"`
+	LastSeen  time.Time `json:"lastSeen"`
+}
+
+// WorkloadSummary condenses Workloads for the overview.
+type WorkloadSummary struct {
+	Pods     int `json:"pods"`
+	Ready    int `json:"ready"`
+	Restarts int `json:"restarts"`
+	// Problems name pods that are not ready, wait or were terminated abnormally in the range.
+	Problems []string `json:"problems,omitempty"`
+	Warnings int      `json:"warnings"`
+	// Rollout is the newest ReplicaSet with replicas.
+	Rollout *Rollout `json:"rollout,omitempty"`
 }

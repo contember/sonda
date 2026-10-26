@@ -1,7 +1,13 @@
 package config
 
 import (
+	"encoding/pem"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -219,7 +225,7 @@ func TestParseBackendErrors(t *testing.T) {
 		replace [2]string
 		want    string
 	}{
-		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare or aws"},
+		{"unknown source type", [2]string{"type: tempo", "type: jaeger"}, "type must be sentry, loki, prometheus, tempo, cloudflare, aws or kubernetes"},
 
 		{"cloudflare without account", [2]string{`    account_id: "${CF_ACCOUNT_ID}"` + "\n", ""}, "sources.cf.account_id is required"},
 		{"cloudflare basic auth", [2]string{`{ type: bearer, token: "${CF_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, "sources.cf.auth must be bearer"},
@@ -307,7 +313,7 @@ func TestParseExistingSourceRules(t *testing.T) {
 		{"prometheus with account", [2]string{"type: prometheus\n", "type: prometheus\n    account_id: acc\n"}, "sources.prom.account_id is allowed only for cloudflare sources"},
 		{"loki with region", [2]string{"type: loki\n", "type: loki\n    region: eu-west-1\n"}, "sources.loki.region is allowed only for aws sources"},
 		{"loki logs with script", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: loki, selector: '{app="api"}', script: w }`}, "logs.script is not allowed for loki sources"},
-		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics or traces is required"},
+		{"empty environment", [2]string{"        errors: { source: sentry, project: api, environment: production }\n        logs: { source: loki, selector: '{app=\"api\"}' }\n        metrics: { source: prom, selector: '{job=\"api\"}' }\n", "        {}\n"}, "at least one of errors, logs, metrics, traces or workloads is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -316,6 +322,97 @@ func TestParseExistingSourceRules(t *testing.T) {
 			}
 			input := strings.Replace(validConfig, tt.replace[0], tt.replace[1], 1)
 			_, err := Parse([]byte(input), env(validEnv()))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const kubernetesConfig = `
+sources:
+  k8s:
+    type: kubernetes
+    url: https://k8s.example:6443
+    auth: { type: bearer, token: "${K8S_TOKEN}" }
+    ca_file: CA_FILE
+services:
+  engine:
+    environments:
+      production:
+        workloads: { source: k8s, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+`
+
+func writeCA(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	file := filepath.Join(t.TempDir(), "ca.crt")
+	data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func TestParseKubernetes(t *testing.T) {
+	input := strings.Replace(kubernetesConfig, "CA_FILE", writeCA(t), 1)
+	cfg, err := Parse([]byte(input), env(map[string]string{"K8S_TOKEN": "k8s-secret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := cfg.Sources["k8s"]
+	if src.Auth.Token != "k8s-secret" || src.RootCAs == nil {
+		t.Errorf("kubernetes source = %+v", src)
+	}
+	env := cfg.Services["engine"].Environments["production"]
+	if got := env.Capabilities(); len(got) != 1 || got[0] != api.CapabilityWorkloads {
+		t.Errorf("capabilities = %v", got)
+	}
+	if env.Workloads.Namespace != "engine" || env.Workloads.Labels["app.kubernetes.io/name"] != "engine-api" {
+		t.Errorf("workloads = %+v", env.Workloads)
+	}
+}
+
+func TestParseKubernetesErrors(t *testing.T) {
+	ca := writeCA(t)
+	notPEM := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(notPEM, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		replace [2]string
+		env     map[string]string
+		want    string
+	}{
+		{"missing ca file", [2]string{ca, "/nonexistent/ca.crt"}, nil, "sources.k8s.ca_file: open /nonexistent/ca.crt"},
+		{"ca file without certificate", [2]string{ca, notPEM}, nil, "contains no PEM certificate"},
+		{"basic auth", [2]string{`{ type: bearer, token: "${K8S_TOKEN}" }`, "{ type: basic, username: u, password: p }"}, nil, "auth must be bearer for kubernetes sources with a url"},
+		{"in cluster outside a pod", [2]string{"    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca + "\n", ""}, nil, "url is required outside a Kubernetes pod"},
+		{"in cluster with auth", [2]string{"    url: https://k8s.example:6443\n", ""}, nil, "auth and ca_file require a url"},
+		{
+			"in cluster without service account", [2]string{"    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca + "\n", ""},
+			map[string]string{"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"},
+			"serviceaccount/ca.crt",
+		},
+		{"ca file on another source", [2]string{"type: kubernetes", "type: tempo"}, nil, "ca_file is allowed only for kubernetes sources"},
+		{"invalid namespace", [2]string{"namespace: engine", "namespace: Engine_Prod"}, nil, `namespace "Engine_Prod" must be a Kubernetes namespace name`},
+		{"no labels", [2]string{"labels: { app.kubernetes.io/name: engine-api }", "labels: {}"}, nil, "labels must have at least one label"},
+		{"empty label value", [2]string{"engine-api }", `"" }`}, nil, `must be a non-empty label value`},
+		{"selector syntax in value", [2]string{"engine-api }", `"a,b!=c" }`}, nil, `must be a non-empty label value`},
+		{"invalid label key", [2]string{"app.kubernetes.io/name:", `"app name":`}, nil, `"app name" is not a valid label key`},
+		{"workloads on another source", [2]string{"type: kubernetes\n    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca, "type: tempo\n    url: https://k8s.example:6443"}, nil, "expected kubernetes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := strings.Replace(kubernetesConfig, "CA_FILE", ca, 1)
+			if !strings.Contains(base, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			vars := map[string]string{"K8S_TOKEN": "k8s-secret"}
+			maps.Copy(vars, tt.env)
+			_, err := Parse([]byte(strings.Replace(base, tt.replace[0], tt.replace[1], 1)), env(vars))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

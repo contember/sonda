@@ -70,6 +70,20 @@ func (u *upstreams) handler() http.Handler {
 	mux.HandleFunc("/api/0/organizations/acme/issues/2/", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"id":"2","project":{"slug":"billing"}}`)
 	})
+	mux.HandleFunc("/api/v1/namespaces/apps/pods", func(w http.ResponseWriter, r *http.Request) {
+		u.record(r.FormValue("labelSelector"))
+		fmt.Fprint(w, `{"items":[{"metadata":{"name":"api-1a2b-x7k2p","namespace":"apps","labels":{"app":"api"}},
+			"status":{"phase":"Running","containerStatuses":[{"name":"api","restartCount":2,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}}]}`)
+	})
+	mux.HandleFunc("/apis/apps/v1/namespaces/apps/replicasets", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"items":[]}`)
+	})
+	mux.HandleFunc("/api/v1/namespaces/apps/events", func(w http.ResponseWriter, _ *http.Request) {
+		last := time.Now().UTC().Format(time.RFC3339)
+		fmt.Fprintf(w, `{"items":[
+			{"metadata":{"namespace":"apps"},"involvedObject":{"kind":"Pod","name":"api-1a2b-x7k2p"},"type":"Warning","reason":"BackOff","count":3,"lastTimestamp":%[1]q},
+			{"metadata":{"namespace":"apps"},"involvedObject":{"kind":"Pod","name":"billing-9z8y-abcde"},"type":"Warning","reason":"BackOff","count":1,"lastTimestamp":%[1]q}]}`, last)
+	})
 	return mux
 }
 
@@ -92,6 +106,7 @@ sources:
   prom: { type: prometheus, url: %[1]q }
   tempo: { type: tempo, url: %[1]q }
   cf: { type: cloudflare, url: %[1]q, account_id: acc, auth: { type: bearer, token: t } }
+  k8s: { type: kubernetes, url: %[1]q, auth: { type: bearer, token: k } }
 services:
   api:
     environments:
@@ -100,6 +115,7 @@ services:
         logs: { source: loki, selector: '{app="api"}' }
         metrics: { source: prom, selector: '{job="api"}' }
         traces: { source: tempo, service: api }
+        workloads: { source: k8s, namespace: apps, labels: { app: api } }
     signals:
       rps: sum(rate(http_requests_total[5m]))
   billing:
@@ -130,6 +146,7 @@ services:
 				{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
 				{Service: "api", Environment: "production", Capability: api.CapabilityMetrics},
 				{Service: "api", Environment: "production", Capability: api.CapabilityTraces},
+				{Service: "api", Environment: "production", Capability: api.CapabilityWorkloads},
 				{Service: "worker", Environment: "production", Capability: api.CapabilityLogs},
 			},
 		},
@@ -316,6 +333,32 @@ func TestOverviewReportsPartialFailures(t *testing.T) {
 	}
 	if len(o.Signals) != 1 || o.Signals[0].Name != "rps" || len(o.Signals[0].Series) != 1 {
 		t.Errorf("signals = %+v", o.Signals)
+	}
+	if o.Workloads == nil || o.Workloads.Items == nil || o.Workloads.Items.Pods != 1 || len(o.Workloads.Items.Problems) != 1 {
+		t.Errorf("workloads = %+v", o.Workloads)
+	}
+}
+
+func TestWorkloadsAreScoped(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.Response[api.Workloads]
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api/workloads", nil, &resp); status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	if env.upstream.last() != "app=api" {
+		t.Errorf("label selector = %q", env.upstream.last())
+	}
+	if len(resp.Data.Pods) != 1 || resp.Data.Pods[0].Containers[0].Reason != "CrashLoopBackOff" {
+		t.Errorf("pods = %+v", resp.Data.Pods)
+	}
+	// The namespace also holds an event of billing, which the scope must drop.
+	if len(resp.Data.Events) != 1 || resp.Data.Events[0].Object != "Pod/api-1a2b-x7k2p" || resp.Data.Events[0].Count != 3 {
+		t.Errorf("events = %+v", resp.Data.Events)
+	}
+
+	var errResp api.ErrorResponse
+	if status := env.call(t, "other-token", "GET", "/v1/services/api/workloads", nil, &errResp); status != http.StatusNotFound || errResp.Error.Code != api.CodeNotFound {
+		t.Errorf("ungranted workloads capability: %d %+v", status, errResp)
 	}
 }
 

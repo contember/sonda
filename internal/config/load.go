@@ -2,10 +2,12 @@ package config
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -59,6 +61,7 @@ type rawSource struct {
 	RoleARN              string            `yaml:"role_arn"`
 	ExternalID           string            `yaml:"external_id"`
 	MaxScanBytes         string            `yaml:"max_scan_bytes"`
+	CAFile               string            `yaml:"ca_file"`
 }
 
 type rawAuth struct {
@@ -77,10 +80,17 @@ type rawService struct {
 }
 
 type rawEnvironment struct {
-	Errors  *rawErrorBinding `yaml:"errors"`
-	Logs    *rawBinding      `yaml:"logs"`
-	Metrics *rawBinding      `yaml:"metrics"`
-	Traces  *rawBinding      `yaml:"traces"`
+	Errors    *rawErrorBinding    `yaml:"errors"`
+	Logs      *rawBinding         `yaml:"logs"`
+	Metrics   *rawBinding         `yaml:"metrics"`
+	Traces    *rawBinding         `yaml:"traces"`
+	Workloads *rawWorkloadBinding `yaml:"workloads"`
+}
+
+type rawWorkloadBinding struct {
+	Source    string            `yaml:"source"`
+	Namespace string            `yaml:"namespace"`
+	Labels    map[string]string `yaml:"labels"`
 }
 
 type rawErrorBinding struct {
@@ -223,6 +233,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	v.onlyFor(path+".role_arn", raw.RoleARN != "", src.Type, SourceAWS)
 	v.onlyFor(path+".external_id", raw.ExternalID != "", src.Type, SourceAWS)
 	v.onlyFor(path+".max_scan_bytes", raw.MaxScanBytes != "", src.Type, SourceAWS)
+	v.onlyFor(path+".ca_file", raw.CAFile != "", src.Type, SourceKubernetes)
 	switch src.Type {
 	case SourceSentry:
 		if src.URL == "" {
@@ -246,8 +257,18 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		src.AWS = v.awsSource(path, raw)
 		src.Auth = Auth{Type: AuthNone}
 		return src
+	case SourceKubernetes:
+		if src.URL == "" {
+			return v.inClusterSource(path, src, raw)
+		}
+		if raw.Auth.Type != string(AuthBearer) {
+			v.fail("%s.auth must be bearer for kubernetes sources with a url", path)
+		}
+		if raw.CAFile != "" {
+			src.RootCAs = v.caFile(path+".ca_file", raw.CAFile)
+		}
 	default:
-		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare or aws, got %q", path, raw.Type)
+		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws or kubernetes, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
@@ -255,6 +276,48 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		src.Headers[header] = v.expand(path+".headers."+header, value)
 	}
 	return src
+}
+
+// In-cluster Kubernetes paths, mounted into every pod with a service account.
+const (
+	inClusterTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	inClusterCAFile    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+)
+
+// inClusterSource connects a Kubernetes source without a url to the API server of the cluster
+// Sonda runs in, with the pod's service account.
+func (v *validator) inClusterSource(path string, src *Source, raw rawSource) *Source {
+	if raw.Auth != (rawAuth{}) || raw.CAFile != "" {
+		v.fail("%s: auth and ca_file require a url; without one, the source uses the pod's service account", path)
+	}
+	host, hostOK := v.lookupEnv("KUBERNETES_SERVICE_HOST")
+	port, portOK := v.lookupEnv("KUBERNETES_SERVICE_PORT")
+	if !hostOK || !portOK {
+		v.fail("%s.url is required outside a Kubernetes pod (KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT are not set)", path)
+		return src
+	}
+	src.URL = "https://" + net.JoinHostPort(host, port)
+	src.Auth = Auth{Type: AuthBearer, TokenFile: inClusterTokenFile}
+	src.RootCAs = v.caFile(path, inClusterCAFile)
+	for header, value := range raw.Headers {
+		src.Headers[header] = v.expand(path+".headers."+header, value)
+	}
+	return src
+}
+
+// caFile reads PEM certificates the source's server certificate must chain to.
+func (v *validator) caFile(path, file string) *x509.CertPool {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		v.fail("%s: %v", path, err)
+		return nil
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		v.fail("%s: %s contains no PEM certificate", path, file)
+		return nil
+	}
+	return pool
 }
 
 // awsSource validates an AWS source. It talks to AWS through the SDK, which resolves the
@@ -346,8 +409,11 @@ func (v *validator) service(name string, raw rawService, sources map[string]*Sou
 		if re.Traces != nil {
 			env.Traces = v.traceBinding(envPath+".traces", *re.Traces, sources)
 		}
+		if re.Workloads != nil {
+			env.Workloads = v.workloadBinding(envPath+".workloads", *re.Workloads, sources)
+		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs, metrics or traces is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics, traces or workloads is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
@@ -549,6 +615,35 @@ func (v *validator) traceBinding(path string, raw rawBinding, sources map[string
 		binding.Script = v.script(path, raw.Script)
 	}
 	return binding
+}
+
+var (
+	// kubernetesNamespace is a DNS-1123 label.
+	kubernetesNamespace = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+	// kubernetesLabelKey is an optional DNS subdomain prefix and a name of at most 63 characters.
+	kubernetesLabelKey   = regexp.MustCompile(`^([a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
+	kubernetesLabelValue = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
+)
+
+// workloadBinding requires a namespace and at least one exact label. Empty values are rejected,
+// so the scope never selects every object without the label.
+func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources map[string]*Source) *WorkloadBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceKubernetes)
+	if !kubernetesNamespace.MatchString(raw.Namespace) {
+		v.fail("%s.namespace %q must be a Kubernetes namespace name", path, raw.Namespace)
+	}
+	if len(raw.Labels) == 0 {
+		v.fail("%s.labels must have at least one label, e.g. app.kubernetes.io/name: engine-api", path)
+	}
+	for key, value := range raw.Labels {
+		if !kubernetesLabelKey.MatchString(key) {
+			v.fail("%s.labels: %q is not a valid label key", path, key)
+		}
+		if !kubernetesLabelValue.MatchString(value) {
+			v.fail("%s.labels.%s: %q must be a non-empty label value", path, key, value)
+		}
+	}
+	return &WorkloadBinding{Source: src, Namespace: raw.Namespace, Labels: raw.Labels}
 }
 
 // bindingFields reports set fields that do not belong to the binding variant of the source.

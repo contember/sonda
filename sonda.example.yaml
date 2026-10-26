@@ -60,6 +60,15 @@ sources:
   #   external_id: sonda # optional, only with role_arn
   #   max_scan_bytes: 10GB # Logs Insights is billed by scanned bytes; larger queries stop
 
+  # Kubernetes serves pods, rollouts and events (the workloads capability). Without a url,
+  # Sonda uses the service account of its own pod. Give the account only get and list on
+  # pods, events and apps/replicasets in the bound namespaces.
+  # k8s-prod:
+  #   type: kubernetes
+  #   url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com
+  #   auth: { type: bearer, token: "${K8S_TOKEN}" }
+  #   ca_file: /etc/sonda/k8s-prod-ca.crt
+
 services:
   engine-api:
     description: GraphQL API of the content engine
@@ -73,6 +82,8 @@ services:
         logs: { source: loki-prod, selector: '{app="engine", namespace="prod"}' }
         metrics: { source: prom-prod, selector: '{job="engine", namespace="prod"}' }
         # traces: { source: tempo-prod, service: engine-api } # resource.service.name
+        # Exact labels of the service's pods and ReplicaSets, in one namespace.
+        # workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
     # Named PromQL expressions without service matchers; Sonda adds the selector.
     signals:
       rps: sum(rate(http_requests_total[5m]))

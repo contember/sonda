@@ -304,6 +304,14 @@ func renderOverview(w io.Writer, resp api.Response[api.Overview]) {
 			writeIssues(w, o.Issues.Items)
 		}
 	}
+	if o.Workloads != nil {
+		fmt.Fprintln(w, "\nWORKLOADS")
+		if o.Workloads.Error != "" {
+			fmt.Fprintln(w, "  error: "+o.Workloads.Error)
+		} else if o.Workloads.Items != nil {
+			writeWorkloadSummary(w, o.Workloads.Items)
+		}
+	}
 	if len(o.Signals) > 0 {
 		fmt.Fprintln(w, "\nSIGNALS")
 		for _, s := range o.Signals {

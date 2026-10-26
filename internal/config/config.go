@@ -3,6 +3,7 @@
 package config
 
 import (
+	"crypto/x509"
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
@@ -44,6 +45,7 @@ const (
 	SourceCloudflare SourceType = "cloudflare"
 	SourceAWS        SourceType = "aws"
 	SourceTempo      SourceType = "tempo"
+	SourceKubernetes SourceType = "kubernetes"
 )
 
 type Source struct {
@@ -60,6 +62,8 @@ type Source struct {
 	CloudflareAccountID string
 	// AWS is set for AWS sources only.
 	AWS *AWSSource
+	// RootCAs verifies the server certificate instead of the system roots; Kubernetes only.
+	RootCAs *x509.CertPool
 }
 
 type AWSSource struct {
@@ -79,10 +83,13 @@ const (
 )
 
 type Auth struct {
-	Type     AuthType
-	Token    string
-	Username string
-	Password string
+	Type  AuthType
+	Token string
+	// TokenFile is read on every request instead of Token, because Kubernetes rotates
+	// projected service account tokens. It is set only for in-cluster Kubernetes sources.
+	TokenFile string
+	Username  string
+	Password  string
 }
 
 type Service struct {
@@ -100,11 +107,12 @@ type Signal struct {
 }
 
 type Environment struct {
-	Name    string
-	Errors  *ErrorBinding
-	Logs    *LogBinding
-	Metrics *MetricBinding
-	Traces  *TraceBinding
+	Name      string
+	Errors    *ErrorBinding
+	Logs      *LogBinding
+	Metrics   *MetricBinding
+	Traces    *TraceBinding
+	Workloads *WorkloadBinding
 }
 
 type ErrorBinding struct {
@@ -184,6 +192,14 @@ func (b *TraceBinding) Dialect() api.Dialect {
 	return ""
 }
 
+// WorkloadBinding scopes a Kubernetes source to the pods and ReplicaSets in Namespace that
+// carry all of Labels.
+type WorkloadBinding struct {
+	Source    *Source
+	Namespace string
+	Labels    map[string]string
+}
+
 func (e *Environment) Capabilities() []api.Capability {
 	var caps []api.Capability
 	if e.Errors != nil {
@@ -197,6 +213,9 @@ func (e *Environment) Capabilities() []api.Capability {
 	}
 	if e.Traces != nil {
 		caps = append(caps, api.CapabilityTraces)
+	}
+	if e.Workloads != nil {
+		caps = append(caps, api.CapabilityWorkloads)
 	}
 	return caps
 }

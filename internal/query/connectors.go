@@ -6,6 +6,7 @@ import (
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/aws"
 	"github.com/contember/sonda/internal/connector/cloudflare"
+	"github.com/contember/sonda/internal/connector/kubernetes"
 	"github.com/contember/sonda/internal/connector/loki"
 	"github.com/contember/sonda/internal/connector/prometheus"
 	"github.com/contember/sonda/internal/connector/sentry"
@@ -20,6 +21,7 @@ type Connectors struct {
 	Cloudflare map[string]*cloudflare.Client
 	AWS        map[string]*aws.Client
 	Tempo      map[string]*tempo.Client
+	Kubernetes map[string]*kubernetes.Client
 }
 
 func NewConnectors(cfg *config.Config) (Connectors, error) {
@@ -30,6 +32,7 @@ func NewConnectors(cfg *config.Config) (Connectors, error) {
 		Cloudflare: map[string]*cloudflare.Client{},
 		AWS:        map[string]*aws.Client{},
 		Tempo:      map[string]*tempo.Client{},
+		Kubernetes: map[string]*kubernetes.Client{},
 	}
 	for name, src := range cfg.Sources {
 		switch src.Type {
@@ -61,6 +64,8 @@ func NewConnectors(cfg *config.Config) (Connectors, error) {
 				return Connectors{}, err
 			}
 			c.Tempo[name] = client
+		case config.SourceKubernetes:
+			c.Kubernetes[name] = kubernetes.New(src)
 		default:
 			return Connectors{}, fmt.Errorf("source %s: unsupported type %s", name, src.Type)
 		}
