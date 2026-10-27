@@ -295,6 +295,10 @@ func writeReleases(w io.Writer, releases []api.Release) {
 func renderOverview(w io.Writer, resp api.Response[api.Overview]) {
 	renderMeta(w, resp.Meta)
 	o := resp.Data
+	if o.Releases == nil && o.Issues == nil && o.Workloads == nil && o.Alerts == nil && len(o.Signals) == 0 {
+		fmt.Fprintln(w, "\nnothing to summarize: no errors, signals, workloads or alerts in this environment; see describe for what the service has")
+		return
+	}
 	if o.Releases != nil {
 		fmt.Fprintln(w, "\nRELEASES")
 		if o.Releases.Error != "" {
@@ -359,7 +363,7 @@ func renderTraceSearch(w io.Writer, resp api.Response[api.TraceSearchResult]) {
 		if len(tr.Matched) > 0 {
 			matched = strconv.Itoa(len(tr.Matched))
 		}
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", tr.TraceID, root, tr.Start.Local().Format(time.Stamp), formatMs(tr.DurationMs), matched)
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", tr.TraceID, root, tr.Start.Format(time.RFC3339), formatMs(tr.DurationMs), matched)
 	}
 	t.Flush()
 }

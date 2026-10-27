@@ -44,12 +44,11 @@ func TestRenderTraceSearch(t *testing.T) {
 			{TraceID: "t2", RootService: "tenant-api", Start: start, DurationMs: 15},
 		},
 	}}
-	stamp := start.Local().Format(time.Stamp)
 	want := []string{
 		`# { resource.service.name = "engine-api" }`,
-		"TRACE  ROOT                      START            DURATION  MATCHED",
-		"t1     engine-api POST /graphql  " + stamp + "  412.3ms   2",
-		"t2     tenant-api                " + stamp + "  15.0ms    -",
+		"TRACE  ROOT                      START                 DURATION  MATCHED",
+		"t1     engine-api POST /graphql  2026-10-19T10:00:00Z  412.3ms   2",
+		"t2     tenant-api                2026-10-19T10:00:00Z  15.0ms    -",
 	}
 
 	var out bytes.Buffer
@@ -133,5 +132,13 @@ func TestRenderAlerts(t *testing.T) {
 	renderAlerts(&out, resp)
 	if got := trimLines(out.String()); !slices.Equal(got, want) {
 		t.Errorf("output:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestRenderEmptyOverviewSaysWhy(t *testing.T) {
+	var out bytes.Buffer
+	renderOverview(&out, api.Response[api.Overview]{})
+	if !strings.Contains(out.String(), "nothing to summarize") {
+		t.Errorf("output:\n%s", out.String())
 	}
 }
