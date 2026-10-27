@@ -822,7 +822,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 
 | Endpoint | Capability | Purpose |
 |---|---|---|
-| `/v1/services` | any grant | Services the identity can access, with their project |
+| `/v1/services` | any grant | Services the identity can access, with their project, environments and granted capabilities with their source types |
 | `/v1/services/{s}` | any grant | Project, environments, capabilities with backend and dialect, signals, repository |
 | `/v1/services/{s}/overview` | any granted | Last releases, top issues, signal values, workload health, active alerts. The usual first call. |
 | `/v1/services/{s}/errors` | `errors` | Issues: title, count, users, first/last seen, link |

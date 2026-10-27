@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -215,6 +216,32 @@ func (e *testEnv) call(t *testing.T, token, method, path string, body any, out a
 		}
 	}
 	return resp.StatusCode
+}
+
+func TestServicesListGrantedCapabilities(t *testing.T) {
+	env := newTestEnv(t)
+	var resp api.Response[[]api.ServiceSummary]
+	if status := env.call(t, "agent-token", "GET", "/v1/services", nil, &resp); status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	got := map[string][]api.CapabilitySummary{}
+	for _, svc := range resp.Data {
+		got[svc.Name] = svc.Capabilities
+	}
+	want := map[string][]api.CapabilitySummary{
+		"api": {
+			{Name: api.CapabilityErrors, Sources: []string{"sentry"}},
+			{Name: api.CapabilityLogs, Sources: []string{"loki"}},
+			{Name: api.CapabilityMetrics, Sources: []string{"prometheus"}},
+			{Name: api.CapabilityTraces, Sources: []string{"tempo"}},
+			{Name: api.CapabilityWorkloads, Sources: []string{"kubernetes"}},
+			{Name: api.CapabilityAlerts, Sources: []string{"grafana"}},
+		},
+		"worker": {{Name: api.CapabilityLogs, Sources: []string{"cloudflare"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("capabilities = %v, want %v", got, want)
+	}
 }
 
 func TestMetricsQueryIsScopedUpstream(t *testing.T) {

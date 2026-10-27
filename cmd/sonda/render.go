@@ -20,9 +20,13 @@ func table(w io.Writer) *tabwriter.Writer {
 
 func renderServices(w io.Writer, resp api.Response[[]api.ServiceSummary]) {
 	t := table(w)
-	fmt.Fprintln(t, "SERVICE\tPROJECT\tENVIRONMENTS\tDESCRIPTION")
+	fmt.Fprintln(t, "SERVICE\tPROJECT\tENVIRONMENTS\tCAPABILITIES\tDESCRIPTION")
 	for _, svc := range resp.Data {
-		fmt.Fprintf(t, "%s\t%s\t%s\t%s\n", svc.Name, svc.Project, strings.Join(svc.Environments, ","), svc.Description)
+		capabilities := make([]string, len(svc.Capabilities))
+		for i, c := range svc.Capabilities {
+			capabilities[i] = string(c.Name) + ":" + strings.Join(c.Sources, ",")
+		}
+		fmt.Fprintf(t, "%s\t%s\t%s\t%s\t%s\n", svc.Name, svc.Project, strings.Join(svc.Environments, ","), strings.Join(capabilities, " "), svc.Description)
 	}
 	t.Flush()
 }

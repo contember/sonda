@@ -46,10 +46,27 @@ func (s *Service) ListServices(identity *authz.Identity) api.Response[[]api.Serv
 		summary := api.ServiceSummary{Name: svc.Name, Project: svc.Project.Name, Description: svc.Description}
 		for _, env := range s.authz.Environments(identity, svc) {
 			summary.Environments = append(summary.Environments, env.Name)
+			for _, capability := range env.Capabilities {
+				summary.Capabilities = addSource(summary.Capabilities, capability, env.Backends[capability].Source)
+			}
 		}
+		slices.SortFunc(summary.Capabilities, func(a, b api.CapabilitySummary) int {
+			return slices.Index(api.Capabilities, a.Name) - slices.Index(api.Capabilities, b.Name)
+		})
 		summaries = append(summaries, summary)
 	}
 	return api.Response[[]api.ServiceSummary]{Data: summaries}
+}
+
+func addSource(summaries []api.CapabilitySummary, capability api.Capability, source string) []api.CapabilitySummary {
+	i := slices.IndexFunc(summaries, func(c api.CapabilitySummary) bool { return c.Name == capability })
+	if i < 0 {
+		return append(summaries, api.CapabilitySummary{Name: capability, Sources: []string{source}})
+	}
+	if !slices.Contains(summaries[i].Sources, source) {
+		summaries[i].Sources = append(summaries[i].Sources, source)
+	}
+	return summaries
 }
 
 func (s *Service) DescribeService(identity *authz.Identity, name string) (api.Response[api.ServiceDetail], error) {

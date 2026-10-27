@@ -17,8 +17,6 @@ import (
 	"github.com/contember/sonda/internal/identities"
 )
 
-var capabilities = []api.Capability{api.CapabilityErrors, api.CapabilityLogs, api.CapabilityMetrics, api.CapabilityTraces, api.CapabilityWorkloads, api.CapabilityAlerts}
-
 type identityRow struct {
 	Name      string
 	CreatedAt time.Time
@@ -199,7 +197,7 @@ func (h *Handler) renderFormError(w http.ResponseWriter, form identityForm, err 
 }
 
 func (h *Handler) identityForm(isNew bool, name string, grants []identities.Grant, limits identities.LimitOverrides) identityForm {
-	form := identityForm{IsNew: isNew, Name: name, Capabilities: capabilities, Limits: h.limitFields(limits)}
+	form := identityForm{IsNew: isNew, Name: name, Capabilities: api.Capabilities, Limits: h.limitFields(limits)}
 	for _, projectName := range sortedKeys(h.cfg.Projects) {
 		project := h.cfg.Projects[projectName]
 		servicesByEnv := map[string][]string{}
@@ -210,7 +208,7 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 		}
 		for _, envName := range sortedKeys(servicesByEnv) {
 			row := matrixRow{Project: projectName, Environment: envName, Services: servicesByEnv[envName]}
-			for _, capability := range capabilities {
+			for _, capability := range api.Capabilities {
 				grant := identities.Grant{Project: projectName, Environment: envName, Capability: capability}
 				row.Cells = append(row.Cells, matrixCell{
 					Available: project.Offers(envName, capability),

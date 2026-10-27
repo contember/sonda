@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -72,9 +73,11 @@ const (
 	CapabilityAlerts    Capability = "alerts"
 )
 
+// Capabilities lists every capability in display order.
+var Capabilities = []Capability{CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityAlerts}
+
 func ParseCapability(s string) (Capability, error) {
-	switch c := Capability(s); c {
-	case CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityAlerts:
+	if c := Capability(s); slices.Contains(Capabilities, c) {
 		return c, nil
 	}
 	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces, workloads or alerts)", s)
@@ -116,6 +119,14 @@ type ServiceSummary struct {
 	Project      string   `json:"project"`
 	Description  string   `json:"description,omitempty"`
 	Environments []string `json:"environments"`
+	// Capabilities are granted in at least one environment; describe shows them per environment.
+	Capabilities []CapabilitySummary `json:"capabilities"`
+}
+
+type CapabilitySummary struct {
+	Name Capability `json:"name"`
+	// Sources are the source types serving the capability across environments, e.g. loki.
+	Sources []string `json:"sources"`
 }
 
 type ServiceDetail struct {
