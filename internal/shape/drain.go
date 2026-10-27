@@ -32,9 +32,9 @@ type token struct {
 const (
 	placeholder         = "<_>"
 	similarityThreshold = 0.4
-	// Lines with fewer or more tokens are left ungrouped: short lines have too little
-	// structure to cluster, and long ones are mostly payload.
+	// Shorter lines have too little structure to generalize, so only identical ones group.
 	minTokens = 4
+	// Longer lines are mostly payload and are left ungrouped.
 	maxTokens = 80
 )
 
@@ -49,8 +49,12 @@ func newDrain() *drain {
 // train adds a line and returns its template, or nil when the line is left ungrouped.
 func (d *drain) train(line string) *template {
 	tokens := tokenize(message(line))
-	if len(tokens) < minTokens || len(tokens) > maxTokens {
+	if len(tokens) == 0 || len(tokens) > maxTokens {
 		return nil
+	}
+	threshold := similarityThreshold
+	if len(tokens) < minTokens {
+		threshold = 1
 	}
 	key := leafKey{tokens: len(tokens), first: prefix(tokens[0].text)}
 	var best *template
@@ -61,7 +65,7 @@ func (d *drain) train(line string) *template {
 			best, bestSimilarity, bestPlaceholders = candidate, similarity, placeholders
 		}
 	}
-	if best != nil && bestSimilarity >= similarityThreshold {
+	if best != nil && bestSimilarity >= threshold {
 		best.merge(tokens)
 		best.count++
 		return best

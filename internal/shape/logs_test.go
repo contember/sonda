@@ -43,7 +43,7 @@ func TestGroupLines(t *testing.T) {
 		}
 		lines = append(lines, api.LogLine{Time: base.Add(-time.Duration(i) * time.Second), Line: text})
 	}
-	lines = append(lines, api.LogLine{Time: base, Line: "ok"})
+	lines = append(lines, api.LogLine{Time: base, Line: strings.Repeat("payload ", maxTokens+1)})
 
 	g := GroupLines(lines, 310)
 	if len(g.Groups) != 2 {
@@ -54,7 +54,7 @@ func TestGroupLines(t *testing.T) {
 		t.Errorf("first group = %+v", first)
 	}
 	if g.Ungrouped != 1 || g.Assignment[len(lines)-1] != -1 {
-		t.Errorf("short line not ungrouped: %d", g.Ungrouped)
+		t.Errorf("long line not ungrouped: %d", g.Ungrouped)
 	}
 	if g.Assignment[0] != 1 || g.Assignment[1] != 0 {
 		t.Errorf("assignment = %v", g.Assignment[:3])

@@ -78,10 +78,18 @@ func TestDrainPatterns(t *testing.T) {
 	}
 }
 
-func TestDrainSkipsShortAndLongLines(t *testing.T) {
+func TestDrainGroupsOnlyIdenticalShortLines(t *testing.T) {
+	got := patterns("worker fetch 200", "worker fetch 200", "worker fetch 500", "worker scheduled OK")
+	want := []string{"worker fetch 200", "worker fetch 500", "worker scheduled OK"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestDrainSkipsEmptyAndLongLines(t *testing.T) {
 	d := newDrain()
-	if d.train("only three tokens") != nil {
-		t.Error("short line was grouped")
+	if d.train("   ") != nil {
+		t.Error("empty line was grouped")
 	}
 	if d.train(strings.Repeat("word ", maxTokens+1)) != nil {
 		t.Error("long line was grouped")
