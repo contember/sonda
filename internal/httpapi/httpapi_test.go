@@ -503,7 +503,7 @@ func TestPipelineIsLokiOnly(t *testing.T) {
 	}
 	errResp = api.ErrorResponse{}
 	status = env.call(t, "agent-token", "POST", "/v1/services/worker/logs/search", api.LogSearchRequest{Contains: []string{"x"}}, &errResp)
-	if status != http.StatusBadGateway || errResp.Error.Code != api.CodeUpstreamError {
+	if status != http.StatusServiceUnavailable || errResp.Error.Code != api.CodeUpstreamError {
 		t.Errorf("cloudflare search: %d %+v", status, errResp)
 	}
 }

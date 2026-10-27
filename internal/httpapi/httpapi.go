@@ -174,10 +174,10 @@ func statusOf(code api.ErrorCode) int {
 		return http.StatusUnprocessableEntity
 	case api.CodeRateLimited:
 		return http.StatusTooManyRequests
-	case api.CodeUpstreamError:
-		return http.StatusBadGateway
-	case api.CodeTimeout:
-		return http.StatusGatewayTimeout
+	// Not 502/504: a proxy in front of Sonda, e.g. Cloudflare, replaces those bodies, and
+	// the agent would lose the message. The error code carries the distinction.
+	case api.CodeUpstreamError, api.CodeTimeout:
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

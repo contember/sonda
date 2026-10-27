@@ -846,8 +846,9 @@ holds JSON.
 
 Errors use one shape: `{ "error": { "code": "not_found", "message": "…" } }`. Codes:
 `unauthenticated`, `not_found`, `invalid_request`, `invalid_query`, `limit_exceeded`,
-`rate_limited`, `upstream_error`, `timeout`, `internal`. The environment may be omitted when the
-identity has exactly one environment with the needed capability.
+`rate_limited`, `upstream_error`, `timeout`, `internal`. `upstream_error` and `timeout` are HTTP
+503, not 502/504, because proxies such as Cloudflare replace 502/504 bodies. The environment may
+be omitted when the identity has exactly one environment with the needed capability.
 
 ## 10. CLI
 
