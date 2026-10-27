@@ -367,6 +367,13 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - The environment grant also holds for single issues: the latest event is fetched with the
   scope's environment, and an issue without events there is `not_found`.
 - List results are filtered by project slug again, as defense in depth.
+- An errors binding may add `query`, Sentry search terms for services that share a project.
+  They go before the agent's query in every issue search and in the event search of a single
+  issue. Issue search has no `OR` (Sentry rejects it), so all terms are ANDed and the agent can
+  only narrow them; an unbalanced quote is rejected by Sentry, and the scope's terms come first
+  so they cannot end up inside one. An issue without matching events is `not_found`. List
+  counts cover the matching events in the range; the totals of a single issue and the releases
+  are project-wide.
 - Verified against sentry.io: a `project:` or `environment:` term in the agent's query combines
   with the endpoint's project and the `environment` parameter by AND; it cannot widen them.
 - Required token scopes: `org:read`, `project:read`, `event:read`, `project:releases`.

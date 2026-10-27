@@ -113,6 +113,7 @@ type rawErrorBinding struct {
 	Source      string `yaml:"source"`
 	Project     string `yaml:"project"`
 	Environment string `yaml:"environment"`
+	Query       string `yaml:"query"`
 }
 
 // rawBinding holds the fields of every log, metric and trace binding variant; the source
@@ -654,7 +655,7 @@ func (v *validator) errorBinding(path string, raw rawErrorBinding, sources map[s
 	if raw.Environment == "" {
 		v.fail("%s.environment is required", path)
 	}
-	return &ErrorBinding{Source: src, Project: raw.Project, Environment: raw.Environment}
+	return &ErrorBinding{Source: src, Project: raw.Project, Environment: raw.Environment, Query: strings.TrimSpace(raw.Query)}
 }
 
 func (v *validator) logBinding(path string, raw rawBinding, sources map[string]*Source) *LogBinding {

@@ -113,6 +113,8 @@ projects:
         environments:
           production:
             errors: { source: sentry, project: engine, environment: production }
+            # Services sharing a Sentry project: search terms ANDed with every issue and event search.
+            # errors: { source: sentry, project: engine, environment: production, query: "server_name:engine-api-*" }
             # The selector is a security boundary: every log and metric query of this
             # service gets these matchers. It must contain an = or =~ matcher that rejects
             # the empty value.

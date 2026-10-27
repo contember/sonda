@@ -183,6 +183,9 @@ type ErrorBinding struct {
 	Source      *Source
 	Project     string
 	Environment string
+	// Query holds Sentry search terms ANDed with every issue and event search, for services
+	// that share a project, e.g. "server_name:engine-e0-*". Empty when the project is the scope.
+	Query string
 }
 
 // Selector is a label selector that scopes a Loki or Prometheus source. Matchers always

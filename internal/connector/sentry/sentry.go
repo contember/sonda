@@ -116,7 +116,7 @@ func (c *Client) ListIssues(ctx context.Context, scope authz.ErrorScope, r api.T
 		"start":       {formatTime(r.From)},
 		"end":         {formatTime(r.To)},
 		"environment": {scope.SentryEnvironment()},
-		"query":       {query},
+		"query":       {scopedQuery(scope, query)},
 		"sort":        {sort},
 		"limit":       {strconv.Itoa(limit)},
 	}
@@ -149,22 +149,27 @@ func (c *Client) GetIssue(ctx context.Context, scope authz.ErrorScope, id string
 	return issue, nil
 }
 
-// LatestEvent returns the newest event of the issue in the scope's environment. An issue
-// without events there is reported as not found.
+// LatestEvent returns the newest event of the issue in the scope's environment that matches
+// the scope's query. An issue without such events is reported as not found.
 func (c *Client) LatestEvent(ctx context.Context, scope authz.ErrorScope, id string) (Event, error) {
 	if !issueID.MatchString(id) {
 		return Event{}, apierr.InvalidRequest("issue id must be numeric, got %q", id)
 	}
-	var event Event
-	params := url.Values{"environment": {scope.SentryEnvironment()}}
-	err := c.fetch(ctx, c.orgPath("issues/"+id+"/events/latest/"), params, &event)
-	if upstream.IsNotFound(err) {
+	var events []Event
+	params := url.Values{
+		"environment": {scope.SentryEnvironment()},
+		"query":       {scope.SentryQuery()},
+		"full":        {"true"},
+		"per_page":    {"1"},
+	}
+	err := c.fetch(ctx, c.orgPath("issues/"+id+"/events/"), params, &events)
+	if upstream.IsNotFound(err) || (err == nil && len(events) == 0) {
 		return Event{}, apierr.NotFound("issue %s has no events in %s/%s", id, scope.Service(), scope.Environment())
 	}
 	if err != nil {
 		return Event{}, upstream.Wrap(c.source.Name, err)
 	}
-	return event, nil
+	return events[0], nil
 }
 
 // Releases returns the newest releases of the scope's project.
@@ -175,6 +180,12 @@ func (c *Client) Releases(ctx context.Context, scope authz.ErrorScope, limit int
 		return nil, err
 	}
 	return releases, nil
+}
+
+// scopedQuery puts the scope's terms before the agent's query. Issue search has no OR, so
+// every term is ANDed; going first, the scope's terms cannot end up inside an agent's quote.
+func scopedQuery(scope authz.ErrorScope, query string) string {
+	return strings.TrimSpace(scope.SentryQuery() + " " + query)
 }
 
 // projectID resolves the project slug of the scope once per client.

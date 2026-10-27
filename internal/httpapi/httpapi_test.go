@@ -74,6 +74,18 @@ func (u *upstreams) handler() http.Handler {
 	mux.HandleFunc("/api/0/organizations/acme/issues/2/", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"id":"2","project":{"slug":"billing"}}`)
 	})
+	mux.HandleFunc("/api/0/organizations/acme/issues/1/", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"1","shortId":"API-1","title":"Timeout","count":"10","project":{"slug":"api"}}`)
+	})
+	// Events of issue 1 come only from the api service's hosts.
+	mux.HandleFunc("/api/0/organizations/acme/issues/1/events/", func(w http.ResponseWriter, r *http.Request) {
+		u.record(r.FormValue("query") + " env=" + r.FormValue("environment"))
+		if r.FormValue("query") != "" {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		fmt.Fprint(w, `[{"eventID":"e1","dateCreated":"2026-01-02T00:00:00Z","tags":[{"key":"server_name","value":"api-1"}]}]`)
+	})
 	mux.HandleFunc("/api/v1/namespaces/apps/pods", func(w http.ResponseWriter, r *http.Request) {
 		u.record(r.FormValue("labelSelector"))
 		fmt.Fprint(w, `{"items":[{"metadata":{"name":"api-1a2b-x7k2p","namespace":"apps","labels":{"app":"api"}},
@@ -134,6 +146,10 @@ projects:
             alerts: { source: grafana, selector: '{service="api"}' }
         signals:
           rps: sum(rate(http_requests_total[5m]))
+      api-cron:
+        environments:
+          production:
+            errors: { source: sentry, project: api, environment: production, query: "server_name:api-cron-*" }
   billing:
     services:
       billing:
@@ -240,7 +256,8 @@ func TestServicesListGrantedCapabilities(t *testing.T) {
 			{Name: api.CapabilityWorkloads, Sources: []string{"kubernetes"}},
 			{Name: api.CapabilityAlerts, Sources: []string{"grafana"}},
 		},
-		"worker": {{Name: api.CapabilityLogs, Sources: []string{"cloudflare"}}},
+		"api-cron": {{Name: api.CapabilityErrors, Sources: []string{"sentry"}}},
+		"worker":   {{Name: api.CapabilityLogs, Sources: []string{"cloudflare"}}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("capabilities = %v, want %v", got, want)
@@ -304,6 +321,26 @@ func TestSentryIssuesOfOtherProjectsAreHidden(t *testing.T) {
 	}
 	if status := env.call(t, "agent-token", "GET", "/v1/services/api/errors/2", nil, nil); status != http.StatusNotFound {
 		t.Errorf("issue of another project: status %d", status)
+	}
+}
+
+func TestSentryBindingQueryNarrowsIssuesAndEvents(t *testing.T) {
+	env := newTestEnv(t)
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api-cron/errors?query=level:error", nil, nil); status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	if got := env.upstream.last(); got != "server_name:api-cron-* level:error env=production project=42" {
+		t.Errorf("upstream query = %s", got)
+	}
+	var detail api.Response[api.IssueDetail]
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api/errors/1", nil, &detail); status != http.StatusOK || detail.Data.LatestEvent == nil {
+		t.Errorf("issue of the project: status %d %+v", status, detail.Data)
+	}
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api-cron/errors/1", nil, nil); status != http.StatusNotFound {
+		t.Errorf("issue without events matching the binding query: status %d", status)
+	}
+	if got := env.upstream.last(); got != "server_name:api-cron-* env=production" {
+		t.Errorf("event query = %s", got)
 	}
 }
 

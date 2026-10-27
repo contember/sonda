@@ -92,6 +92,10 @@ parts that matter for security:
   - CloudWatch `log_groups`: 1 to 50 exact log group names, no patterns or ARNs.
   - CloudWatch metrics `namespace` and `dimensions`: 1 to 10 dimensions.
   - Tempo `service`: the `resource.service.name` of the service's spans.
+  - Sentry errors `project` and `environment`, and optionally `query`: Sentry search terms ANDed
+    with every issue and event search, for services that share a project, e.g.
+    `server_name:engine-e0-*`. Issue counts then cover only matching events in the range; the
+    totals of a single issue and the releases stay project-wide.
   - Sentry traces `project` and `environment`, as for errors. Sentry has no project-scoped
     span search, so Sonda checks the project and environment of every span it returns.
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.

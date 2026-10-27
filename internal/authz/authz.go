@@ -251,6 +251,7 @@ type ErrorScope struct {
 func (s ErrorScope) Source() *config.Source    { return s.binding.Source }
 func (s ErrorScope) Project() string           { return s.binding.Project }
 func (s ErrorScope) SentryEnvironment() string { return s.binding.Environment }
+func (s ErrorScope) SentryQuery() string       { return s.binding.Query }
 
 // SelectorScope restricts a Loki or Prometheus source to the service's label selector.
 type SelectorScope struct {
