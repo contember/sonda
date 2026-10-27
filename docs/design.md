@@ -872,7 +872,7 @@ sonda alerts engine-api -e production
 sonda result res_8KcW --group 2
 ```
 
-- Config: `SONDA_URL` and `SONDA_TOKEN`, or `~/.config/sonda/config.yaml`.
+- Config: `SONDA_URL` and `SONDA_TOKEN`, or `~/.config/sonda/config.yaml` written by `sonda auth login` with mode 0600; a wider mode is reported, and in a terminal Sonda offers to fix it.
 - Output: JSON when stdout is not a TTY, compact text on a TTY. `--format json|text` overrides.
   `describe` shows each capability with its source type and dialect, e.g.
   `logs(cloudflare: cloudflare-query)`. `trace` prints one line per span, indented by depth;

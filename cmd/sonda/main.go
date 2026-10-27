@@ -7,10 +7,8 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"go.yaml.in/yaml/v3"
 	"golang.org/x/term"
 
 	"github.com/contember/sonda/api"
@@ -32,11 +30,18 @@ type app struct {
 }
 
 func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(exitCode(err))
+	}
+}
+
+func newRootCmd() *cobra.Command {
 	a := &app{}
 	root := &cobra.Command{
 		Use:           "sonda",
 		Short:         "Query production telemetry through a Sonda server",
-		Long:          "Query production telemetry through a Sonda server.\n\nOutput is JSON when stdout is not a terminal, compact text otherwise.\nConfigure with SONDA_URL and SONDA_TOKEN, or ~/.config/sonda/config.yaml (url, token).",
+		Long:          "Query production telemetry through a Sonda server.\n\nOutput is JSON when stdout is not a terminal, compact text otherwise.\nLog in with sonda auth login, or set SONDA_URL and SONDA_TOKEN.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -50,12 +55,9 @@ func main() {
 		a.metricsCmd(), a.signalCmd(),
 		a.tracesCmd(), a.traceCmd(),
 		a.workloadsCmd(), a.alertsCmd(),
+		a.authCmd(),
 	)
-
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(exitCode(err))
-	}
+	return root
 }
 
 func exitCode(err error) int {
@@ -75,25 +77,15 @@ func exitCode(err error) int {
 	}
 }
 
-type fileConfig struct {
-	URL   string `yaml:"url"`
-	Token string `yaml:"token"`
-}
-
 func (a *app) client() (*client.Client, error) {
-	var file fileConfig
-	if home, err := os.UserConfigDir(); err == nil {
-		data, err := os.ReadFile(filepath.Join(home, "sonda", "config.yaml"))
-		if err == nil {
-			if err := yaml.Unmarshal(data, &file); err != nil {
-				return nil, fmt.Errorf("read sonda config: %w", err)
-			}
-		}
+	file, err := loadConfig()
+	if err != nil {
+		return nil, err
 	}
 	baseURL := firstNonEmpty(a.url, os.Getenv("SONDA_URL"), file.URL)
 	token := firstNonEmpty(os.Getenv("SONDA_TOKEN"), file.Token)
 	if baseURL == "" || token == "" {
-		return nil, errors.New("set SONDA_URL and SONDA_TOKEN, or url and token in ~/.config/sonda/config.yaml")
+		return nil, errors.New("run sonda auth login, or set SONDA_URL and SONDA_TOKEN")
 	}
 	return client.New(baseURL, token), nil
 }

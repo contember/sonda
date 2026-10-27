@@ -51,7 +51,7 @@ export SONDA_ADMIN_TOKEN=$(openssl rand -hex 32)
 
 # Open http://localhost:8080/admin, sign in with the admin token, create an identity
 # and copy its token.
-export SONDA_URL=http://localhost:8080 SONDA_TOKEN=sonda_...
+./sonda auth login --url http://localhost:8080   # paste the token; saved to ~/.config/sonda/config.yaml (0600)
 ./sonda services
 ./sonda overview engine-api -e production
 ```
