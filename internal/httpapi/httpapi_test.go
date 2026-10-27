@@ -62,8 +62,11 @@ func (u *upstreams) handler() http.Handler {
 			["%d","level=error msg=\"db timeout\" password=hunter2 attempt=2"],
 			["%d","level=info msg=\"request done\" path=/x status=200"]]}]}}`, now, now-1, now-2)
 	})
-	mux.HandleFunc("/api/0/projects/acme/api/issues/", func(w http.ResponseWriter, r *http.Request) {
-		u.record(r.FormValue("query") + " env=" + r.FormValue("environment"))
+	mux.HandleFunc("/api/0/projects/acme/api/{$}", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"42","slug":"api"}`)
+	})
+	mux.HandleFunc("/api/0/organizations/acme/issues/", func(w http.ResponseWriter, r *http.Request) {
+		u.record(r.FormValue("query") + " env=" + r.FormValue("environment") + " project=" + r.FormValue("project"))
 		fmt.Fprint(w, `[
 			{"id":"1","shortId":"API-1","title":"Timeout","count":"10","userCount":2,"firstSeen":"2026-01-01T00:00:00Z","lastSeen":"2026-01-02T00:00:00Z","project":{"slug":"api"}},
 			{"id":"2","shortId":"BILLING-1","title":"Leak","count":"5","userCount":1,"firstSeen":"2026-01-01T00:00:00Z","lastSeen":"2026-01-02T00:00:00Z","project":{"slug":"billing"}}]`)
@@ -296,7 +299,7 @@ func TestSentryIssuesOfOtherProjectsAreHidden(t *testing.T) {
 	if len(list.Data) != 1 || list.Data[0].ID != "1" {
 		t.Errorf("issues = %+v", list.Data)
 	}
-	if got := env.upstream.last(); got != "is:unresolved env=production" {
+	if got := env.upstream.last(); got != "is:unresolved env=production project=42" {
 		t.Errorf("upstream query = %s", got)
 	}
 	if status := env.call(t, "agent-token", "GET", "/v1/services/api/errors/2", nil, nil); status != http.StatusNotFound {

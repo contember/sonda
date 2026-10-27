@@ -357,8 +357,11 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 
 ### Sentry specifics
 
-- Use project-scoped endpoints (`/api/0/projects/{org}/{project}/issues/`). The agent's free-text
-  query cannot escape the project. An org-level endpoint with a `project:` filter could.
+- Issues are listed by the organization endpoint (`/api/0/organizations/{org}/issues/`) with the
+  numeric project ID as the `project` parameter, resolved once from the slug. The project
+  endpoint (`/api/0/projects/{org}/{project}/issues/`) ignores `start` and `end`: it returned
+  issues last seen outside the range, with counts not limited to it. A `project:` term in the
+  query text cannot widen the parameter; Sentry rejects a project that is not selected.
 - Lookups by ID (`GetIssue`) fetch first, then check that the issue's project equals the scope's
   project. Otherwise return `not_found`, not `forbidden`. IDs must be numeric.
 - The environment grant also holds for single issues: the latest event is fetched with the

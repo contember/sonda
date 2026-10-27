@@ -1,6 +1,7 @@
 // Package sentry reads issues, events, releases and spans from the Sentry REST API.
-// Issues use project-scoped endpoints, so a free-text query cannot reach other projects;
-// spans use the organization events endpoint and are checked against the scope.
+// Issue search sends the project ID as a parameter, which Sentry ANDs with the query, so a
+// free-text query cannot reach other projects; spans use the organization events endpoint
+// and are checked against the scope.
 package sentry
 
 import (
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/contember/sonda/api"
@@ -24,10 +26,13 @@ import (
 type Client struct {
 	source *config.Source
 	http   *http.Client
+
+	mu         sync.Mutex
+	projectIDs map[string]string // slug → numeric ID
 }
 
 func New(src *config.Source, client *http.Client) *Client {
-	return &Client{source: src, http: client}
+	return &Client{source: src, http: client, projectIDs: map[string]string{}}
 }
 
 type Issue struct {
@@ -99,9 +104,15 @@ type Release struct {
 var issueID = regexp.MustCompile(`^[0-9]+$`)
 
 // ListIssues returns issues of the scope's project and environment that were seen in the
-// range. Count and user count cover the range.
+// range. Count and user count cover the range. The project issues endpoint ignores the
+// range, so this uses the organization one.
 func (c *Client) ListIssues(ctx context.Context, scope authz.ErrorScope, r api.TimeRange, query, sort string, limit int) ([]Issue, error) {
+	projectID, err := c.projectID(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
 	params := url.Values{
+		"project":     {projectID},
 		"start":       {formatTime(r.From)},
 		"end":         {formatTime(r.To)},
 		"environment": {scope.SentryEnvironment()},
@@ -110,7 +121,7 @@ func (c *Client) ListIssues(ctx context.Context, scope authz.ErrorScope, r api.T
 		"limit":       {strconv.Itoa(limit)},
 	}
 	var issues []Issue
-	if err := c.get(ctx, c.projectPath(scope, "issues/"), params, &issues); err != nil {
+	if err := c.get(ctx, c.orgPath("issues/"), params, &issues); err != nil {
 		return nil, err
 	}
 	scoped := issues[:0]
@@ -164,6 +175,29 @@ func (c *Client) Releases(ctx context.Context, scope authz.ErrorScope, limit int
 		return nil, err
 	}
 	return releases, nil
+}
+
+// projectID resolves the project slug of the scope once per client.
+func (c *Client) projectID(ctx context.Context, scope authz.ErrorScope) (string, error) {
+	c.mu.Lock()
+	id, ok := c.projectIDs[scope.Project()]
+	c.mu.Unlock()
+	if ok {
+		return id, nil
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := c.get(ctx, c.projectPath(scope, ""), nil, &project); err != nil {
+		return "", err
+	}
+	if !issueID.MatchString(project.ID) {
+		return "", apierr.Upstream("source %s returned project ID %q for %s", c.source.Name, project.ID, scope.Project())
+	}
+	c.mu.Lock()
+	c.projectIDs[scope.Project()] = project.ID
+	c.mu.Unlock()
+	return project.ID, nil
 }
 
 func (c *Client) projectPath(scope authz.ErrorScope, suffix string) string {
