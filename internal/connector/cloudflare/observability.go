@@ -22,6 +22,8 @@ import (
 const (
 	queryPath = "/workers/observability/telemetry/query"
 	keysPath  = "/workers/observability/telemetry/keys"
+	// seriesTimeLayout is the UTC bucket time of a calculation series, e.g. "2026-10-27 12:19:00".
+	seriesTimeLayout = time.DateTime
 )
 
 type queryResult struct {
@@ -52,6 +54,7 @@ type eventMetadata struct {
 	SpanName        string  `json:"spanName"`
 	Duration        float64 `json:"duration"`  // ms
 	StartTime       float64 `json:"startTime"` // epoch ms
+	EndTime         float64 `json:"endTime"`   // epoch ms
 	Message         string  `json:"message"`
 	Level           string  `json:"level"`
 	Error           string  `json:"error"`
@@ -194,7 +197,7 @@ func (c *Client) Calculations(ctx context.Context, scope authz.CloudflareScope, 
 			continue
 		}
 		for _, step := range calc.Series {
-			at, err := time.Parse(time.RFC3339Nano, step.Time)
+			at, err := time.ParseInLocation(seriesTimeLayout, step.Time, time.UTC)
 			if err != nil {
 				return nil, apierr.Upstream("source %s returned an invalid series time %q", c.source.Name, step.Time)
 			}
@@ -338,6 +341,11 @@ func span(e event) telemetry.Span {
 	if start == 0 {
 		start = e.Timestamp
 	}
+	// Span events carry their end, not a duration.
+	duration := e.Metadata.Duration
+	if duration == 0 && e.Metadata.StartTime != 0 && e.Metadata.EndTime > e.Metadata.StartTime {
+		duration = e.Metadata.EndTime - e.Metadata.StartTime
+	}
 	s := telemetry.Span{
 		TraceID:    e.Metadata.TraceID,
 		SpanID:     e.Metadata.SpanID,
@@ -345,7 +353,7 @@ func span(e event) telemetry.Span {
 		Service:    e.service(),
 		Name:       e.Metadata.SpanName,
 		Start:      fromMillis(start),
-		Duration:   millis(e.Metadata.Duration),
+		Duration:   millis(duration),
 		Status:     telemetry.StatusUnset,
 		Attributes: e.attributes(),
 	}

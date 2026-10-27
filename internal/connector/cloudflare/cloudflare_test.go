@@ -247,11 +247,11 @@ func TestCount(t *testing.T) {
 func TestCalculations(t *testing.T) {
 	f := &fake{response: success(`{"calculations":[
 		{"calculation":"count","alias":"n","aggregates":[],"series":[
-			{"time":"2023-11-14T22:14:00Z","data":[
+			{"time":"2023-11-14 22:14:00","data":[
 				{"value":1,"groups":[{"key":"$metadata.statusCode","value":500},{"key":"$metadata.service","value":"api-worker"}]},
 				{"value":2,"groups":[{"key":"$metadata.statusCode","value":200},{"key":"$metadata.service","value":"api-worker"}]}
 			]},
-			{"time":"2023-11-14T22:13:00Z","data":[{"value":3,"groups":[{"key":"$metadata.statusCode","value":500},{"key":"$metadata.service","value":"api-worker"}]}]}
+			{"time":"2023-11-14 22:13:00","data":[{"value":3,"groups":[{"key":"$metadata.statusCode","value":500},{"key":"$metadata.service","value":"api-worker"}]}]}
 		]},
 		{"calculation":"p99","aggregates":[{"value":12.5,"groups":[{"key":"$metadata.level","value":"error"},{"key":"$metadata.service","value":"api-worker"}]}],"series":[]}
 	]}`)}
@@ -292,7 +292,7 @@ func TestZeroMatches(t *testing.T) {
 		{"no calculations", `[]`},
 		{"no aggregates", `[{"calculation":"count","aggregates":[],"series":[]}]`},
 		{"zero without service group", `[{"calculation":"count","aggregates":[{"value":0,"count":0,"sampleInterval":1}],"series":[]}]`},
-		{"zero series point without service group", `[{"calculation":"count","aggregates":[{"value":0}],"series":[{"time":"2023-11-14T22:14:00Z","data":[{"value":0,"groups":[]}]}]}]`},
+		{"zero series point without service group", `[{"calculation":"count","aggregates":[{"value":0}],"series":[{"time":"2023-11-14 22:14:00","data":[{"value":0,"groups":[]}]}]}]`},
 	}
 	for _, tt := range tests {
 		f := &fake{response: success(`{"calculations":` + tt.calculations + `}`)}
@@ -312,9 +312,9 @@ func TestCalculationsPostCheck(t *testing.T) {
 	tests := []struct{ name, calculation string }{
 		{"foreign aggregate", `{"calculation":"count","aggregates":[{"value":1,"groups":[{"key":"$metadata.service","value":"other"}]}],"series":[]}`},
 		{"non-zero aggregate without service", `{"calculation":"count","aggregates":[{"value":1}],"series":[]}`},
-		{"foreign series point", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[
+		{"foreign series point", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14 22:14:00","data":[
 			{"value":1,"groups":[{"key":"$metadata.service","value":"api-worker"}]},{"value":1,"groups":[{"key":"$metadata.service","value":"other"}]}]}]}`},
-		{"non-zero series point without service", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14T22:14:00Z","data":[{"value":1,"groups":[]}]}]}`},
+		{"non-zero series point without service", `{"calculation":"count","aggregates":[],"series":[{"time":"2023-11-14 22:14:00","data":[{"value":1,"groups":[]}]}]}`},
 	}
 	for _, tt := range tests {
 		f := &fake{response: success(`{"calculations":[` + tt.calculation + `]}`)}
@@ -365,7 +365,7 @@ func TestTraces(t *testing.T) {
 func TestTraceSpans(t *testing.T) {
 	f := &fake{response: success(`{"events":{"events":[
 		{"$metadata":{"id":"1","service":"gateway","traceId":"abc","spanId":"s1","spanName":"fetch","startTime":1700000000000,"duration":20,"trigger":"GET /"},"$workers":{"scriptName":"gateway","eventType":"fetch","outcome":"ok","cpuTimeMs":3},"timestamp":1700000000000},
-		{"$metadata":{"id":"2","service":"api-worker","traceId":"abc","spanId":"s2","parentSpanId":"s1","spanName":"kv_get","startTime":1700000000005,"duration":2.5,"error":"KV timeout"},"timestamp":1700000000005},
+		{"$metadata":{"id":"2","service":"api-worker","traceId":"abc","spanId":"s2","parentSpanId":"s1","spanName":"kv_get","startTime":1700000000005,"endTime":1700000000008,"error":"KV timeout"},"timestamp":1700000000005},
 		{"$metadata":{"id":"3","service":"api-worker","traceId":"abc","spanId":"s2","message":"log inside span"},"timestamp":1700000000006},
 		{"$metadata":{"id":"4","service":"api-worker","traceId":"abc","spanId":"s2","spanName":"kv_get","startTime":1700000000005},"timestamp":1700000000005}
 	]}}`)}
@@ -383,7 +383,7 @@ func TestTraceSpans(t *testing.T) {
 		t.Errorf("root = %+v", root)
 	}
 	if child.ParentID != "s1" || child.TraceID != "abc" || child.Status != telemetry.StatusError || child.StatusMessage != "KV timeout" ||
-		child.Duration != 2500*time.Microsecond || !child.Start.Equal(time.UnixMilli(1700000000005)) {
+		child.Duration != 3*time.Millisecond || !child.Start.Equal(time.UnixMilli(1700000000005)) {
 		t.Errorf("child = %+v", child)
 	}
 	wantFilters := `"filters":[{"key":"$metadata.traceId","operation":"eq","type":"string","value":"abc"},{"key":"$metadata.spanName","operation":"exists","type":"string"}]`
