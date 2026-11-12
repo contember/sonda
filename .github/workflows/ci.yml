@@ -12,6 +12,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A run takes 1-2 minutes; a hung service or test should not hold a runner for hours.
+    timeout-minutes: 10
     services:
       # The LogQL scoping tests check the lexer against a real Loki.
       loki:
