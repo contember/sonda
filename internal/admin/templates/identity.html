@@ -21,7 +21,7 @@
     {{if .Stale}}
     <div class="card-body">
       <div class="alert alert-warning">
-        These stored grants refer to projects or capabilities that are no longer in the configuration. They have no effect, and saving removes them:
+        These stored grants refer to projects, services or capabilities that are no longer in the configuration. They have no effect, and saving removes them:
         <ul>{{range .Stale}}<li>{{.}}</li>{{end}}</ul>
       </div>
     </div>

@@ -26,7 +26,7 @@ type Rules struct {
 	// the product of the limits on its path.
 	MaxRows int
 	// MaxDepth caps the number of nested entity fields on a path, relation hops in filter,
-	// orderBy and by included.
+	// orderBy and by included; those hops also count toward MaxFields.
 	MaxDepth int
 	// MaxFields caps the selected fields after fragments are inlined.
 	MaxFields int
@@ -757,6 +757,11 @@ func (w *walker) input(v *ast.Value, entityName, kind string, depth int, operato
 				return reject("the query nests more than %d entity levels (in %s of %s.%s)", w.rules.MaxDepth, kind, entityName, key)
 			}
 			w.depth = max(w.depth, depth+1)
+			// A relation in an input is a join like a selected relation, so it also counts as a
+			// field; otherwise a wide or: [...] could ask for hundreds of joins.
+			if err := w.countField(); err != nil {
+				return err
+			}
 			if err := w.input(child.Value, r.target, kind, depth+1, operator); err != nil {
 				return err
 			}

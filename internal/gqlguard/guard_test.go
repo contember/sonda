@@ -464,6 +464,16 @@ func TestCheckCountsRelationHopsInInputsTowardDepth(t *testing.T) {
 
 // Inlined variables can nest deeper than the parser allows. That is the agent's query, so it is
 // rejected as invalid, and the message does not repeat the query with its filter values.
+func TestCheckCountsRelationHopsInInputsAsFields(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	rules := testRules()
+	rules.MaxBytes = 16 * 1024
+	wide := `{ listAuthor(limit: 1, filter: {or: [` + strings.Repeat(`{articles: {title: {eq: "a"}}}, `, 60) + `]}) { id } }`
+	if _, err := Check(s, wide, nil, rules); err == nil || !strings.Contains(err.Error(), "more than 50 fields") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestCheckRejectsDeeplyNestedVariables(t *testing.T) {
 	s := loadFixture(t, "contember_reader.json")
 	rules := testRules()

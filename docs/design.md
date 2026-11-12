@@ -771,9 +771,10 @@ query in three steps:
     `data.rows`. Aliases
     count like any other field. `offset`/`skip` are at most 10,000.
   - Depth counts nested entity fields and the relation hops of `filter`, `by` and `orderBy`
-    from the entity they apply to, since each hop is a join (default 5). Fields count after
-    inlining (default 200). The query plus variables, and the normalized query again, are limited to
-    `data_max_query_bytes` (16 KB): inlined variables and fragments can make it much larger.
+    from the entity they apply to, since each hop is a join (default 5); the hops also count as
+    fields. Fields count after inlining (default 200). The query plus variables, and the
+    normalized query again, are limited to `data_max_query_bytes` (16 KB): inlined variables and
+    fragments can make it much larger.
   - Arguments outside `filter`, `by`, `orderBy`, `limit`, `first`, `offset` and `skip` are
     rejected, so a future Contember argument fails closed.
 
@@ -1009,7 +1010,8 @@ Served under `/admin` only when `admin.token` is set. Pages:
 
 - **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
   Grants are a matrix of project environments × capabilities, with the services each row
-  covers; a cell no service of the project configures cannot be selected. A new or rotated token is shown once; only its SHA-256 is stored.
+  covers; a cell no service of the project configures cannot be selected. `data` has its own
+  matrix of service environments with a data binding. A new or rotated token is shown once; only its SHA-256 is stored.
 - **Services**: the configured projects, services, environments and capabilities with the
   source and scope each reads, how many identities hold a grant there, and the sources with
   type, scheme and host, auth type and header names. Credentials, header values, URL paths and

@@ -147,7 +147,8 @@ The `contember-graphql` dialect is the Contember Content API, read-only:
   server's row limit; single rows (`get`, has-one) are not counted. Count with `paginate<Entity>(first: 1, filter: …) { pageInfo { totalCount } }`
   instead of listing rows.
 - Filters: `filter: {status: {eq: paid}, customer: {name: {contains: "x"}}, or: [{…}, {…}]}`;
-  ordering: `orderBy: [{createdAt: desc}]`. Relations work in both.
+  ordering: `orderBy: [{createdAt: desc}]`. Relations work in both, and each relation there
+  counts toward the nesting and field limits like a selected one.
 - Not available: mutations, `transaction`, `schema`, `_meta`, introspection (use
   `data schema`) and directives. Fields hidden by the server are missing from `data schema`
   and rejected anywhere in a query, including filters and ordering.

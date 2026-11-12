@@ -298,7 +298,7 @@ grants apply again after the upgrade.
 Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.
 
 - **Identities**: create an identity, select its grants in a project environment × capability matrix,
-  override limits, rotate or revoke its token. Changes apply to the next request; no restart.
+  and `data` in a separate service environment matrix, override limits, rotate or revoke its token. Changes apply to the next request; no restart.
   A token is shown once; Sonda stores only its SHA-256.
 - **Services**: a read-only view of the configuration: projects, their services and
   environments, what each capability reads, and the sources. It shows no credentials.
