@@ -361,14 +361,18 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	}
 	v.urlCredentials(path+".url", raw.URL)
 	src.Auth = v.auth(path+".auth", raw.Auth)
-	for header, value := range raw.Headers {
+	v.headers(path, src, raw.Headers)
+	return src
+}
+
+func (v *validator) headers(path string, src *Source, raw map[string]string) {
+	for header, value := range raw {
 		if sensitiveHeader(header) {
 			src.Headers[header] = v.secretHeader(path+".headers."+header, value)
 		} else {
 			src.Headers[header] = v.expand(path+".headers."+header, value)
 		}
 	}
-	return src
 }
 
 // In-cluster Kubernetes paths, mounted into every pod with a service account.
@@ -392,9 +396,7 @@ func (v *validator) inClusterSource(path string, src *Source, raw rawSource) *So
 	src.URL = "https://" + net.JoinHostPort(host, port)
 	src.Auth = Auth{Type: AuthBearer, TokenFile: inClusterTokenFile}
 	src.RootCAs = v.caFile(path, inClusterCAFile)
-	for header, value := range raw.Headers {
-		src.Headers[header] = v.expand(path+".headers."+header, value)
-	}
+	v.headers(path, src, raw.Headers)
 	return src
 }
 

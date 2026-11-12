@@ -1,9 +1,11 @@
 {{define "content"}}
-{{if .Services}}
+{{if .Projects}}
+{{range .Projects}}
+<h2>{{.Name}}{{with .Description}} <span class="field-hint">{{.}}</span>{{end}}</h2>
 {{range .Services}}
 <section class="card">
   <div class="card-header">
-    <h2 class="card-title">{{.Name}}</h2>
+    <h3 class="card-title">{{.Name}}</h3>
     <span class="field-hint">
       {{- with .Description}}{{.}}{{end -}}
       {{- if .RepositoryURL}}{{if .Description}} · {{end}}<a href="{{.RepositoryURL}}" rel="noreferrer">{{.Repository}}</a>{{else if .Repository}}{{if .Description}} · {{end}}{{.Repository}}{{end -}}
@@ -39,8 +41,9 @@
   {{end}}
 </section>
 {{end}}
+{{end}}
 {{else}}
-<div class="empty"><p>The configuration has no services.</p></div>
+<div class="empty"><p>The configuration has no projects.</p></div>
 {{end}}
 
 <h2>Sources</h2>

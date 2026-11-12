@@ -1,19 +1,27 @@
 package admin
 
 import (
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/identities"
 )
 
 // servicesPage is a read-only view of the configuration: what agents can be granted and
 // where each capability reads from. It never shows credentials, header values or URL paths.
 type servicesPage struct {
-	Services []serviceView
+	Projects []projectView
 	Sources  []sourceView
+}
+
+type projectView struct {
+	Name        string
+	Description string
+	Services    []serviceView
 }
 
 type serviceView struct {
@@ -29,7 +37,8 @@ type serviceView struct {
 type environmentView struct {
 	Name     string
 	Bindings []bindingView
-	// Identities is the number of identities with at least one grant here.
+	// Identities is the number of identities with a grant of the project that covers a
+	// capability configured here.
 	Identities int
 }
 
@@ -56,37 +65,45 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
-	// Only grants of configured capabilities count; the others have no effect.
-	granted := map[string]map[string]bool{}
+	// A project grant reaches a service environment only for the capabilities it configures.
+	granted := map[identities.Grant]map[string]bool{}
 	for _, identity := range list {
 		for _, g := range identity.Grants {
-			if !h.configured(g) {
-				continue
+			if granted[g] == nil {
+				granted[g] = map[string]bool{}
 			}
-			target := g.Project + "\x00" + g.Environment
-			if granted[target] == nil {
-				granted[target] = map[string]bool{}
-			}
-			granted[target][identity.Name] = true
+			granted[g][identity.Name] = true
 		}
 	}
 
 	page := servicesPage{}
 	usedBy := map[string][]string{}
-	for _, svcName := range sortedKeys(h.cfg.Services) {
-		svc := h.cfg.Services[svcName]
-		sv := serviceView{Name: svcName, Description: svc.Description, Repository: svc.Repository, RepositoryURL: repositoryURL(svc.Repository), Signals: sortedKeys(svc.Signals)}
-		for _, envName := range sortedKeys(svc.Environments) {
-			ev := environmentView{Name: envName, Bindings: bindings(svc.Environments[envName]), Identities: len(granted[svc.Project.Name+"\x00"+envName])}
-			for _, b := range ev.Bindings {
-				target := svcName + " / " + envName
-				if !slices.Contains(usedBy[b.Source], target) {
-					usedBy[b.Source] = append(usedBy[b.Source], target)
+	for _, projectName := range sortedKeys(h.cfg.Projects) {
+		project := h.cfg.Projects[projectName]
+		pv := projectView{Name: projectName, Description: project.Description}
+		for _, svcName := range sortedKeys(project.Services) {
+			svc := project.Services[svcName]
+			sv := serviceView{Name: svcName, Description: svc.Description, Repository: svc.Repository, RepositoryURL: repositoryURL(svc.Repository), Signals: sortedKeys(svc.Signals)}
+			for _, envName := range sortedKeys(svc.Environments) {
+				env := svc.Environments[envName]
+				holders := map[string]bool{}
+				for _, capability := range env.Capabilities() {
+					for name := range granted[identities.Grant{Project: projectName, Environment: envName, Capability: capability}] {
+						holders[name] = true
+					}
 				}
+				ev := environmentView{Name: envName, Bindings: bindings(env), Identities: len(holders)}
+				for _, b := range ev.Bindings {
+					target := svcName + " / " + envName
+					if !slices.Contains(usedBy[b.Source], target) {
+						usedBy[b.Source] = append(usedBy[b.Source], target)
+					}
+				}
+				sv.Environments = append(sv.Environments, ev)
 			}
-			sv.Environments = append(sv.Environments, ev)
+			pv.Services = append(pv.Services, sv)
 		}
-		page.Services = append(page.Services, sv)
+		page.Projects = append(page.Projects, pv)
 	}
 	for _, name := range sortedKeys(h.cfg.Sources) {
 		src := h.cfg.Sources[name]
@@ -113,6 +130,9 @@ func bindings(env *config.Environment) []bindingView {
 		if b.Environment != "" {
 			scope += ", environment " + b.Environment
 		}
+		if b.Query != "" {
+			scope += ", search " + b.Query
+		}
 		add("errors", b.Source, scope)
 	}
 	if b := env.Logs; b != nil {
@@ -121,6 +141,8 @@ func bindings(env *config.Environment) []bindingView {
 			add("logs", b.Source, b.Selector.Text)
 		case b.Script != "":
 			add("logs", b.Source, "script "+b.Script)
+		case b.Project != "":
+			add("logs", b.Source, "project "+b.Project+", environment "+b.Environment)
 		default:
 			add("logs", b.Source, "log groups "+strings.Join(b.LogGroups, ", "))
 		}
@@ -130,7 +152,11 @@ func bindings(env *config.Environment) []bindingView {
 		case b.Selector != nil:
 			add("metrics", b.Source, b.Selector.Text)
 		case b.Script != "":
-			add("metrics", b.Source, "script "+b.Script)
+			scope := "script " + b.Script
+			for _, kind := range slices.Sorted(maps.Keys(b.CloudflareResources)) {
+				scope += ", " + string(kind) + " " + strings.Join(sortedKeys(b.CloudflareResources[kind]), ", ")
+			}
+			add("metrics", b.Source, scope)
 		default:
 			scope := "namespace " + b.Namespace
 			for _, k := range sortedKeys(b.Dimensions) {
@@ -140,11 +166,28 @@ func bindings(env *config.Environment) []bindingView {
 		}
 	}
 	if b := env.Traces; b != nil {
-		if b.Script != "" {
+		switch {
+		case b.Script != "":
 			add("traces", b.Source, "script "+b.Script)
-		} else {
+		case b.Project != "":
+			scope := "project " + b.Project
+			if b.Environment != "" {
+				scope += ", environment " + b.Environment
+			}
+			add("traces", b.Source, scope)
+		default:
 			add("traces", b.Source, "service.name "+b.ServiceName)
 		}
+	}
+	if b := env.Workloads; b != nil {
+		scope := "namespace " + b.Namespace
+		for _, k := range sortedKeys(b.Labels) {
+			scope += ", " + k + "=" + b.Labels[k]
+		}
+		add("workloads", b.Source, scope)
+	}
+	if b := env.Alerts; b != nil {
+		add("alerts", b.Source, b.Selector.Text)
 	}
 	return out
 }
@@ -163,11 +206,17 @@ func sourceHost(src *config.Source) string {
 }
 
 func sourceAuth(src *config.Source) string {
-	if src.AWS != nil {
-		if src.AWS.RoleARN != "" {
-			return "assume role"
-		}
+	switch {
+	case src.AWS != nil && src.AWS.Credentials == config.AWSIdentity:
+		return "Sonda identity, assume role"
+	case src.AWS != nil && src.AWS.RoleARN != "":
+		return "credential chain, assume role"
+	case src.AWS != nil:
 		return "credential chain"
+	case src.Auth.EKS != nil:
+		return "eks via " + src.Auth.EKS.AWS.Name
+	case src.Auth.TokenFile != "":
+		return "service account"
 	}
 	return string(src.Auth.Type)
 }

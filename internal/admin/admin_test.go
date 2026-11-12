@@ -36,6 +36,7 @@ admin:
   token: `+adminToken+`
 sources:
   loki: { type: loki, url: "http://loki:3100" }
+  prom: { type: prometheus, url: "http://prom:9090" }
   sentry:
     type: sentry
     org: acme
@@ -49,6 +50,10 @@ projects:
         environments:
           production:
             logs: { source: loki, selector: '{app="api"}' }
+      worker:
+        environments:
+          production:
+            alerts: { source: prom, selector: '{service="worker"}' }
 `), func(name string) (string, bool) {
 		if name == "SENTRY_TOKEN" {
 			return "token-secret", true
@@ -244,7 +249,7 @@ func TestServicesPageHidesCredentials(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	for _, want := range []string{"production", "{app=&#34;api&#34;}", "https://sentry.example.com", "X-Scope-OrgID", "unused", "api / production"} {
+	for _, want := range []string{"production", "{app=&#34;api&#34;}", "{service=&#34;worker&#34;}", "https://sentry.example.com", "X-Scope-OrgID", "unused", "api / production", "worker / production"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}
@@ -278,8 +283,17 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	// valid and both count; stale has no effective grant.
-	if !strings.Contains(string(raw), `rowspan="1">2</td>`) {
-		t.Errorf("want 2 identities with a configured grant:\n%s", raw)
+	// valid and both count for api; stale has no effective grant. The logs grant of the
+	// project does not reach worker, which configures only alerts.
+	body := string(raw)
+	api, worker, ok := strings.Cut(body[strings.Index(body, ">api</h3>"):], ">worker</h3>")
+	if !ok {
+		t.Fatalf("page lacks the api and worker services:\n%s", body)
+	}
+	if !strings.Contains(api, `rowspan="1">2</td>`) {
+		t.Errorf("want 2 identities for api:\n%s", api)
+	}
+	if !strings.Contains(worker, `<span class="subtle">0</span>`) {
+		t.Errorf("want 0 identities for worker:\n%s", worker)
 	}
 }
