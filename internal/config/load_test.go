@@ -222,14 +222,26 @@ func TestPartlyLiteralCredentialsWarn(t *testing.T) {
 }
 
 func TestRepositoryRefusesCredentials(t *testing.T) {
-	input := strings.Replace(validConfig, "      api:\n", "      api:\n        repository: https://bob:ghp_secret@github.com/acme/api\n", 1)
-	_, err := Parse([]byte(input), env(validEnv()))
-	if err == nil || !strings.Contains(err.Error(), "services.api.repository must not contain") || strings.Contains(err.Error(), "ghp_secret") {
-		t.Errorf("error = %v", err)
-	}
-	input = strings.Replace(validConfig, "      api:\n", "      api:\n        repository: github.com/acme/api\n", 1)
-	if _, err := Parse([]byte(input), env(validEnv())); err != nil {
-		t.Errorf("plain repository: %v", err)
+	for repository, refused := range map[string]bool{
+		"https://bob:ghp_secret@github.com/acme/api":   true,
+		"https://ghp_secret@github.com/acme/api":       true,
+		"https://bob:ghp_secret@github.com:acme/api":   true,
+		"https://github.com/acme/api?token=ghp_secret": true,
+		"ssh://git:ghp_secret@github.com/acme/api.git": true,
+		"ssh://git@github.com/acme/api.git":            false,
+		"https://github.com/acme/api":                  false,
+		"github.com/acme/api":                          false,
+		"git@github.com:acme/api.git":                  false,
+	} {
+		input := strings.Replace(validConfig, "      api:\n", "      api:\n        repository: \""+repository+"\"\n", 1)
+		_, err := Parse([]byte(input), env(validEnv()))
+		if refused {
+			if err == nil || !strings.Contains(err.Error(), "services.api.repository must not contain") || strings.Contains(err.Error(), "ghp_secret") {
+				t.Errorf("%s: error = %v", repository, err)
+			}
+		} else if err != nil {
+			t.Errorf("%s: %v", repository, err)
+		}
 	}
 }
 

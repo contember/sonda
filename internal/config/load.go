@@ -536,8 +536,8 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 		Environments: map[string]*Environment{},
 	}
 	// The repository is returned to agents and linked in the admin UI.
-	if u, err := url.Parse(raw.Repository); err == nil && u.User != nil {
-		v.fail("%s.repository must not contain a username or password: it is returned to agents", path)
+	if repositoryCredentials(raw.Repository) {
+		v.fail("%s.repository must not contain a password, an http(s) username or a query: it is returned to agents", path)
 	}
 	if len(raw.Environments) == 0 {
 		v.fail("%s.environments: at least one environment is required", path)
@@ -1066,6 +1066,23 @@ func splitAuthority(raw string) (authority, rest string) {
 		return afterScheme[:i], afterScheme[i:]
 	}
 	return afterScheme, ""
+}
+
+// repositoryCredentials reports a repository URL that may carry a credential. It does not
+// rely on url.Parse, which rejects a token-bearing URL with a non-numeric port. A username on
+// ssh, as in ssh://git@host/repo, is not a credential.
+func repositoryCredentials(raw string) bool {
+	authority, rest := splitAuthority(raw)
+	if strings.Contains(rest, "?") {
+		return true
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return false
+	}
+	scheme, _, _ := strings.Cut(raw, "://")
+	scheme = strings.ToLower(scheme)
+	return strings.Contains(authority[:at], ":") || scheme == "http" || scheme == "https"
 }
 
 // urlCredentials warns about a password written into a URL in the file. A password that is
