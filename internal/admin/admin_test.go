@@ -310,6 +310,7 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 		{Name: "stale", Grants: []identities.Grant{stale}},
 		{Name: "valid", Grants: []identities.Grant{logs}},
 		{Name: "both", Grants: []identities.Grant{stale, logs}},
+		{Name: "data", Grants: []identities.Grant{{Service: "api", Environment: "production", Capability: api.CapabilityData}}},
 	} {
 		id.TokenSHA256 = [32]byte{byte(i + 1)}
 		if err := env.store.Create(ctx, id); err != nil {
@@ -322,8 +323,9 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	// valid and both count for api; stale has no effective grant. The logs grant of the
-	// project does not reach worker, which configures only alerts.
+	// valid, both and data count for api; stale has no effective grant. The logs grant of the
+	// project does not reach worker, which configures only alerts, and neither does the data
+	// grant, which names api.
 	body := string(raw)
 	start := strings.Index(body, ">api</h3>")
 	if start < 0 {
@@ -333,8 +335,8 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	if !ok {
 		t.Fatalf("page lacks the api and worker services:\n%s", body)
 	}
-	if !strings.Contains(api, `rowspan="1">2</td>`) {
-		t.Errorf("want 2 identities for api:\n%s", api)
+	if !strings.Contains(api, `rowspan="2">3</td>`) {
+		t.Errorf("want 3 identities for api:\n%s", api)
 	}
 	if !strings.Contains(worker, `<span class="subtle">0</span>`) {
 		t.Errorf("want 0 identities for worker:\n%s", worker)
