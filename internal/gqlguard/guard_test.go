@@ -426,3 +426,63 @@ func FuzzCheck(f *testing.F) {
 		}
 	})
 }
+
+// Relation hops inside filter, orderBy and by join entities like nested fields do, so they
+// count toward MaxDepth from the entity they start at.
+func TestCheckCountsRelationHopsInInputsTowardDepth(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	rules := testRules()
+	rules.MaxBytes = 16 * 1024
+	var deep strings.Builder
+	for i := range 400 {
+		deep.WriteString(map[bool]string{true: "{author: ", false: "{articles: "}[i%2 == 0])
+	}
+	deep.WriteString(`{title: {eq: "x"}}` + strings.Repeat("}", 400))
+	rejected := map[string]string{
+		"400 hops in filter":          `{ listArticle(limit: 1, filter: ` + deep.String() + `) { id } }`,
+		"filter over depth":           `{ listArticle(limit: 1, filter: {author: {articles: {author: {articles: {title: {eq: "x"}}}}}}) { id } }`,
+		"filter under a nested list":  `{ listAuthor(limit: 1) { articles(limit: 1, filter: {author: {articles: {author: {name: {eq: "x"}}}}}) { id } } }`,
+		"orderBy under nested fields": `{ listAuthor(limit: 1) { articles(limit: 1) { author { articles(limit: 1, orderBy: [{author: {name: asc}}]) { id } } } } }`,
+	}
+	for name, query := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Check(s, query, nil, rules); err == nil || !strings.Contains(err.Error(), "more than 4 entity levels") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+	atLimit := `{ listArticle(limit: 1, filter: {author: {articles: {author: {name: {eq: "x"}}}}}) { id } }`
+	if _, err := Check(s, atLimit, nil, rules); err != nil {
+		t.Errorf("filter at the depth limit: %v", err)
+	}
+	rules.MaxDepth = 1
+	by := `{ getAuthor(by: {articles: {id: "00000000-0000-0000-0000-000000000000"}}) { id } }`
+	if _, err := Check(s, by, nil, rules); err == nil || !strings.Contains(err.Error(), "more than 1 entity levels") {
+		t.Errorf("by over depth: %v", err)
+	}
+}
+
+// Inlined variables can nest deeper than the parser allows. That is the agent's query, so it is
+// rejected as invalid, and the message does not repeat the query with its filter values.
+func TestCheckRejectsDeeplyNestedVariables(t *testing.T) {
+	s := loadFixture(t, "contember_reader.json")
+	rules := testRules()
+	rules.MaxBytes = 16 * 1024
+	filter := strings.Repeat(`{"not":`, 1100) + `{"title":{"eq":"secret-value"}}` + strings.Repeat("}", 1100)
+	_, err := Check(s, `query($f: ArticleWhere) { listArticle(limit: 1, filter: $f) { id } }`, []byte(`{"f":`+filter+`}`), rules)
+	var guardErr *Error
+	if !errors.As(err, &guardErr) || guardErr.Limit {
+		t.Fatalf("err = %v, want a rejection", err)
+	}
+	if strings.Contains(err.Error(), "secret-value") || strings.Contains(err.Error(), "listArticle") {
+		t.Errorf("message echoes the query: %.200s", err)
+	}
+}
+
+func TestCheckRejectsMutationOnWriterSchema(t *testing.T) {
+	s := loadFixture(t, "contember_writer.json")
+	_, err := Check(s, `mutation { createArticle(data: {title: "x"}) { ok } }`, nil, testRules())
+	if err == nil || !strings.Contains(err.Error(), "only query operations are allowed") {
+		t.Fatalf("err = %v", err)
+	}
+}

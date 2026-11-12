@@ -212,7 +212,7 @@ limits:
   requests_per_minute: 60
   # Data queries; these have no per-identity overrides.
   data_max_rows: 500          # row budget: list limits, nested lists multiplied
-  data_max_depth: 5           # nested entity levels
+  data_max_depth: 5           # nested entity levels, relations in filters included
   data_max_fields: 200        # selected fields after fragments are inlined
   data_max_query_bytes: 16384 # query plus variables, and the query after inlining
 

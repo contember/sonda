@@ -25,7 +25,8 @@ type Rules struct {
 	// MaxRows caps the rows a query can return: the sum over every list and paginate field of
 	// the product of the limits on its path.
 	MaxRows int
-	// MaxDepth caps the number of nested entity fields on a path.
+	// MaxDepth caps the number of nested entity fields on a path, relation hops in filter,
+	// orderBy and by included.
 	MaxDepth int
 	// MaxFields caps the selected fields after fragments are inlined.
 	MaxFields int
@@ -102,9 +103,12 @@ func Check(s *Schema, query string, variables []byte, rules Rules) (Result, erro
 	}
 	// The normalized text is parsed and validated again, and the rules run on it, so what is
 	// checked is exactly what is sent.
+	// Inlined variables can make the text fail where the written query did not, e.g. by
+	// nesting deeper than the parser allows. The message must not echo the query: it carries
+	// the filter values.
 	final, errs := gqlparser.LoadQuery(s.ast, normalized)
 	if len(errs) > 0 {
-		return Result{}, fmt.Errorf("normalized query does not validate: %w (query: %s)", validationError(errs), normalized)
+		return Result{}, validationError(errs)
 	}
 	finalOp, err := singleQuery(final)
 	if err != nil {
@@ -541,15 +545,15 @@ func (w *walker) hop(f *ast.Field, h hop, multiplier, depth int) error {
 	for _, arg := range f.Arguments {
 		switch arg.Name {
 		case "filter":
-			if err := w.where(arg.Value, h.target); err != nil {
+			if err := w.where(arg.Value, h.target, depth); err != nil {
 				return err
 			}
 		case "by":
-			if err := w.unique(arg.Value, h.target); err != nil {
+			if err := w.unique(arg.Value, h.target, depth); err != nil {
 				return err
 			}
 		case "orderBy":
-			if err := w.orderBy(arg.Value, h.target); err != nil {
+			if err := w.orderBy(arg.Value, h.target, depth); err != nil {
 				return err
 			}
 		case "limit", "first":
@@ -693,30 +697,31 @@ func (w *walker) connection(set ast.SelectionSet, name string, multiplier, depth
 
 // where checks a filter: every field it compares, also through relations and and/or/not,
 // must be readable, so a filter cannot test values of a denied field.
-func (w *walker) where(v *ast.Value, entityName string) error {
-	return w.input(v, entityName, "filter", func(key string) bool { return key == "and" || key == "or" || key == "not" })
+func (w *walker) where(v *ast.Value, entityName string, depth int) error {
+	return w.input(v, entityName, "filter", depth, func(key string) bool { return key == "and" || key == "or" || key == "not" })
 }
 
 // unique checks a unique lookup (by), which reveals whether a record with a value exists.
-func (w *walker) unique(v *ast.Value, entityName string) error {
-	return w.input(v, entityName, "by", func(string) bool { return false })
+func (w *walker) unique(v *ast.Value, entityName string, depth int) error {
+	return w.input(v, entityName, "by", depth, func(string) bool { return false })
 }
 
 // orderBy checks the ordering, which can reveal values of a field by binary search.
-func (w *walker) orderBy(v *ast.Value, entityName string) error {
-	return w.input(v, entityName, "orderBy", func(key string) bool { return key == "_random" || key == "_randomSeeded" })
+func (w *walker) orderBy(v *ast.Value, entityName string, depth int) error {
+	return w.input(v, entityName, "orderBy", depth, func(key string) bool { return key == "_random" || key == "_randomSeeded" })
 }
 
 // input walks an entity input object (where, unique where, order by). Keys are fields of the
 // entity, or operators that keep the same entity. Relations descend into their target entity.
-// Condition values of columns hold no entity fields.
-func (w *walker) input(v *ast.Value, entityName, kind string, operator func(string) bool) error {
+// Condition values of columns hold no entity fields. depth is the entity level of entityName;
+// each relation joins one more level.
+func (w *walker) input(v *ast.Value, entityName, kind string, depth int, operator func(string) bool) error {
 	switch v.Kind {
 	case ast.NullValue:
 		return nil
 	case ast.ListValue:
 		for _, child := range v.Children {
-			if err := w.input(child.Value, entityName, kind, operator); err != nil {
+			if err := w.input(child.Value, entityName, kind, depth, operator); err != nil {
 				return err
 			}
 		}
@@ -733,7 +738,7 @@ func (w *walker) input(v *ast.Value, entityName, kind string, operator func(stri
 			if key == "_random" || key == "_randomSeeded" {
 				continue
 			}
-			if err := w.input(child.Value, entityName, kind, operator); err != nil {
+			if err := w.input(child.Value, entityName, kind, depth, operator); err != nil {
 				return err
 			}
 		case e.columns[key] != nil:
@@ -748,7 +753,11 @@ func (w *walker) input(v *ast.Value, entityName, kind string, operator func(stri
 			if !w.rules.allowed(r.target) {
 				return reject("entity %s is not allowed (in %s of %s.%s)", r.target, kind, entityName, key)
 			}
-			if err := w.input(child.Value, r.target, kind, operator); err != nil {
+			if w.rules.MaxDepth > 0 && depth+1 > w.rules.MaxDepth {
+				return reject("the query nests more than %d entity levels (in %s of %s.%s)", w.rules.MaxDepth, kind, entityName, key)
+			}
+			w.depth = max(w.depth, depth+1)
+			if err := w.input(child.Value, r.target, kind, depth+1, operator); err != nil {
 				return err
 			}
 		default:

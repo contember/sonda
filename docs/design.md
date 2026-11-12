@@ -770,8 +770,9 @@ query in three steps:
     rows (`get`, has-one, `<rel>By`) are not counted; the response reports the budget used as
     `data.rows`. Aliases
     count like any other field. `offset`/`skip` are at most 10,000.
-  - Depth counts nested entity fields (default 5), fields count after inlining (default
-    200). The query plus variables, and the normalized query again, are limited to
+  - Depth counts nested entity fields and the relation hops of `filter`, `by` and `orderBy`
+    from the entity they apply to, since each hop is a join (default 5). Fields count after
+    inlining (default 200). The query plus variables, and the normalized query again, are limited to
     `data_max_query_bytes` (16 KB): inlined variables and fragments can make it much larger.
   - Arguments outside `filter`, `by`, `orderBy`, `limit`, `first`, `offset` and `skip` are
     rejected, so a future Contember argument fails closed.
