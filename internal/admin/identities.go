@@ -24,7 +24,7 @@ type identityRow struct {
 	Limits    []string
 }
 
-// grantSummary is the capabilities an identity has in one service environment.
+// grantSummary is the capabilities an identity has in one project environment.
 type grantSummary struct {
 	Target       string
 	Capabilities []string

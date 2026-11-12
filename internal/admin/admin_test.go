@@ -286,7 +286,11 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	// valid and both count for api; stale has no effective grant. The logs grant of the
 	// project does not reach worker, which configures only alerts.
 	body := string(raw)
-	api, worker, ok := strings.Cut(body[strings.Index(body, ">api</h3>"):], ">worker</h3>")
+	start := strings.Index(body, ">api</h3>")
+	if start < 0 {
+		t.Fatalf("page lacks the api service:\n%s", body)
+	}
+	api, worker, ok := strings.Cut(body[start:], ">worker</h3>")
 	if !ok {
 		t.Fatalf("page lacks the api and worker services:\n%s", body)
 	}

@@ -1068,21 +1068,28 @@ func splitAuthority(raw string) (authority, rest string) {
 	return afterScheme, ""
 }
 
-// repositoryCredentials reports a repository URL that may carry a credential. It does not
-// rely on url.Parse, which rejects a token-bearing URL with a non-numeric port. A username on
-// ssh, as in ssh://git@host/repo, is not a credential.
+// repositoryCredentials reports a repository that may carry a credential. It does not rely
+// on url.Parse, which rejects a token-bearing URL with a non-numeric port, and it also reads
+// forms without a scheme. A username on ssh, as in ssh://git@host/repo or git@host:repo, is
+// not a credential; a password, an http(s) username, '@' after the authority (a password with
+// '/'), a query and a fragment are refused.
 func repositoryCredentials(raw string) bool {
-	authority, rest := splitAuthority(raw)
-	if strings.Contains(rest, "?") {
+	if strings.ContainsAny(raw, "?#") {
+		return true
+	}
+	scheme, rest, hasScheme := strings.Cut(raw, "://")
+	if !hasScheme {
+		scheme, rest = "", raw
+	}
+	authority, path, _ := strings.Cut(rest, "/")
+	if strings.Contains(path, "@") {
 		return true
 	}
 	at := strings.LastIndex(authority, "@")
 	if at < 0 {
 		return false
 	}
-	scheme, _, _ := strings.Cut(raw, "://")
-	scheme = strings.ToLower(scheme)
-	return strings.Contains(authority[:at], ":") || scheme == "http" || scheme == "https"
+	return strings.Contains(authority[:at], ":") || strings.Contains(strings.ToLower(scheme), "http")
 }
 
 // urlCredentials warns about a password written into a URL in the file. A password that is

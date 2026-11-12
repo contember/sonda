@@ -223,15 +223,20 @@ func TestPartlyLiteralCredentialsWarn(t *testing.T) {
 
 func TestRepositoryRefusesCredentials(t *testing.T) {
 	for repository, refused := range map[string]bool{
-		"https://bob:ghp_secret@github.com/acme/api":   true,
-		"https://ghp_secret@github.com/acme/api":       true,
-		"https://bob:ghp_secret@github.com:acme/api":   true,
-		"https://github.com/acme/api?token=ghp_secret": true,
-		"ssh://git:ghp_secret@github.com/acme/api.git": true,
-		"ssh://git@github.com/acme/api.git":            false,
-		"https://github.com/acme/api":                  false,
-		"github.com/acme/api":                          false,
-		"git@github.com:acme/api.git":                  false,
+		"https://bob:ghp_secret@github.com/acme/api":    true,
+		"https://ghp_secret@github.com/acme/api":        true,
+		"https://bob:ghp_secret@github.com:acme/api":    true,
+		"https://github.com/acme/api?token=ghp_secret":  true,
+		"ssh://git:ghp_secret@github.com/acme/api.git":  true,
+		"https://bob:pa/ghp_secret@github.com/acme/api": true,
+		"bob:ghp_secret@github.com/acme/api":            true,
+		"github.com/acme/api?token=ghp_secret":          true,
+		"git+https://ghp_secret@github.com/acme/api":    true,
+		"https://github.com/acme/api#ghp_secret":        true,
+		"ssh://git@github.com/acme/api.git":             false,
+		"https://github.com/acme/api":                   false,
+		"github.com/acme/api":                           false,
+		"git@github.com:acme/api.git":                   false,
 	} {
 		input := strings.Replace(validConfig, "      api:\n", "      api:\n        repository: \""+repository+"\"\n", 1)
 		_, err := Parse([]byte(input), env(validEnv()))
