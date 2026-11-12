@@ -21,7 +21,7 @@
     {{if .Stale}}
     <div class="card-body">
       <div class="alert alert-warning">
-        These stored grants refer to projects or capabilities that are no longer in the configuration. They have no effect, and saving removes them:
+        These stored grants refer to projects, services or capabilities that are no longer in the configuration. They have no effect, and saving removes them:
         <ul>{{range .Stale}}<li>{{.}}</li>{{end}}</ul>
       </div>
     </div>
@@ -51,6 +51,35 @@
     <div class="card-body"><p class="muted">The configuration has no projects.</p></div>
     {{end}}
   </section>
+
+  {{if .ServiceMatrix}}
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Data</h2>
+      <span class="field-hint">Granted per service: a grant opens the data of that service only.</span>
+    </div>
+    <div class="table-wrap">
+    <table class="matrix">
+      <thead>
+        <tr><th>Project</th><th>Service</th><th>Environment</th>{{range .ServiceCapabilities}}<th class="check">{{.}}</th>{{end}}</tr>
+      </thead>
+      <tbody>
+      {{range .ServiceMatrix}}
+        <tr>
+          <td class="nowrap"><strong>{{.Project}}</strong></td>
+          <td class="nowrap">{{.Service}}</td>
+          <td class="nowrap">{{.Environment}}</td>
+          {{$row := .}}
+          {{range $i, $cell := .Cells}}
+          <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.ServiceCapabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="subtle" title="Not configured for this service environment">–</span>{{end}}</td>
+          {{end}}
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  </section>
+  {{end}}
 
   <section class="card">
     <div class="card-header">

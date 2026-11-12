@@ -12,6 +12,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A run takes 1-2 minutes; a hung service or test should not hold a runner for hours.
+    timeout-minutes: 10
     services:
       # The LogQL scoping tests check the lexer against a real Loki.
       loki:
@@ -60,6 +62,16 @@ jobs:
           timeout 120 sh -c 'until curl -sf http://localhost:13200/ready; do sleep 2; done'
           dev/seed-traces.sh
           timeout 60 sh -c 'until curl -sfG --data-urlencode "q={ resource.service.name = \"svc-b\" }" http://localhost:13200/api/search | grep -q traceID; do sleep 2; done'
+
+      # The data tests run against a Contember engine with a read-only and a write role.
+      # The env file is written only after the seed succeeds, so a failed seed fails CI instead
+      # of skipping the data tests.
+      - name: Start and seed Contember
+        shell: bash
+        run: |
+          docker compose -f dev/docker-compose.yml up -d contember
+          dev/seed-contember.sh > contember.env
+          sed 's/^export //' contember.env >> "$GITHUB_ENV"
 
       - run: go test ./...
         env:

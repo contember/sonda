@@ -4,9 +4,10 @@ Status: implemented (v1). Deviations found during implementation are folded into
 
 Sonda is a self-hostable, read-only gateway that gives AI agents one credential and one
 service-centric interface to production telemetry in Sentry, Loki, Prometheus, Cloudflare
-Workers Observability, AWS CloudWatch and Grafana Tempo.
-It stores no telemetry. It queries sources on demand, enforces per-service authorization, and
-returns compact, evidence-carrying responses.
+Workers Observability, AWS CloudWatch and Grafana Tempo, and to application data in
+Contember projects.
+It stores no telemetry and no data. It queries sources on demand, enforces per-service
+authorization, and returns compact, evidence-carrying responses.
 
 ## 1. Decisions
 
@@ -23,6 +24,9 @@ returns compact, evidence-carrying responses.
 | Cloudflare queries | A JSON subset of the Workers Observability query, AND-wrapped with the script filter | Passthrough of the full request body | `queryId` runs a saved query and `datasets` changes what is read; both could bypass the filters. |
 | Vercel logs | The Observability events API that the Vercel CLI's `logs` command uses | The documented per-deployment runtime logs stream | The stream covers one deployment and has no filter or range. The events API is not in Vercel's public OpenAPI spec, so it may change without notice. |
 | Cloudflare metrics | Fixed catalog over GraphQL Analytics datasets of Workers, Durable Objects, D1, Queues and R2, query built by the server | Agent-written GraphQL | GraphQL can name any script, resource or account. The server sets `accountTag`, the bound script or resource IDs and the range as variables. |
+| Data queries | Agent-written GraphQL for the Contember Content API, checked by `internal/gqlguard` against the API key's own schema | A fixed catalog of queries; plain passthrough | Questions about data are open-ended. Unlike Cloudflare GraphQL, the scope is not in the query: the server sets the project and stage in the URL, and the key's role decides what exists. The guard adds limits and field rules on top. |
+| Data grant scope | Per service environment, stored in `identity_service_grants` | Per project environment, like the other capabilities | Data is the most sensitive capability; a project can hold services whose data an agent must not read. A separate table needs no migration, and an older Sonda ignores it. |
+| Write protection for data | A read-only Contember role, plus Sonda refusing any key whose schema can write | Trust the configuration | Two independent layers. A key with write rights would make every guard bug a write bug. |
 | Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
 | Sentry traces | The spans dataset of the organization events endpoint, with the project and environment as parameters and a post-check of every span | Project-scoped endpoints | Sentry has no project-scoped span search. The parameters are ANDed with the query text, and the post-check catches a filter that Sentry did not apply. |
 | Trace visibility | Spans of services without a `traces` grant become stubs | Reject traces that cross services; return them in full | A trace is useful only as a whole. Stubs show where time went without revealing names, attributes or events. |
@@ -67,6 +71,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster) |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
   | `vercel` | Vercel Observability events | logs | `team_id` (`team_…`, not the slug), bearer token; `url` defaults to `https://api.vercel.com` |
+  | `contember` | Contember Content API | data | `url` (engine base URL), bearer API key, headers |
 
   Auth is `none`, `bearer`, `basic` or `eks` (`cluster` and `aws_source`: an EKS token signed
   with the credentials of that aws source). Extra headers carry e.g. `X-Scope-OrgID` for
@@ -103,10 +108,11 @@ Identity ──< Grant (projects × environments × capabilities)
   | `traces` | `sentry` | `project` + Sentry `environment` |
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty) |
   | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
+  | `data` | `contember` | `project` + `stage` (default `live`), optional `entities` allow list and `deny_fields` (`Entity.field` or `*.field`) |
 
 - **Dialect**: each binding has the query dialect of its native query endpoint: `logql`,
   `promql`, `traceql`, `cloudflare-query`, `cloudflare-metric`, `logs-insights`,
-  `cloudwatch-metric`, `sentry-search`, `vercel-kql`. `describe` returns it per capability with the source type.
+  `cloudwatch-metric`, `sentry-search`, `vercel-kql`, `contember-graphql`. `describe` returns it per capability with the source type.
 - **Signal**: a named metrics query stored without scope, in the native dialect of the
   service's metrics backend. For Prometheus it is a PromQL string, e.g. `error_rate`; Sonda
   injects the environment selector the same way as for native queries. For Cloudflare and
@@ -118,11 +124,16 @@ Identity ──< Grant (projects × environments × capabilities)
 - **Grant**: one `(project, environment, capability)`. It covers every service of the project
   that configures the capability in that environment, including services added to the project
   later. It never covers another environment or capability. Capabilities: `errors`, `logs`,
-  `metrics`, `traces`, `workloads`, `alerts`. A native query requires the same capability as the structured tool for
+  `metrics`, `traces`, `workloads`, `alerts`, `data`. `data` is never implied by another
+  grant, and it is granted per service instead of per project: a `data` grant names one
+  service environment and opens only its data binding. A native query requires the same capability as the structured tool for
   that signal type. A `traces` grant also makes the project's spans visible in full inside
   traces fetched through other services (section 8). A grant for a project or capability that
   is no longer configured has no effect.
-- **Limits**: server defaults from the config plus per-identity overrides from the store.
+- **Limits**: server defaults from the config plus per-identity overrides from the store. The
+  data limits (`data_max_rows`, `data_max_depth`, `data_max_fields`, `data_max_query_bytes`)
+  have no overrides yet: an override is a column in the identity store, and the store has no
+  migrations.
 
 ### Example configuration
 
@@ -216,10 +227,12 @@ source type, unparsable selectors or signals, selectors without an `=` or `=~` m
 rejects the empty value (e.g. `{job!=""}` selects nearly everything), log group lists that are
 empty, longer than 50, duplicated, or contain `*` or ARNs, CloudWatch bindings with no or more
 than 10 dimensions,
-signals whose form does not match the metrics backend, and an admin token shorter than 32
-characters. Credentials written into the file instead of referenced (tokens, passwords, the
-admin token, credential headers, URL passwords, a password in `server.database`) only warn:
-`check` prints the warnings and `serve` logs them. The full example is `sonda.example.yaml`.
+signals whose form does not match the metrics backend, data bindings without a valid project
+slug or with `deny_fields` not in `Entity.field` or `*.field` form, a Contember source without
+a bearer key, and an admin token shorter than 32 characters. Credentials written into the file
+instead of referenced (tokens, passwords, the admin token, credential headers, URL passwords, a
+password in `server.database`) only warn: `check` prints the warnings and `serve` logs them.
+The full example is `sonda.example.yaml`.
 
 ## 3. Components
 
@@ -236,6 +249,7 @@ internal/policy    query scoping per dialect; backend-neutral filters; time rang
 internal/logql     LogQL lexer that finds and rewrites stream selectors
 internal/traceql   TraceQL lexer that finds and rewrites spanset filters
 internal/insights  Logs Insights lexer that splits a query into stages
+internal/gqlguard  GraphQL checker for the Contember Content API: normalizes and validates a query against the role's schema
 internal/telemetry backend-neutral records: log streams, spans, trace summaries, structured metric queries
 internal/issuer    OIDC issuer of Sonda's own identity: signing keys, discovery, JWKS, tokens
 internal/connector
@@ -250,7 +264,8 @@ internal/connector
   kubernetes/      Kubernetes API client: pods, ReplicaSets, events
   alerting/        Prometheus-compatible alerts API client (Prometheus, Mimir, Grafana)
   vercel/          Vercel Observability events client: runtime logs
-internal/query     use cases: overview, errors, logs, metrics, traces, workloads, alerts, results; one backend per source type
+  contember/       Contember Content API client (introspection and checked queries)
+internal/query     use cases: overview, errors, logs, metrics, traces, workloads, alerts, data, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles, signing keys
@@ -263,8 +278,8 @@ Boundaries:
 - `httpapi` parses requests into `api` types and calls `query`. Nothing reaches a connector
   without a scope from `authz`.
 - `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
-  `TraceScope`, `WorkloadScope` and `AlertScope` (a `SelectorScope`), which resolve to one typed variant per source type (`SelectorScope`,
-  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`). Connector methods
+  `TraceScope`, `WorkloadScope`, `AlertScope` (a `SelectorScope`) and `DataScope`, which resolve to one typed variant per source type (`SelectorScope`,
+  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`, `ContemberScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
 - `policy` is the only code that turns agent text into upstream query text.
@@ -296,6 +311,11 @@ type traceBackend interface {
 	search(ctx, r api.TimeRange, f policy.TraceFilter, limit int) (traceSearch, error)
 	query(ctx, r api.TimeRange, text string, limit int) (traceSearch, error)
 	trace(ctx, r api.TimeRange, id string) (traceFetch, error)
+}
+type dataBackend interface {
+	dialect() api.Dialect
+	schema(ctx) (*gqlguard.Schema, gqlguard.Rules, error)
+	query(ctx, text string, variables json.RawMessage) (dataQuery, error)
 }
 ```
 
@@ -330,9 +350,10 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
 | `vercel` | `POST /v1/observability/events` (event `vercel.log`) | `policy` Vercel query, `VercelScope` |
+| `contember` | `POST /content/{project}/{stage}`: introspection, and queries without variables | `ContemberScope`, `policy.ContemberGraphQL` |
 
 - `policy` values (`policy.LogQL`, `policy.PromQL`, `policy.TraceQL`, the Cloudflare query,
-  the Insights query, the CloudWatch metric, the Vercel query) can only be constructed by `policy`. A connector
+  the Insights query, the CloudWatch metric, the Vercel query, `policy.ContemberGraphQL`) can only be constructed by `policy`. A connector
   cannot receive raw agent text.
 - Metadata calls are scoped. Loki and Prometheus pass the scope selector as `match[]` /
   `query`; without it, an agent would see names of other services. Loki labels come from the
@@ -494,6 +515,7 @@ Every native query is scoped by `policy`, in the way that the dialect allows:
 | Logs Insights | Allowlist of commands, `SOURCE` and other cross-group words rejected; log groups set by the API parameter | Post-check with `ListLogGroupsForQuery` |
 | Cloudflare metric | No agent query text: the server builds GraphQL from a catalog | Post-check of every row's script or resource ID |
 | CloudWatch metric | No agent query text: `MetricStat` with the scope's namespace and dimensions | — |
+| Contember GraphQL | Project and stage in the URL, set by the server; the key's read-only role; `internal/gqlguard` rules | The normalized query is parsed and validated again, and the rules run on that text |
 
 Anything a scoping lexer or decoder does not understand is rejected with `invalid_query`, so
 scoping fails closed.
@@ -697,6 +719,84 @@ Neither accepts query text from the agent:
   metrics across namespaces and dimensions, and no dimension can be added to them to restrict
   the result.
 
+### Contember GraphQL
+
+The `data` capability reads a Contember project through the Content API. The scope has two
+layers, each of which must hold on its own:
+
+1. **The API key's role.** The operator creates a Contember role with read permissions only,
+   using ACL predicates to hide rows, and an API key for it. Contember generates the GraphQL
+   schema per role, so such a key has no `Mutation` type at all. The project and stage come
+   from the binding and are part of the URL; a query cannot name another project.
+2. **Sonda.** The key's schema is introspected and cached for 10 minutes per source, project
+   and stage. This shows only what the key may do in the bound project stage, so the key
+   should have no other membership. Every load fails if the schema can write: any `Mutation` field, or the
+   `validateCreate…`/`validateUpdate…` queries that Contember adds only for roles that may
+   write. The binding then serves nothing. `serve` checks every binding in parallel, each
+   with its own 15-second timeout, and refuses to start with such a key; an unreachable
+   engine only logs a warning, and its first request repeats the check;
+   `sonda-server check --online` reports it. Allow-listed entities and `deny_fields` that
+   do not exist in the schema are treated the same way, at startup and on every request,
+   because a typo in `deny_fields` would leave the field readable.
+
+`internal/gqlguard` loads the introspection result into `gqlparser` (MIT) and checks each
+query in three steps:
+
+- **Parse and validate** the agent's document against the schema. Exactly one `query`
+  operation; no directives anywhere (`@include`/`@skip` would make counting ambiguous). The
+  fields written in the document are counted against `data_max_fields` before validation,
+  because its overlapping-fields step is quadratic.
+- **Normalize.** Fragments are inlined (Contember has no interfaces or unions, so a fragment
+  applies only to its own type), aliases kept, the operation name dropped. Variables are
+  inlined as literals, typed by their definitions; a missing nullable variable removes its
+  argument, as GraphQL does. The field budget is checked while printing, so nested fragment
+  spreads cannot blow up. The upstream request carries no variables.
+- **Re-validate and check rules** on the normalized text, which is exactly what runs and what
+  the audit log records:
+  - Root fields only `get<E>`, `list<E>` and `paginate<E>` of entities. `transaction`,
+    `schema`, `_info` and introspection (`__schema`, `__type`) are rejected; agents read the
+    schema from `data/schema`. `_meta` is rejected on every entity.
+  - The allow list applies at every level: root fields, relations, `paginate<Rel>`, the
+    has-many-to-has-one reducers (`<rel>By…`), and relations inside inputs.
+  - A denied field is rejected in a selection and as a key of `filter`, `by` and `orderBy`,
+    through relations and `and`/`or`/`not`. Otherwise filtering, unique lookups, ordering or
+    `totalCount` could test the values of a hidden field. A denied relation also blocks its
+    derived fields and its other side (`Article.author` denies `Author.articles`), read from
+    the relation model of the Content API's `schema` root field, which Sonda loads with the
+    schema. Without that model no query runs.
+  - Every `list<E>` and has-many relation needs `limit`, every paginate field `first`, as an
+    integer after variables are inlined. Rows are budgeted: each list adds the product of the
+    limits on its path, and the sum must stay within `data_max_rows` (default 500). Single
+    rows (`get`, has-one, `<rel>By`) are not counted; the response reports the budget used as
+    `data.rows`. Aliases
+    count like any other field. `offset`/`skip` are at most 10,000.
+  - Depth counts nested entity fields and the relation hops of `filter`, `by` and `orderBy`
+    from the entity they apply to, since each hop is a join (default 5); the hops also count as
+    fields. Fields count after inlining (default 200). The query plus variables, and the
+    normalized query again, are limited to `data_max_query_bytes` (16 KB): inlined variables and
+    fragments can make it much larger.
+  - Arguments outside `filter`, `by`, `orderBy`, `limit`, `first`, `offset` and `skip` are
+    rejected, so a future Contember argument fails closed.
+
+A fuzz target (`go test ./internal/gqlguard -fuzz FuzzCheck`) checks that every accepted
+query is accepted again after normalization and normalizes to the same text. Integration
+tests run against a Contember engine with a read-only and a write role when
+`SONDA_TEST_CONTEMBER_URL` is set (`dev/seed-contember.sh`).
+
+Responses: `data` holds the GraphQL data object with every string redacted, keys in query
+order; response `extensions` are dropped, because a Contember engine in debug mode puts SQL
+with bound values there. GraphQL errors of the agent's query become `invalid_query`; errors of
+Sonda's own schema queries, and Contember 401/403/404 and 5xx, become `upstream_error`. There are no result handles: a response above `max_response_bytes`
+fails with `limit_exceeded`, and the agent lowers its limits. Sonda reads at most twice
+`max_response_bytes` of the upstream response before failing, so a wide query does not make
+it read and redact megabytes it would refuse anyway. `meta.untrusted` marks
+`data.data`. The normalized query is returned once, in `data.query`; the source entry
+carries only the kind.
+
+Not covered: cost inside one row budget (a `contains` filter on a large unindexed table, a
+`totalCount` over millions of rows). Sonda's `query_timeout` cancels its own request, not
+the database query, so set a statement timeout on the engine's database role.
+
 ### Backend-neutral search
 
 `logs search` and `traces search` take structured filters that each backend translates. Values
@@ -784,8 +884,10 @@ it ignores line filters, and it needs the pattern ingester enabled.
 
 ### Metadata cache
 
-Only Prometheus metric metadata (type and help of all metrics) is cached, in memory per source,
-for 10 minutes. It holds no per-service data: names come from the scoped call on every request.
+Prometheus metric metadata (type and help of all metrics) is cached in memory per source for
+10 minutes. It holds no per-service data: names come from the scoped call on every request.
+Contember schemas are cached in memory per source, project and stage for 10 minutes; each
+refresh repeats the write check.
 
 ## 8. Traces
 
@@ -833,7 +935,7 @@ OTel `service.name` for Tempo, the script name for Cloudflare and the project sl
 ## 9. HTTP API
 
 All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) or `since`
-(duration, e.g. `1h`). Environment: `env`.
+(duration, e.g. `1h`); data endpoints take none. Environment: `env`.
 
 | Endpoint | Capability | Purpose |
 |---|---|---|
@@ -854,6 +956,8 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `/v1/services/{s}/traces/{id}` | `traces` | Span tree; spans of services without a grant are stubs |
 | `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states, last termination) and rollouts now; events of the service's objects in range |
 | `/v1/services/{s}/alerts` | `alerts` | Active alerts now: name, state, active since, value, labels, annotations. Takes only `env`. |
+| `/v1/services/{s}/data/schema` | `data` | Entities, fields with types, relations with target and cardinality, unique fields and enums, without denied fields and entities. `entity` (repeatable) selects entities; a schema above 3/4 of `max_response_bytes` comes back as entity names only, marked `truncated` |
+| `POST /v1/services/{s}/data/query` | `data` | `{env, query, variables}` → normalized query, row bound and redacted data |
 | `/v1/results/{id}` | owner | Page through or drill into a stored result |
 
 `metrics/query` takes the query as a string in every dialect; for Cloudflare and CloudWatch it
@@ -886,6 +990,8 @@ sonda trace engine-api 4bf92f3577b34da6a3ce929d0e0e4736 --since 6h
 sonda workloads engine-api -e production --since 1h
 sonda alerts engine-api -e production
 sonda result res_8KcW --group 2
+sonda data schema shop-api -e production
+sonda data query shop-api '{ listOrder(limit: 5, filter: {status: {eq: failed}}) { id createdAt } }'
 ```
 
 - Config: `SONDA_URL` and `SONDA_TOKEN`, or `~/.config/sonda/config.yaml` written by `sonda auth login` with mode 0600; a wider mode is reported, and in a terminal Sonda offers to fix it.
@@ -904,7 +1010,8 @@ Served under `/admin` only when `admin.token` is set. Pages:
 
 - **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
   Grants are a matrix of project environments × capabilities, with the services each row
-  covers; a cell no service of the project configures cannot be selected. A new or rotated token is shown once; only its SHA-256 is stored.
+  covers; a cell no service of the project configures cannot be selected. `data` has its own
+  matrix of service environments with a data binding. A new or rotated token is shown once; only its SHA-256 is stored.
 - **Services**: the configured projects, services, environments and capabilities with the
   source and scope each reads, how many identities hold a grant there, and the sources with
   type, scheme and host, auth type and header names. Credentials, header values, URL paths and
@@ -928,10 +1035,11 @@ Rules:
 ## 12. Security
 
 - Read-only: connectors implement only read calls. Provider tokens use read-only scopes or
-  Viewer roles.
+  Viewer roles. The Contember connector sends POST requests, but only introspection and
+  queries checked by `gqlguard`, with a key that Sonda verified cannot write.
 - Provider credentials never appear in responses, errors or audit records.
-- Limits: time range, lines, response bytes, timeout, concurrency, rate, and scanned bytes for
-  Logs Insights.
+- Limits: time range, lines, response bytes, timeout, concurrency, rate, scanned bytes for
+  Logs Insights, and rows, depth, fields and query size for data.
 - Audit log in the database records every request, including denied ones and admin actions.
 - The admin UI can create tokens for any configured service. Protect the admin token like a
   provider credential and expose `/admin` only on a trusted network.
@@ -940,6 +1048,11 @@ Rules:
   lines, Sentry titles, messages and tags, and span names, attributes, events and status
   messages; `redact` in the config adds patterns. Redaction reduces risk; it is not a
   guarantee. Stack frames and metric labels are not redacted.
+- **Application data** is often personal. The role's ACL decides which rows and fields leave
+  Contember; `deny_fields` narrows further. Query results and the audited query text (with
+  inlined filter values) can contain personal data, and so can the audit log in the
+  database. `check --online` warns about readable fields with names like `email` or `phone`.
+  Redaction covers secrets, not personal data.
 - Expensive expressions inside a query (e.g. `rate(x[90d])`) are not detected by Sonda. Upstream
   limits in Prometheus, Loki and Tempo remain necessary.
 - Source headers such as `X-Scope-OrgID` are sent as configured. Sonda does not check their
@@ -996,6 +1109,9 @@ Rules:
 - Editing sources, projects and services at runtime.
 - Identity stores other than SQLite and Postgres (the `identities.Store` interface allows adding them).
 - Automated rotation of the signing key of Sonda's identity.
+- Data: mutations, the Contember System API (event history, a candidate for "who changed this
+  record") and Tenant API, other databases (the `dataBackend` interface allows adding them),
+  per-identity data limits, and result handles for data.
 
 ## 14. Open questions
 

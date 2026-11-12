@@ -229,6 +229,7 @@ sources:
   aws: { type: aws, region: eu-west-1 }
   tempo: { type: tempo, url: "http://tempo" }
   tempo-eu: { type: tempo, url: "http://tempo-eu" }
+  content: { type: contember, url: "http://engine", auth: { type: bearer, token: t } }
 projects:
   worker:
     services:
@@ -247,6 +248,7 @@ projects:
             logs: { source: aws, log_groups: [/aws/rds/db] }
             metrics: { source: aws, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: db } }
             traces: { source: tempo, service: db }
+            data: { source: content, project: db, entities: [Order], deny_fields: ["*.email", Order.note] }
   api:
     services:
       api:
@@ -452,5 +454,74 @@ func TestEnvironmentBackends(t *testing.T) {
 	}
 	if !maps.Equal(envs[0].Backends, want) {
 		t.Errorf("backends = %+v", envs[0].Backends)
+	}
+}
+
+func TestDataGrantNamesOneService(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+sources:
+  content: { type: contember, url: "http://engine", auth: { type: bearer, token: t } }
+projects:
+  shop:
+    services:
+      shop-api:
+        environments:
+          production:
+            data: { source: content, project: shop }
+      shop-admin:
+        environments:
+          production:
+            data: { source: content, project: shop-admin }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, nil)
+
+	project := &Identity{Name: "agent", Grants: []identities.Grant{{Project: "shop", Environment: "production", Capability: api.CapabilityData}}}
+	for _, svc := range []string{"shop-api", "shop-admin"} {
+		if _, err := a.DataScope(project, svc, ""); !hasCode(err, api.CodeNotFound) {
+			t.Errorf("a project data grant opened %s: %v", svc, err)
+		}
+	}
+
+	service := &Identity{Name: "agent", Grants: []identities.Grant{{Service: "shop-api", Environment: "production", Capability: api.CapabilityData}}}
+	if _, err := a.DataScope(service, "shop-api", "production"); err != nil {
+		t.Errorf("granted service: %v", err)
+	}
+	if _, err := a.DataScope(service, "shop-admin", "production"); !hasCode(err, api.CodeNotFound) {
+		t.Errorf("a data grant of shop-api opened shop-admin: %v", err)
+	}
+	if got := a.Services(service); len(got) != 1 || got[0].Name != "shop-api" {
+		t.Errorf("services = %v", got)
+	}
+}
+
+func TestDataScope(t *testing.T) {
+	a := backendsAuthorizer(t)
+	identity := grantAll("db")
+	if _, err := a.DataScope(identity, "db", ""); !hasCode(err, api.CodeNotFound) {
+		t.Fatalf("data without a data grant: %v", err)
+	}
+	identity.Grants = append(identity.Grants, identities.Grant{Service: "db", Environment: "production", Capability: api.CapabilityData})
+	scope, err := a.DataScope(identity, "db", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, ok := scope.Contember()
+	if !ok || cs.Project() != "db" || cs.Stage() != "live" || scope.Dialect() != api.DialectContemberGraphQL {
+		t.Fatalf("contember scope = %+v, %v", cs, ok)
+	}
+	if !cs.Denied("Customer", "email") || !cs.Denied("Order", "note") || cs.Denied("Customer", "note") {
+		t.Error("deny_fields not applied")
+	}
+	entities := cs.Entities()
+	entities[0] = "Changed"
+	if cs.Entities()[0] != "Order" {
+		t.Error("Entities is not a copy")
+	}
+	backends := a.Environments(identity, a.cfg.Services["db"])[0].Backends
+	if backends[api.CapabilityData] != (api.BackendInfo{Source: "contember", Dialect: api.DialectContemberGraphQL}) {
+		t.Errorf("data backend = %+v", backends[api.CapabilityData])
 	}
 }

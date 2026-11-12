@@ -40,8 +40,8 @@ func newRootCmd() *cobra.Command {
 	a := &app{}
 	root := &cobra.Command{
 		Use:           "sonda",
-		Short:         "Query production telemetry through a Sonda server",
-		Long:          "Query production telemetry through a Sonda server.\n\nOutput is JSON when stdout is not a terminal, compact text otherwise.\nLog in with sonda auth login, or set SONDA_URL and SONDA_TOKEN.",
+		Short:         "Query production telemetry and data through a Sonda server",
+		Long:          "Query production telemetry and data through a Sonda server.\n\nOutput is JSON when stdout is not a terminal, compact text otherwise.\nLog in with sonda auth login, or set SONDA_URL and SONDA_TOKEN.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -55,6 +55,7 @@ func newRootCmd() *cobra.Command {
 		a.metricsCmd(), a.signalCmd(),
 		a.tracesCmd(), a.traceCmd(),
 		a.workloadsCmd(), a.alertsCmd(),
+		a.dataCmd(),
 		a.authCmd(),
 	)
 	return root

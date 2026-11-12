@@ -50,11 +50,15 @@ func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
 
 // identityForm is the model of the create and edit page.
 type identityForm struct {
-	IsNew        bool
-	Name         string
+	IsNew bool
+	Name  string
+	// Capabilities are the columns of Matrix, granted per project.
 	Capabilities []api.Capability
 	Matrix       []matrixRow
-	Limits       []limitField
+	// ServiceMatrix holds the per-service capabilities, one row per service environment.
+	ServiceCapabilities []api.Capability
+	ServiceMatrix       []serviceMatrixRow
+	Limits              []limitField
 	// Stale lists stored grants for projects or capabilities that are no longer configured.
 	Stale []string
 }
@@ -65,6 +69,13 @@ type matrixRow struct {
 	// Services are the services of the project that have the environment, which a grant covers.
 	Services []string
 	Cells    []matrixCell
+}
+
+type serviceMatrixRow struct {
+	Project     string
+	Service     string
+	Environment string
+	Cells       []matrixCell
 }
 
 type matrixCell struct {
@@ -203,7 +214,14 @@ func (h *Handler) renderFormError(w http.ResponseWriter, form identityForm, err 
 }
 
 func (h *Handler) identityForm(isNew bool, name string, grants []identities.Grant, limits identities.LimitOverrides) identityForm {
-	form := identityForm{IsNew: isNew, Name: name, Capabilities: api.Capabilities, Limits: h.limitFields(limits)}
+	form := identityForm{IsNew: isNew, Name: name, Limits: h.limitFields(limits)}
+	for _, capability := range api.Capabilities {
+		if identities.PerService(capability) {
+			form.ServiceCapabilities = append(form.ServiceCapabilities, capability)
+		} else {
+			form.Capabilities = append(form.Capabilities, capability)
+		}
+	}
 	for _, projectName := range sortedKeys(h.cfg.Projects) {
 		project := h.cfg.Projects[projectName]
 		servicesByEnv := map[string][]string{}
@@ -214,7 +232,7 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 		}
 		for _, envName := range sortedKeys(servicesByEnv) {
 			row := matrixRow{Project: projectName, Environment: envName, Services: servicesByEnv[envName]}
-			for _, capability := range api.Capabilities {
+			for _, capability := range form.Capabilities {
 				grant := identities.Grant{Project: projectName, Environment: envName, Capability: capability}
 				row.Cells = append(row.Cells, matrixCell{
 					Available: project.Offers(envName, capability),
@@ -224,10 +242,26 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 			}
 			form.Matrix = append(form.Matrix, row)
 		}
+		for _, svcName := range sortedKeys(project.Services) {
+			svc := project.Services[svcName]
+			for _, envName := range sortedKeys(svc.Environments) {
+				row := serviceMatrixRow{Project: projectName, Service: svcName, Environment: envName}
+				offered := false
+				for _, capability := range form.ServiceCapabilities {
+					grant := identities.Grant{Service: svcName, Environment: envName, Capability: capability}
+					available := slices.Contains(svc.Environments[envName].Capabilities(), capability)
+					offered = offered || available
+					row.Cells = append(row.Cells, matrixCell{Available: available, Checked: slices.Contains(grants, grant), Value: grantValue(grant)})
+				}
+				if offered {
+					form.ServiceMatrix = append(form.ServiceMatrix, row)
+				}
+			}
+		}
 	}
 	for _, g := range grants {
 		if !h.configured(g) {
-			form.Stale = append(form.Stale, fmt.Sprintf("%s / %s: %s", g.Project, g.Environment, g.Capability))
+			form.Stale = append(form.Stale, fmt.Sprintf("%s / %s: %s", grantTarget(g), g.Environment, g.Capability))
 		}
 	}
 	return form
@@ -265,14 +299,39 @@ func (h *Handler) parseIdentityForm(r *http.Request) ([]identities.Grant, identi
 // configured reports whether the grant points at a configured capability. Grants for
 // anything else would have no effect.
 func (h *Handler) configured(g identities.Grant) bool {
+	if !g.Valid() {
+		return false
+	}
+	if identities.PerService(g.Capability) {
+		svc, ok := h.cfg.Services[g.Service]
+		if !ok {
+			return false
+		}
+		env, ok := svc.Environments[g.Environment]
+		return ok && slices.Contains(env.Capabilities(), g.Capability)
+	}
 	project, ok := h.cfg.Projects[g.Project]
 	return ok && project.Offers(g.Environment, g.Capability)
 }
 
-// grantValue encodes a grant as a checkbox value. Project and environment names come from
-// the config and may contain any character, so they are URL-encoded.
+// grantTarget names what a grant covers: its project, or its service for a per-service grant.
+func grantTarget(g identities.Grant) string {
+	if g.Service != "" {
+		return "service " + g.Service
+	}
+	return g.Project
+}
+
+// grantValue encodes a grant as a checkbox value. Names come from the config and may contain
+// any character, so they are URL-encoded.
 func grantValue(g identities.Grant) string {
-	return url.Values{"p": {g.Project}, "e": {g.Environment}, "c": {string(g.Capability)}}.Encode()
+	v := url.Values{"e": {g.Environment}, "c": {string(g.Capability)}}
+	if g.Service != "" {
+		v.Set("s", g.Service)
+	} else {
+		v.Set("p", g.Project)
+	}
+	return v.Encode()
 }
 
 func parseGrantValue(value string) (identities.Grant, error) {
@@ -284,7 +343,7 @@ func parseGrantValue(value string) (identities.Grant, error) {
 	if err != nil {
 		return identities.Grant{}, err
 	}
-	return identities.Grant{Project: q.Get("p"), Environment: q.Get("e"), Capability: capability}, nil
+	return identities.Grant{Project: q.Get("p"), Service: q.Get("s"), Environment: q.Get("e"), Capability: capability}, nil
 }
 
 func (h *Handler) limitFields(o identities.LimitOverrides) []limitField {
@@ -345,7 +404,7 @@ func formatInt(n *int) string {
 func summarizeGrants(grants []identities.Grant) []grantSummary {
 	byTarget := map[string][]string{}
 	for _, g := range grants {
-		target := g.Project + " / " + g.Environment
+		target := grantTarget(g) + " / " + g.Environment
 		byTarget[target] = append(byTarget[target], string(g.Capability))
 	}
 	summary := make([]grantSummary, 0, len(byTarget))

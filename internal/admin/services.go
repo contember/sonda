@@ -37,8 +37,8 @@ type serviceView struct {
 type environmentView struct {
 	Name     string
 	Bindings []bindingView
-	// Identities is the number of identities with a grant of the project that covers a
-	// capability configured here.
+	// Identities is the number of identities with a grant that covers a capability configured
+	// here: a project grant, or a service grant for a per-service capability.
 	Identities int
 }
 
@@ -88,7 +88,11 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 				env := svc.Environments[envName]
 				holders := map[string]bool{}
 				for _, capability := range env.Capabilities() {
-					for name := range granted[identities.Grant{Project: projectName, Environment: envName, Capability: capability}] {
+					grant := identities.Grant{Project: projectName, Environment: envName, Capability: capability}
+					if identities.PerService(capability) {
+						grant = identities.Grant{Service: svcName, Environment: envName, Capability: capability}
+					}
+					for name := range granted[grant] {
 						holders[name] = true
 					}
 				}
@@ -188,6 +192,16 @@ func bindings(env *config.Environment) []bindingView {
 	}
 	if b := env.Alerts; b != nil {
 		add("alerts", b.Source, b.Selector.Text)
+	}
+	if b := env.Data; b != nil {
+		scope := "project " + b.Project + ", stage " + b.Stage
+		if len(b.Entities) > 0 {
+			scope += ", entities " + strings.Join(b.Entities, ", ")
+		}
+		if len(b.DenyFields) > 0 {
+			scope += ", denied " + strings.Join(b.DenyFields, ", ")
+		}
+		add("data", b.Source, scope)
 	}
 	return out
 }

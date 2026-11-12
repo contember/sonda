@@ -20,6 +20,7 @@ func TestBindingsCoverEveryVariant(t *testing.T) {
 		Traces:    &config.TraceBinding{Source: sentry, Project: "api", Environment: "production"},
 		Workloads: &config.WorkloadBinding{Source: src("k8s", config.SourceKubernetes), Namespace: "api", Labels: map[string]string{"app": "api"}},
 		Alerts:    &config.AlertBinding{Source: src("prom", config.SourcePrometheus), Selector: &config.Selector{Text: `{service="api"}`}},
+		Data:      &config.DataBinding{Source: src("content", config.SourceContember), Project: "shop", Stage: "live", Entities: []string{"Order"}, DenyFields: []string{"*.email"}},
 	}
 	var got []string
 	for _, b := range bindings(env) {
@@ -32,6 +33,7 @@ func TestBindingsCoverEveryVariant(t *testing.T) {
 		"traces: project api, environment production",
 		"workloads: namespace api, app=api",
 		`alerts: {service="api"}`,
+		"data: project shop, stage live, entities Order, denied *.email",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("bindings:\n got %q\nwant %q", got, want)

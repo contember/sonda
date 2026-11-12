@@ -33,7 +33,7 @@ func (s *Store) getIdentity(ctx context.Context, query string, arg any) (identit
 	if err != nil {
 		return identities.Identity{}, err
 	}
-	grants, err := s.grants(ctx, `SELECT identity, project, environment, capability FROM identity_grants WHERE identity = $1`, identity.Name)
+	grants, err := s.grants(ctx, `WHERE identity = $1`, identity.Name)
 	identity.Grants = grants[identity.Name]
 	return identity, err
 }
@@ -56,7 +56,7 @@ func (s *Store) List(ctx context.Context) ([]identities.Identity, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	grants, err := s.grants(ctx, `SELECT identity, project, environment, capability FROM identity_grants`)
+	grants, err := s.grants(ctx, ``)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +94,10 @@ func (s *Store) Update(ctx context.Context, name string, grants []identities.Gra
 		if err := requireOneRow(result, err); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM identity_grants WHERE identity = $1`, name); err != nil {
-			return err
+		for _, table := range []string{"identity_grants", "identity_service_grants"} {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE identity = $1`, name); err != nil {
+				return err
+			}
 		}
 		return insertGrants(ctx, tx, name, grants)
 	})
@@ -115,33 +117,46 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	return requireOneRow(result, err)
 }
 
-func (s *Store) grants(ctx context.Context, query string, args ...any) (map[string][]identities.Grant, error) {
-	rows, err := s.db.QueryContext(ctx, query+` ORDER BY project, environment, capability`, args...)
+// grants reads project and service grants; where filters both tables the same way.
+func (s *Store) grants(ctx context.Context, where string, args ...any) (map[string][]identities.Grant, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT identity, project, '' AS service, environment, capability FROM identity_grants `+where+`
+		 UNION ALL
+		 SELECT identity, '' AS project, service, environment, capability FROM identity_service_grants `+where+`
+		 ORDER BY project, service, environment, capability`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	byIdentity := map[string][]identities.Grant{}
 	for rows.Next() {
-		var identity, project, environment, capability string
-		if err := rows.Scan(&identity, &project, &environment, &capability); err != nil {
+		var identity, project, service, environment, capability string
+		if err := rows.Scan(&identity, &project, &service, &environment, &capability); err != nil {
 			return nil, err
 		}
 		parsed, err := api.ParseCapability(capability)
 		if err != nil {
 			return nil, fmt.Errorf("stored grant of identity %q: %w", identity, err)
 		}
-		byIdentity[identity] = append(byIdentity[identity], identities.Grant{Project: project, Environment: environment, Capability: parsed})
+		byIdentity[identity] = append(byIdentity[identity], identities.Grant{Project: project, Service: service, Environment: environment, Capability: parsed})
 	}
 	return byIdentity, rows.Err()
 }
 
 func insertGrants(ctx context.Context, tx *sql.Tx, name string, grants []identities.Grant) error {
 	for _, g := range grants {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO identity_grants (identity, project, environment, capability) VALUES ($1, $2, $3, $4)
-			 ON CONFLICT DO NOTHING`,
-			name, g.Project, g.Environment, string(g.Capability)); err != nil {
+		if !g.Valid() {
+			return fmt.Errorf("invalid grant %+v of identity %q: a %s grant names a project or a service, not both", g, name, g.Capability)
+		}
+		query := `INSERT INTO identity_grants (identity, project, environment, capability) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`
+		target := g.Project
+		if identities.PerService(g.Capability) {
+			query = `INSERT INTO identity_service_grants (identity, service, environment, capability) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`
+			target = g.Service
+		}
+		if _, err := tx.ExecContext(ctx, query, name, target, g.Environment, string(g.Capability)); err != nil {
 			return err
 		}
 	}

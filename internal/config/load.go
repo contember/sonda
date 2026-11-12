@@ -101,12 +101,21 @@ type rawEnvironment struct {
 	Traces    *rawBinding         `yaml:"traces"`
 	Workloads *rawWorkloadBinding `yaml:"workloads"`
 	Alerts    *rawBinding         `yaml:"alerts"`
+	Data      *rawDataBinding     `yaml:"data"`
 }
 
 type rawWorkloadBinding struct {
 	Source    string            `yaml:"source"`
 	Namespace string            `yaml:"namespace"`
 	Labels    map[string]string `yaml:"labels"`
+}
+
+type rawDataBinding struct {
+	Source     string   `yaml:"source"`
+	Project    string   `yaml:"project"`
+	Stage      string   `yaml:"stage"`
+	Entities   []string `yaml:"entities"`
+	DenyFields []string `yaml:"deny_fields"`
 }
 
 type rawErrorBinding struct {
@@ -151,6 +160,10 @@ type rawLimits struct {
 	QueryTimeout      string `yaml:"query_timeout"`
 	ConcurrentQueries *int   `yaml:"concurrent_queries"`
 	RequestsPerMinute *int   `yaml:"requests_per_minute"`
+	DataMaxRows       *int   `yaml:"data_max_rows"`
+	DataMaxDepth      *int   `yaml:"data_max_depth"`
+	DataMaxFields     *int   `yaml:"data_max_fields"`
+	DataMaxQueryBytes *int   `yaml:"data_max_query_bytes"`
 }
 
 func LoadFile(path string) (*Config, error) {
@@ -321,6 +334,10 @@ func (v *validator) source(name string, raw rawSource) *Source {
 			v.fail("%s.org is required for sentry sources", path)
 		}
 	case SourceLoki, SourcePrometheus, SourceTempo, SourceGrafana:
+	case SourceContember:
+		if raw.Auth.Type != string(AuthBearer) {
+			v.fail("%s.auth must be bearer for contember sources (a Contember API key)", path)
+		}
 	case SourceCloudflare:
 		if src.URL == "" {
 			src.URL = defaultCloudflareURL
@@ -353,7 +370,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 			v.fail("%s.auth must be bearer or eks for kubernetes sources with a url", path)
 		}
 	default:
-		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes, grafana or vercel, got %q", path, raw.Type)
+		v.fail("%s.type must be sentry, loki, prometheus, tempo, cloudflare, aws, kubernetes, grafana, vercel or contember, got %q", path, raw.Type)
 	}
 	v.url(path+".url", src.URL)
 	if raw.CAFile != "" {
@@ -563,8 +580,11 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 		if re.Alerts != nil {
 			env.Alerts = v.alertBinding(envPath+".alerts", *re.Alerts, sources)
 		}
+		if re.Data != nil {
+			env.Data = v.dataBinding(envPath+".data", *re.Data, sources)
+		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs, metrics, traces, workloads or alerts is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics, traces, workloads, alerts or data is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
@@ -819,6 +839,38 @@ func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources
 	return &WorkloadBinding{Source: src, Namespace: raw.Namespace, Labels: raw.Labels}
 }
 
+var (
+	contemberSlug   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	graphQLName     = regexp.MustCompile(`^[_A-Za-z][_0-9A-Za-z]*$`)
+	denyFieldFormat = regexp.MustCompile(`^(\*|[_A-Za-z][_0-9A-Za-z]*)\.[_A-Za-z][_0-9A-Za-z]*$`)
+)
+
+func (v *validator) dataBinding(path string, raw rawDataBinding, sources map[string]*Source) *DataBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceContember)
+	binding := &DataBinding{Source: src, Project: raw.Project, Stage: valueOr(raw.Stage, "live")}
+	if !contemberSlug.MatchString(binding.Project) {
+		v.fail("%s.project must be a Contember project slug, got %q", path, raw.Project)
+	}
+	if !contemberSlug.MatchString(binding.Stage) {
+		v.fail("%s.stage must be a Contember stage slug, got %q", path, raw.Stage)
+	}
+	seen := map[string]bool{}
+	for _, name := range raw.Entities {
+		if !graphQLName.MatchString(name) || seen[name] {
+			v.fail("%s.entities: %q must be a unique entity name", path, name)
+		}
+		seen[name] = true
+	}
+	for _, field := range raw.DenyFields {
+		if !denyFieldFormat.MatchString(field) {
+			v.fail("%s.deny_fields: %q must be Entity.field or *.field", path, field)
+		}
+	}
+	binding.Entities = raw.Entities
+	binding.DenyFields = raw.DenyFields
+	return binding
+}
+
 // bindingFields reports set fields that do not belong to the binding variant of the source.
 func (v *validator) bindingFields(path string, raw rawBinding, src *Source, allowed ...string) {
 	fields := []struct {
@@ -1003,6 +1055,10 @@ func (v *validator) limits(path string, raw rawLimits, base Limits) Limits {
 	v.positive(path+".max_response_bytes", raw.MaxResponseBytes, &limits.MaxResponseBytes)
 	v.positive(path+".concurrent_queries", raw.ConcurrentQueries, &limits.ConcurrentQueries)
 	v.positive(path+".requests_per_minute", raw.RequestsPerMinute, &limits.RequestsPerMinute)
+	v.positive(path+".data_max_rows", raw.DataMaxRows, &limits.DataMaxRows)
+	v.positive(path+".data_max_depth", raw.DataMaxDepth, &limits.DataMaxDepth)
+	v.positive(path+".data_max_fields", raw.DataMaxFields, &limits.DataMaxFields)
+	v.positive(path+".data_max_query_bytes", raw.DataMaxQueryBytes, &limits.DataMaxQueryBytes)
 	return limits
 }
 

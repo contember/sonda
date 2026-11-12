@@ -16,13 +16,16 @@ require (
 	github.com/prometheus/common v0.71.0
 	github.com/prometheus/prometheus v0.315.0
 	github.com/spf13/cobra v1.10.2
+	github.com/vektah/gqlparser/v2 v2.5.64
 	go.yaml.in/yaml/v3 v3.0.5
+	golang.org/x/sync v0.23.0
 	golang.org/x/term v0.47.0
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.60.1
 )
 
 require (
+	github.com/agnivade/levenshtein v1.2.2 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.22 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.3 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.6 // indirect
@@ -53,7 +56,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

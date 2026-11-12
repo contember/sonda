@@ -16,6 +16,21 @@ func TestIdentityLifecycle(t *testing.T) {
 	forEachDatabase(t, testIdentityLifecycle)
 }
 
+func TestRefusesGrantsOfTheWrongKind(t *testing.T) {
+	forEachDatabase(t, func(t *testing.T, st *Store) {
+		for _, g := range []identities.Grant{
+			{Project: "api", Environment: "production", Capability: api.CapabilityData},
+			{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
+			{Project: "api", Service: "api", Environment: "production", Capability: api.CapabilityData},
+		} {
+			id := identities.Identity{Name: "agent", TokenSHA256: sha256.Sum256([]byte("one")), Grants: []identities.Grant{g}}
+			if err := st.Create(context.Background(), id); err == nil {
+				t.Errorf("stored %+v", g)
+			}
+		}
+	})
+}
+
 func testIdentityLifecycle(t *testing.T, st *Store) {
 	ctx := context.Background()
 	maxRange := 48 * time.Hour
@@ -26,6 +41,7 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 		Grants: []identities.Grant{
 			{Project: "api", Environment: "production", Capability: api.CapabilityLogs},
 			{Project: "api", Environment: "production", Capability: api.CapabilityErrors},
+			{Service: "api-db", Environment: "production", Capability: api.CapabilityData},
 		},
 		Limits:    identities.LimitOverrides{MaxRange: &maxRange, MaxLogLines: &lines},
 		CreatedAt: time.UnixMilli(1_700_000_000_000),
@@ -38,8 +54,9 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Grants come back sorted by service, environment and capability.
-	created.Grants[0], created.Grants[1] = created.Grants[1], created.Grants[0]
+	// Grants come back sorted by project, service, environment and capability; service grants
+	// have no project and come first.
+	created.Grants = []identities.Grant{created.Grants[2], created.Grants[1], created.Grants[0]}
 	if !reflect.DeepEqual(found, created) {
 		t.Errorf("found %+v\nwant  %+v", found, created)
 	}
@@ -55,7 +72,11 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 		t.Errorf("duplicate token: %v", err)
 	}
 
-	newGrants := []identities.Grant{{Project: "billing", Environment: "staging", Capability: api.CapabilityMetrics}}
+	// Update replaces the grants of both kinds.
+	newGrants := []identities.Grant{
+		{Service: "billing-db", Environment: "staging", Capability: api.CapabilityData},
+		{Project: "billing", Environment: "staging", Capability: api.CapabilityMetrics},
+	}
 	if err := st.Update(ctx, "agent", newGrants, identities.LimitOverrides{}); err != nil {
 		t.Fatal(err)
 	}
