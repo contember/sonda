@@ -135,8 +135,12 @@ func (a *Authorizer) environments(identity *Identity, svc *config.Service) map[s
 	return result
 }
 
-// granted reports whether the identity holds the grant of the service's project.
+// granted reports whether the identity holds the grant of the service's project, or of the
+// service itself for a per-service capability.
 func (a *Authorizer) granted(identity *Identity, svc *config.Service, env string, capability api.Capability) bool {
+	if identities.PerService(capability) {
+		return slices.Contains(identity.Grants, identities.Grant{Service: svc.Name, Environment: env, Capability: capability})
+	}
 	return slices.Contains(identity.Grants, identities.Grant{Project: svc.Project.Name, Environment: env, Capability: capability})
 }
 

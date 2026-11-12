@@ -131,7 +131,9 @@ parts that matter for security:
 - **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `alerts`,
   `data`) in project environments, e.g. `logs` in `production` of project `engine`. A grant covers every
   service of the project that configures the capability in that environment, including services
-  added to the project later. `data` is never implied by the others. Anything else is not found. A `traces` grant also decides which spans of a
+  added to the project later. `data` is the exception: it is granted per service, e.g. `data` in
+  `production` of service `shop-api`, and opens only that service's data binding; it is never
+  implied by the others. Anything else is not found. A `traces` grant also decides which spans of a
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
@@ -287,9 +289,9 @@ because a typo would leave a field readable. `sonda-server check --online` repor
 warns about readable fields that look like personal data. Query results and the audited query text
 can contain personal data; treat the audit log accordingly.
 
-An older Sonda does not know the `data` grant. Before rolling back to a version without it,
-revoke `data` in the admin UI (or `DELETE FROM identity_grants WHERE capability = 'data'`);
-otherwise identities that hold it cannot sign in and the identity list fails to load.
+`data` grants are stored in their own table, `identity_service_grants`. An older Sonda ignores
+that table, so a rollback needs no cleanup: identities keep their other grants, and the `data`
+grants apply again after the upgrade.
 
 ## Admin UI
 

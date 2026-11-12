@@ -189,7 +189,7 @@ projects:
   # source's API key must have one membership, in a role that can only read; Sonda refuses
   # a key that can write in the bound project stage. entities is an optional allow list, deny_fields hides fields also from filters;
   # a denied relation is hidden on both sides.
-  # A data grant covers every service of the project with a data binding.
+  # A data grant names one service: it opens this service's data, not the project's.
   # shop:
   #   services:
   #     shop-api:

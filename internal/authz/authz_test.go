@@ -457,13 +457,53 @@ func TestEnvironmentBackends(t *testing.T) {
 	}
 }
 
+func TestDataGrantNamesOneService(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+sources:
+  content: { type: contember, url: "http://engine", auth: { type: bearer, token: t } }
+projects:
+  shop:
+    services:
+      shop-api:
+        environments:
+          production:
+            data: { source: content, project: shop }
+      shop-admin:
+        environments:
+          production:
+            data: { source: content, project: shop-admin }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, nil)
+
+	project := &Identity{Name: "agent", Grants: []identities.Grant{{Project: "shop", Environment: "production", Capability: api.CapabilityData}}}
+	for _, svc := range []string{"shop-api", "shop-admin"} {
+		if _, err := a.DataScope(project, svc, ""); !hasCode(err, api.CodeNotFound) {
+			t.Errorf("a project data grant opened %s: %v", svc, err)
+		}
+	}
+
+	service := &Identity{Name: "agent", Grants: []identities.Grant{{Service: "shop-api", Environment: "production", Capability: api.CapabilityData}}}
+	if _, err := a.DataScope(service, "shop-api", "production"); err != nil {
+		t.Errorf("granted service: %v", err)
+	}
+	if _, err := a.DataScope(service, "shop-admin", "production"); !hasCode(err, api.CodeNotFound) {
+		t.Errorf("a data grant of shop-api opened shop-admin: %v", err)
+	}
+	if got := a.Services(service); len(got) != 1 || got[0].Name != "shop-api" {
+		t.Errorf("services = %v", got)
+	}
+}
+
 func TestDataScope(t *testing.T) {
 	a := backendsAuthorizer(t)
 	identity := grantAll("db")
 	if _, err := a.DataScope(identity, "db", ""); !hasCode(err, api.CodeNotFound) {
 		t.Fatalf("data without a data grant: %v", err)
 	}
-	identity.Grants = append(identity.Grants, identities.Grant{Project: "db", Environment: "production", Capability: api.CapabilityData})
+	identity.Grants = append(identity.Grants, identities.Grant{Service: "db", Environment: "production", Capability: api.CapabilityData})
 	scope, err := a.DataScope(identity, "db", "")
 	if err != nil {
 		t.Fatal(err)

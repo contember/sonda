@@ -105,7 +105,7 @@ projects:
 	limits.MaxResponseBytes = maxResponseBytes
 	identity := &authz.Identity{
 		Name:   "agent",
-		Grants: []identities.Grant{{Project: "blog", Environment: "production", Capability: api.CapabilityData}},
+		Grants: []identities.Grant{{Service: "blog", Environment: "production", Capability: api.CapabilityData}},
 		Limits: limits,
 	}
 	return s, identity

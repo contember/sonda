@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,6 +45,7 @@ sources:
     url: "https://sentry.example.com/tenant-path?key=url-secret"
     auth: { type: bearer, token: "${SENTRY_TOKEN}" }
     headers: { X-Scope-OrgID: header-secret }
+  content: { type: contember, url: "http://engine:4000", auth: { type: bearer, token: t } }
 projects:
   api:
     services:
@@ -50,6 +53,7 @@ projects:
         environments:
           production:
             logs: { source: loki, selector: '{app="api"}' }
+            data: { source: content, project: api }
       worker:
         environments:
           production:
@@ -203,6 +207,7 @@ func TestRejectsInvalidInput(t *testing.T) {
 		want string
 	}{
 		{"unconfigured capability", url.Values{"name": {"agent"}, "grant": {unconfigured}}, "invalid grant"},
+		{"project data grant", url.Values{"name": {"agent"}, "grant": {grantValue(identities.Grant{Project: "api", Environment: "production", Capability: api.CapabilityData})}}, "invalid grant"},
 		{"no grant", url.Values{"name": {"agent"}}, "select at least one grant"},
 		{"bad name", url.Values{"name": {"Agent!"}, "grant": {logsGrant()}}, "name must be"},
 		{"bad limit", url.Values{"name": {"agent"}, "grant": {logsGrant()}, "max_range": {"soon"}}, "invalid duration"},
@@ -217,6 +222,40 @@ func TestRejectsInvalidInput(t *testing.T) {
 	}
 	if list, _ := env.store.List(context.Background()); len(list) != 0 {
 		t.Errorf("identities created from invalid input: %+v", list)
+	}
+}
+
+func TestDataIsGrantedPerService(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	resp, err := env.client.Get(env.server.URL + "/admin/identities/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	form := string(raw)
+	data := grantValue(identities.Grant{Service: "api", Environment: "production", Capability: api.CapabilityData})
+	if !strings.Contains(form, `value="`+template.HTMLEscapeString(data)+`"`) {
+		t.Fatalf("form lacks the service data grant %q:\n%s", data, form)
+	}
+	if strings.Contains(form, `value="`+template.HTMLEscapeString(grantValue(identities.Grant{Project: "api", Environment: "production", Capability: api.CapabilityData}))+`"`) {
+		t.Error("form offers a project data grant")
+	}
+	status, body := env.post(t, "/admin/identities", url.Values{"name": {"agent"}, "grant": {data}})
+	if status != http.StatusOK {
+		t.Fatalf("create: status %d\n%s", status, body)
+	}
+	identity, err := env.authz.Authenticate(context.Background(), shownToken(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []identities.Grant{{Service: "api", Environment: "production", Capability: api.CapabilityData}}
+	if !slices.Equal(identity.Grants, want) {
+		t.Errorf("grants = %+v", identity.Grants)
+	}
+	if _, err := env.authz.DataScope(identity, "api", "production"); err != nil {
+		t.Errorf("granted data scope: %v", err)
 	}
 }
 

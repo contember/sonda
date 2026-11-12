@@ -51,7 +51,7 @@ projects:
 	}
 	identity := &authz.Identity{
 		Name:   "agent",
-		Grants: []identities.Grant{{Project: "blog", Environment: "production", Capability: api.CapabilityData}},
+		Grants: []identities.Grant{{Service: "blog", Environment: "production", Capability: api.CapabilityData}},
 		Limits: cfg.Limits,
 	}
 	return s, identity

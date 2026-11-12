@@ -25,6 +25,7 @@ authorization, and returns compact, evidence-carrying responses.
 | Vercel logs | The Observability events API that the Vercel CLI's `logs` command uses | The documented per-deployment runtime logs stream | The stream covers one deployment and has no filter or range. The events API is not in Vercel's public OpenAPI spec, so it may change without notice. |
 | Cloudflare metrics | Fixed catalog over GraphQL Analytics datasets of Workers, Durable Objects, D1, Queues and R2, query built by the server | Agent-written GraphQL | GraphQL can name any script, resource or account. The server sets `accountTag`, the bound script or resource IDs and the range as variables. |
 | Data queries | Agent-written GraphQL for the Contember Content API, checked by `internal/gqlguard` against the API key's own schema | A fixed catalog of queries; plain passthrough | Questions about data are open-ended. Unlike Cloudflare GraphQL, the scope is not in the query: the server sets the project and stage in the URL, and the key's role decides what exists. The guard adds limits and field rules on top. |
+| Data grant scope | Per service environment, stored in `identity_service_grants` | Per project environment, like the other capabilities | Data is the most sensitive capability; a project can hold services whose data an agent must not read. A separate table needs no migration, and an older Sonda ignores it. |
 | Write protection for data | A read-only Contember role, plus Sonda refusing any key whose schema can write | Trust the configuration | Two independent layers. A key with write rights would make every guard bug a write bug. |
 | Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
 | Sentry traces | The spans dataset of the organization events endpoint, with the project and environment as parameters and a post-check of every span | Project-scoped endpoints | Sentry has no project-scoped span search. The parameters are ANDed with the query text, and the post-check catches a filter that Sentry did not apply. |
@@ -124,7 +125,8 @@ Identity ──< Grant (projects × environments × capabilities)
   that configures the capability in that environment, including services added to the project
   later. It never covers another environment or capability. Capabilities: `errors`, `logs`,
   `metrics`, `traces`, `workloads`, `alerts`, `data`. `data` is never implied by another
-  grant; a `data` grant covers every service of the project with a data binding. A native query requires the same capability as the structured tool for
+  grant, and it is granted per service instead of per project: a `data` grant names one
+  service environment and opens only its data binding. A native query requires the same capability as the structured tool for
   that signal type. A `traces` grant also makes the project's spans visible in full inside
   traces fetched through other services (section 8). A grant for a project or capability that
   is no longer configured has no effect.

@@ -224,8 +224,8 @@ projects:
 				{Project: "api", Environment: "production", Capability: api.CapabilityWorkloads},
 				{Project: "api", Environment: "production", Capability: api.CapabilityAlerts},
 				{Project: "worker", Environment: "production", Capability: api.CapabilityLogs},
-				{Project: "shop", Environment: "production", Capability: api.CapabilityData},
-				{Project: "shopw", Environment: "production", Capability: api.CapabilityData},
+				{Service: "shop", Environment: "production", Capability: api.CapabilityData},
+				{Service: "shopw", Environment: "production", Capability: api.CapabilityData},
 			},
 		},
 		{

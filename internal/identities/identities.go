@@ -29,11 +29,27 @@ type Identity struct {
 	CreatedAt   time.Time
 }
 
-// Grant allows one capability in one environment of every service of a project.
+// Grant allows one capability in one environment of every service of a project. A grant of a
+// per-service capability names one Service instead and leaves Project empty.
 type Grant struct {
 	Project     string
+	Service     string
 	Environment string
 	Capability  api.Capability
+}
+
+// PerService reports whether the capability is granted per service instead of per project.
+// Data is the most sensitive capability, so a grant opens the data of one named service only.
+func PerService(capability api.Capability) bool {
+	return capability == api.CapabilityData
+}
+
+// Valid reports whether the grant names a project or a service as its capability requires.
+func (g Grant) Valid() bool {
+	if PerService(g.Capability) {
+		return g.Service != "" && g.Project == ""
+	}
+	return g.Project != "" && g.Service == ""
 }
 
 // LimitOverrides replace the server limits where set.
