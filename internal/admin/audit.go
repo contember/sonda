@@ -44,5 +44,5 @@ func (h *Handler) auditLog(w http.ResponseWriter, r *http.Request) {
 	if len(records) == auditPageSize {
 		page.OlderID = records[len(records)-1].ID
 	}
-	h.render(w, http.StatusOK, "audit", view{Title: "Audit log", Nav: "audit", Data: page})
+	h.render(w, http.StatusOK, "audit", view{Title: "Audit log", Lead: "Every agent request and admin action, newest first.", Nav: "audit", Data: page})
 }

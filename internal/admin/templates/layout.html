@@ -10,21 +10,46 @@
 <script src="/admin/static/htmx.min.js" defer></script>
 </head>
 <body hx-boost="true">
-<header>
-  <a class="brand" href="/admin/identities">Sonda</a>
-  {{if .Nav}}
-  <nav>
-    <a href="/admin/identities"{{if eq .Nav "identities"}} aria-current="page"{{end}}>Identities</a>
-    <a href="/admin/audit"{{if eq .Nav "audit"}} aria-current="page"{{end}}>Audit log</a>
-  </nav>
-  <form method="post" action="/admin/logout"><button type="submit" class="link">Sign out</button></form>
-  {{end}}
-</header>
-<main>
-<h1>{{.Title}}</h1>
-{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
-{{template "content" .Data}}
+{{if .Nav}}
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/admin/identities"><span class="brand-mark" aria-hidden="true">S</span>Sonda</a>
+    <nav aria-label="Main">
+      <ul class="nav">
+        <li><a href="/admin/identities"{{if eq .Nav "identities"}} aria-current="page"{{end}}>Identities</a></li>
+        <li><a href="/admin/services"{{if eq .Nav "services"}} aria-current="page"{{end}}>Services</a></li>
+        <li><a href="/admin/audit"{{if eq .Nav "audit"}} aria-current="page"{{end}}>Audit log</a></li>
+      </ul>
+    </nav>
+    <form class="sidebar-footer" method="post" action="/admin/logout"><button type="submit" class="button button-ghost button-sm">Sign out</button></form>
+  </aside>
+  <main class="main">
+    <header class="page-header">
+      <div>
+        {{if .Back}}<a class="back" href="{{.Back}}">← Back</a>{{end}}
+        <h1>{{.Title}}</h1>
+        {{if .Lead}}<p class="lead">{{.Lead}}</p>{{end}}
+      </div>
+      {{block "actions" .Data}}{{end}}
+    </header>
+    {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+    {{template "content" .Data}}
+  </main>
+</div>
+{{else}}
+<main class="login">
+  <div class="login-card">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">S</span>Sonda</div>
+    <div class="card">
+      <div class="card-header"><h1 class="card-title">{{.Title}}</h1></div>
+      <div class="card-body">
+        {{if .Error}}<div class="alert alert-danger" role="alert">{{.Error}}</div>{{end}}
+        {{template "content" .Data}}
+      </div>
+    </div>
+  </div>
 </main>
+{{end}}
 </body>
 </html>
 {{end}}
