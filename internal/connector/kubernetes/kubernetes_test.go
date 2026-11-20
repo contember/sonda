@@ -50,7 +50,7 @@ func (f *fakeAPI) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 // setup serves f over TLS and returns a client that trusts only the server's certificate.
-func setup(t *testing.T, f *fakeAPI) (*Client, authz.WorkloadScope) {
+func setup(t *testing.T, f *fakeAPI) (*Client, authz.KubernetesScope) {
 	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(f.handler))
 	t.Cleanup(server.Close)
@@ -75,9 +75,13 @@ projects:
 	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
 		{Project: "engine", Environment: "production", Capability: api.CapabilityWorkloads},
 	}}
-	scope, err := authz.New(cfg, nil).WorkloadScope(identity, "engine", "production")
+	workloads, err := authz.New(cfg, nil).WorkloadScope(identity, "engine", "production")
 	if err != nil {
 		t.Fatal(err)
+	}
+	scope, ok := workloads.Kubernetes()
+	if !ok {
+		t.Fatal("not a Kubernetes scope")
 	}
 	return New(cfg.Sources["k8s"], upstream.HTTPClient(cfg.Sources["k8s"], nil)), scope
 }
@@ -131,19 +135,25 @@ func TestPostCheck(t *testing.T) {
 		name string
 		path string
 		item string
-		list func(*Client, authz.WorkloadScope) error
+		list func(*Client, authz.KubernetesScope) error
 	}{
 		{"pod without a scope label", "/api/v1/namespaces/engine/pods", `{"metadata":{"name":"x","namespace":"engine","labels":{"app":"engine-api"}}}`,
-			func(c *Client, s authz.WorkloadScope) error { _, _, err := c.Pods(context.Background(), s); return err }},
+			func(c *Client, s authz.KubernetesScope) error {
+				_, _, err := c.Pods(context.Background(), s)
+				return err
+			}},
 		{"pod of another namespace", "/api/v1/namespaces/engine/pods", `{"metadata":{"name":"x","namespace":"other","labels":{"app":"engine-api","tier":"web"}}}`,
-			func(c *Client, s authz.WorkloadScope) error { _, _, err := c.Pods(context.Background(), s); return err }},
+			func(c *Client, s authz.KubernetesScope) error {
+				_, _, err := c.Pods(context.Background(), s)
+				return err
+			}},
 		{"replica set with another value", "/apis/apps/v1/namespaces/engine/replicasets", `{"metadata":{"name":"x","namespace":"engine","labels":{"app":"engine-api","tier":"worker"}}}`,
-			func(c *Client, s authz.WorkloadScope) error {
+			func(c *Client, s authz.KubernetesScope) error {
 				_, _, err := c.ReplicaSets(context.Background(), s)
 				return err
 			}},
 		{"event of another namespace", "/api/v1/namespaces/engine/events", `{"metadata":{"name":"e","namespace":"other"}}`,
-			func(c *Client, s authz.WorkloadScope) error {
+			func(c *Client, s authz.KubernetesScope) error {
 				_, _, err := c.Events(context.Background(), s)
 				return err
 			}},

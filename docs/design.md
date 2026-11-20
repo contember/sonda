@@ -4,8 +4,8 @@ Status: implemented (v1). Deviations found during implementation are folded into
 
 Sonda is a self-hostable, read-only gateway that gives AI agents one credential and one
 service-centric interface to production telemetry in Sentry, Loki, Prometheus, Cloudflare
-Workers Observability, AWS CloudWatch and Grafana Tempo, and to application data in
-Contember projects.
+Workers Observability, AWS CloudWatch and Grafana Tempo, to what runs in Kubernetes and ECS
+and the scans of its images in ECR, and to application data in Contember projects.
 It stores no telemetry and no data. It queries sources on demand, enforces per-service
 authorization, and returns compact, evidence-carrying responses.
 
@@ -44,6 +44,8 @@ authorization, and returns compact, evidence-carrying responses.
 | Kubernetes access | Plain HTTP against the API server: pods and ReplicaSets by namespace and label selector, events of the namespace filtered by object | `client-go`; Kubernetes events through Loki | Three list calls need no client library. Events are not in the log pipelines we run, and the API keeps them for about an hour. |
 | Kubernetes scope | A namespace and exact labels (`key: value`) | A free label selector | Exact labels are both the upstream selector and an exact post-check, and cannot express "everything except". |
 | Workloads capability | A new capability `workloads` | Serve pods under `logs` or `metrics` | Pod state, rollouts and events are a separate kind of data; a grant should name it. |
+| ECS workloads | The running tasks of one ECS service under `workloads`, in the same response shape: tasks as pods, deployments as rollouts, service events as events | A capability of its own; a binding of a whole cluster | The question is the same (what runs now, did a rollout fail), so a grant should not depend on the platform. A service is the unit ECS deploys, and naming it keeps the scope as narrow as Kubernetes labels. |
+| Images capability | A new capability `images`: the images of the service's ECR repositories with the registry's own scan, read with `DescribeImages` and `DescribeImageScanFindings` | Pulling and scanning images in Sonda; listing every repository of an account | Sonda stays read-only and stateless and needs no pull rights. Repositories are bound per service like log groups, so a grant cannot reach an image the service does not own. |
 | Alerts source | The Prometheus-compatible alerts API of Prometheus/Mimir (`/api/v1/alerts`) or of Grafana-managed alerting (a `grafana` source) | Alertmanager; Grafana's own alerting API | One response shape for both. Alertmanager holds only firing alerts, after grouping and silencing. |
 | Alerts scope | A Prometheus `selector` over the alert labels, applied by Sonda | Upstream filtering | The alerts API has no label filter; it returns every alert the token can read, and Sonda drops those that do not match. |
 | Alerts capability | A new capability `alerts` | Serve alerts under `metrics` | Alerts may come from another source than metrics (Grafana), and a grant should name it. |
@@ -66,7 +68,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `loki` | Loki | logs | `url`, auth, headers |
   | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics, alerts | `url`, auth, headers |
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
-  | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
+  | `aws` | CloudWatch Logs Insights, CloudWatch metrics, ECS, ECR | logs, metrics, workloads, images | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster) |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
@@ -107,6 +109,8 @@ Identity ──< Grant (projects × environments × capabilities)
   | `traces` | `cloudflare` | `script` |
   | `traces` | `sentry` | `project` + Sentry `environment` |
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty) |
+  | `workloads` | `aws` | ECS `cluster` + `service`: names, not ARNs |
+  | `images` | `aws` | `repositories`: 1 to 20 unique ECR repository names in the source's region, not ARNs or URIs |
   | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
   | `data` | `contember` | `project` + `stage` (default `live`), optional `entities` allow list and `deny_fields` (`Entity.field` or `*.field`) |
 
@@ -124,7 +128,7 @@ Identity ──< Grant (projects × environments × capabilities)
 - **Grant**: one `(project, environment, capability)`. It covers every service of the project
   that configures the capability in that environment, including services added to the project
   later. It never covers another environment or capability. Capabilities: `errors`, `logs`,
-  `metrics`, `traces`, `workloads`, `alerts`, `data`. `data` is never implied by another
+  `metrics`, `traces`, `workloads`, `images`, `alerts`, `data`. `data` is never implied by another
   grant, and it is granted per service instead of per project: a `data` grant names one
   service environment and opens only its data binding. A native query requires the same capability as the structured tool for
   that signal type. A `traces` grant also makes the project's spans visible in full inside
@@ -259,13 +263,13 @@ internal/connector
   loki/            Loki HTTP API client
   prometheus/      Prometheus HTTP API client (prometheus/client_golang)
   cloudflare/      Workers Observability and GraphQL Analytics client
-  aws/             CloudWatch Logs and CloudWatch client (aws-sdk-go-v2)
+  aws/             CloudWatch Logs, CloudWatch, ECS and ECR client (aws-sdk-go-v2)
   tempo/           Tempo HTTP API client
   kubernetes/      Kubernetes API client: pods, ReplicaSets, events
   alerting/        Prometheus-compatible alerts API client (Prometheus, Mimir, Grafana)
   vercel/          Vercel Observability events client: runtime logs
   contember/       Contember Content API client (introspection and checked queries)
-internal/query     use cases: overview, errors, logs, metrics, traces, workloads, alerts, data, results; one backend per source type
+internal/query     use cases: overview, errors, logs, metrics, traces, workloads, images, alerts, data, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles, signing keys
@@ -278,8 +282,8 @@ Boundaries:
 - `httpapi` parses requests into `api` types and calls `query`. Nothing reaches a connector
   without a scope from `authz`.
 - `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
-  `TraceScope`, `WorkloadScope`, `AlertScope` (a `SelectorScope`) and `DataScope`, which resolve to one typed variant per source type (`SelectorScope`,
-  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`, `ContemberScope`). Connector methods
+  `TraceScope`, `WorkloadScope`, `ImageScope`, `AlertScope` (a `SelectorScope`) and `DataScope`, which resolve to one typed variant per source type (`SelectorScope`,
+  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`, `KubernetesScope`, `ECSScope`, `ContemberScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
 - `policy` is the only code that turns agent text into upstream query text.
@@ -311,6 +315,9 @@ type traceBackend interface {
 	search(ctx, r api.TimeRange, f policy.TraceFilter, limit int) (traceSearch, error)
 	query(ctx, r api.TimeRange, text string, limit int) (traceSearch, error)
 	trace(ctx, r api.TimeRange, id string) (traceFetch, error)
+}
+type workloadBackend interface {
+	workloads(ctx, r api.TimeRange) (workloadState, error)
 }
 type dataBackend interface {
 	dialect() api.Dialect
@@ -347,7 +354,7 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | Client | Upstream calls | Input |
 |---|---|---|
 | `cloudflare` | `POST /accounts/{account}/workers/observability/telemetry/query` (events, calculations, invocations, traces), `…/telemetry/keys`, `POST /graphql` | `policy` Cloudflare query, `CloudflareScope`, `telemetry.CloudflareMetricQuery` |
-| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope` |
+| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. ECS: `DescribeServices`, `ListTasks`, `DescribeTasks`. ECR: `DescribeImages`, `DescribeImageScanFindings`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope`, `ECSScope`, `ImageScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
 | `vercel` | `POST /v1/observability/events` (event `vercel.log`) | `policy` Vercel query, `VercelScope` |
 | `contember` | `POST /content/{project}/{stage}`: introspection, and queries without variables | `ContemberScope`, `policy.ContemberGraphQL` |
@@ -426,10 +433,72 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   longer exist; the fixed suffix length keeps out pods of a longer ReplicaSet name.
 - Pods and rollouts are the current state, whatever the range; events are those overlapping
   the range. Kubernetes keeps events for about an hour by default (`--event-ttl`).
+- Each container reports `digest`, the manifest digest of the image it runs, taken from
+  `status.containerStatuses[].imageID` (`<repository>@sha256:…`, with or without the
+  `docker-pullable://` prefix). It is the image the node actually pulled, so pods of one tag can
+  report different digests. An `imageID` without a repository is the ID of the image
+  configuration, which no registry knows, and yields no digest.
 - In-cluster: without `url`, the source connects to `KUBERNETES_SERVICE_HOST`/`PORT`, trusts the
   mounted `ca.crt` and reads the mounted service account token on every request, because the
   kubelet rotates it. With `url`, a bearer token is required (a service account token secret
   works for EKS) and `ca_file` names the cluster CA.
+
+### ECS specifics
+
+- A `workloads` binding on an `aws` source names an ECS `cluster` and `service`. Sonda calls
+  `DescribeServices` for the service, and `ListTasks` with `serviceName` and
+  `desiredStatus: RUNNING` (100 per page, at most 500 tasks, then `truncated`), then
+  `DescribeTasks` in chunks of 100. Every task must belong to the scope's cluster and have the
+  group `service:<service>`, and the described service must be the scope's; anything else
+  fails the request with `internal`.
+- The response has the shape of Kubernetes workloads:
+  - a running task is a pod: its ID, `lastStatus` as the phase, ready when running and not
+    `UNHEALTHY`, the deployment that started it as its owner, and its containers with image,
+    `imageDigest` (`digest`), state and reason;
+  - a deployment of the service is a rollout: its ID, the task definition `family:revision` as
+    the revision, desired and running counts and the rollout state. The images of a rollout
+    are in the task definition, which Sonda does not read, so `images` is empty;
+  - a service event is an event of `Service/<service>` in the range. ECS keeps the last 100
+    events and gives them no severity, so all are `Normal` and do not count as warnings.
+- A container that is still starting (`PENDING`, `PROVISIONING`, `ACTIVATING`) is `waiting`
+  without a reason, like Kubernetes' `ContainerCreating`, so a normal deploy is not reported
+  as a problem.
+- Stopped tasks are not listed: the capability answers what runs now.
+- Verified with services on the ECS deployment controller. Services on the `CODE_DEPLOY` or
+  `EXTERNAL` controllers were not tested; if their tasks carry another group, the post-check
+  fails the request with `internal` rather than returning them.
+- The source link opens the service's tasks in the ECS console.
+
+### ECR images specifics
+
+- An `images` binding names ECR repositories in the account and region of its `aws` source.
+  A request may name one of them (`repository`); without it, all of them are read.
+- `GET …/images` lists images, newest push first, at most `limit` (default 20, maximum 100):
+  - with `digest` (repeatable, `sha256:` + 64 hex characters, duplicates dropped),
+    `DescribeImages` with the digest in each repository, at most 50 lookups per request. A
+    digest a repository does not hold is left out, so the answer to "which running digests are
+    in our registry" is the list itself;
+  - without `digest`, `DescribeImages` pages through each repository. ECR returns images in no
+    order, so Sonda reads up to 5000 per repository and sorts them; a longer repository makes
+    the response `truncated`, and the newest image may be missing from it.
+- `GET …/images/{digest}` finds the image in the repositories and adds the findings of its
+  latest scan (`DescribeImageScanFindings`, up to 5000), most severe first, at most `limit`
+  (default 100, maximum 1000). Basic scanning reports a finding per vulnerability with the
+  package name and version; enhanced scanning (Amazon Inspector) one per vulnerable package,
+  with the fixed version; an enhanced finding that is not about a package keeps its title as
+  the ID, so the list matches the counts. An image that was never scanned has no `scan` and
+  no findings.
+- A bound repository that does not exist fails the request with `upstream_error`, also when
+  another repository would answer: it is a configuration error, and a silent gap would read
+  as "not in the registry".
+- Each image carries its tags, push time, size, last recorded pull and the scan summary: status,
+  completion time, the update time of the vulnerability database and counts per severity.
+  **A basic scan runs once, at push** (unless the repository rescans), so its findings are as
+  old as `sourceUpdatedAt` and newer vulnerabilities do not appear. Matching image contents
+  against current advisories is outside Sonda.
+- Every returned image and scan must belong to the requested repository and digest; anything
+  else fails the request with `internal`. Tags and scan descriptions are marked untrusted.
+- The source link opens the repository in the ECR console.
 
 ### Sonda's identity and EKS
 
@@ -954,7 +1023,9 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `POST /v1/services/{s}/traces/search` | `traces` | Duration, error, name and attribute filters → trace summaries |
 | `POST /v1/services/{s}/traces/query` | `traces` | Native query in the backend's dialect (scoped) → trace summaries |
 | `/v1/services/{s}/traces/{id}` | `traces` | Span tree; spans of services without a grant are stubs |
-| `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states, last termination) and rollouts now; events of the service's objects in range |
+| `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states with the running image digest, last termination) and rollouts now; events of the service's objects in range |
+| `/v1/services/{s}/images` | `images` | Images of the service's repositories with tags, push time and scan summary: those with `digest` (repeatable), or the newest `limit`. Takes `env`, `repository`, `limit`; no range |
+| `/v1/services/{s}/images/{digest}` | `images` | One image with the findings of its latest scan, most severe first. Takes `env`, `repository`, `limit` |
 | `/v1/services/{s}/alerts` | `alerts` | Active alerts now: name, state, active since, value, labels, annotations. Takes only `env`. |
 | `/v1/services/{s}/data/schema` | `data` | Entities, fields with types, relations with target and cardinality, unique fields and enums, without denied fields and entities. `entity` (repeatable) selects entities; a schema above 3/4 of `max_response_bytes` comes back as entity names only, marked `truncated` |
 | `POST /v1/services/{s}/data/query` | `data` | `{env, query, variables}` → normalized query, row bound and redacted data |
@@ -988,6 +1059,8 @@ sonda traces search engine-api --since 1h --min-duration 500ms --errors
 sonda traces query engine-api '{ status = error && duration > 500ms }'
 sonda trace engine-api 4bf92f3577b34da6a3ce929d0e0e4736 --since 6h
 sonda workloads engine-api -e production --since 1h
+sonda images shop-web -e production --digest sha256:d403…
+sonda image shop-web sha256:d403… --limit 20
 sonda alerts engine-api -e production
 sonda result res_8KcW --group 2
 sonda data schema shop-api -e production
@@ -1083,10 +1156,16 @@ Rules:
   only `services/proxy` with exact `resourceNames`. The proxy forwards every path and method the
   Role allows, so the backend's own write endpoints are reachable with `create`; Sonda sends
   only read calls.
-- **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
-  `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
-  `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus
-  `kms:Decrypt` on the keys of encrypted log groups. `sts:GetCallerIdentity` needs no
+- **AWS role.** Grant Sonda only the read-only actions of the capabilities it serves from the
+  account: for logs `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`,
+  `logs:ListLogGroupsForQuery`, `logs:GetLogGroupFields`, plus `kms:Decrypt` on the keys of
+  encrypted log groups; for metrics `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`; for
+  ECS workloads `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`; for images
+  `ecr:DescribeImages`, `ecr:DescribeImageScanFindings`. No pull rights
+  (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`): Sonda never reads image contents.
+  The ECR actions can be limited to the ARNs of the bound repositories, the ECS describe
+  actions to the bound clusters, services and their tasks, and `ecs:ListTasks` with the
+  `ecs:cluster` condition key. `sts:GetCallerIdentity` needs no
   permission. With `role_arn` and `credentials: default`, the base credentials need
   `sts:AssumeRole` on that role.
   Restrict `logs:StartQuery` to the ARNs of the configured log groups. Then even a query that

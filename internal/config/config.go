@@ -173,6 +173,7 @@ type Environment struct {
 	Metrics   *MetricBinding
 	Traces    *TraceBinding
 	Workloads *WorkloadBinding
+	Images    *ImageBinding
 	Alerts    *AlertBinding
 	Data      *DataBinding
 }
@@ -274,12 +275,22 @@ func (b *TraceBinding) Dialect() api.Dialect {
 	return ""
 }
 
-// WorkloadBinding scopes a Kubernetes source to the pods and ReplicaSets in Namespace that
-// carry all of Labels.
+// WorkloadBinding scopes a workloads source to one service. Exactly one variant is set, by
+// source type: Namespace with Labels (kubernetes: the pods and ReplicaSets in Namespace that
+// carry all of Labels), Cluster with ECSService (aws: the tasks of one ECS service).
 type WorkloadBinding struct {
-	Source    *Source
-	Namespace string
-	Labels    map[string]string
+	Source     *Source
+	Namespace  string
+	Labels     map[string]string
+	Cluster    string
+	ECSService string
+}
+
+// ImageBinding scopes an AWS account to the images of the service's ECR repositories, in the
+// source's region.
+type ImageBinding struct {
+	Source       *Source
+	Repositories []string
 }
 
 // DataBinding scopes a Contember source to one project stage. Entities is an optional allow
@@ -310,6 +321,9 @@ func (e *Environment) Capabilities() []api.Capability {
 	}
 	if e.Workloads != nil {
 		caps = append(caps, api.CapabilityWorkloads)
+	}
+	if e.Images != nil {
+		caps = append(caps, api.CapabilityImages)
 	}
 	if e.Alerts != nil {
 		caps = append(caps, api.CapabilityAlerts)

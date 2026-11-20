@@ -54,7 +54,7 @@ func newRootCmd() *cobra.Command {
 		a.logsCmd(), a.resultCmd(),
 		a.metricsCmd(), a.signalCmd(),
 		a.tracesCmd(), a.traceCmd(),
-		a.workloadsCmd(), a.alertsCmd(),
+		a.workloadsCmd(), a.imagesCmd(), a.imageCmd(), a.alertsCmd(),
 		a.dataCmd(),
 		a.authCmd(),
 	)
