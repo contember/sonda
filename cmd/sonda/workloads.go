@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -66,7 +67,9 @@ func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 		fmt.Fprintln(w, "  none in range")
 	}
 	for _, e := range resp.Data.Events {
-		fmt.Fprintf(w, "  %s %s %s %s ×%d: %s\n", e.LastSeen.Format(time.RFC3339), e.Type, e.Reason, e.Object, e.Count, e.Message)
+		// ECS service events have no reason.
+		head := strings.Join(slices.DeleteFunc([]string{e.LastSeen.Format(time.RFC3339), e.Type, e.Reason, e.Object}, func(s string) bool { return s == "" }), " ")
+		fmt.Fprintf(w, "  %s ×%d: %s\n", head, e.Count, e.Message)
 	}
 }
 
