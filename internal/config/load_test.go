@@ -773,6 +773,7 @@ func TestParseKubernetesErrors(t *testing.T) {
 		{"empty label value", [2]string{"engine-api }", `"" }`}, nil, `must be a non-empty label value`},
 		{"selector syntax in value", [2]string{"engine-api }", `"a,b!=c" }`}, nil, `must be a non-empty label value`},
 		{"invalid label key", [2]string{"app.kubernetes.io/name:", `"app name":`}, nil, `"app name" is not a valid label key`},
+		{"ecs fields on kubernetes", [2]string{"namespace: engine,", "cluster: shop, namespace: engine,"}, nil, "cluster and service are not allowed for kubernetes sources"},
 		{"workloads on another source", [2]string{"type: kubernetes\n    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca, "type: tempo\n    url: https://k8s.example:6443"}, nil, "expected kubernetes"},
 	}
 	for _, tt := range tests {
@@ -784,6 +785,53 @@ func TestParseKubernetesErrors(t *testing.T) {
 			vars := map[string]string{"K8S_TOKEN": "k8s-secret"}
 			maps.Copy(vars, tt.env)
 			_, err := Parse([]byte(strings.Replace(base, tt.replace[0], tt.replace[1], 1)), env(vars))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const ecsConfig = `
+sources:
+  aws: { type: aws, region: eu-central-1 }
+projects:
+  shop:
+    services:
+      web:
+        environments:
+          production:
+            workloads: { source: aws, cluster: shop-prod, service: web }
+`
+
+func TestParseECSWorkloads(t *testing.T) {
+	cfg, err := Parse([]byte(ecsConfig), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := cfg.Services["web"].Environments["production"].Workloads
+	if w.Cluster != "shop-prod" || w.ECSService != "web" || w.Namespace != "" || w.Labels != nil {
+		t.Errorf("workloads = %+v", w)
+	}
+}
+
+func TestParseECSWorkloadsErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"no cluster", [2]string{"cluster: shop-prod, ", ""}, `cluster "" must be an ECS cluster name`},
+		{"cluster ARN", [2]string{"cluster: shop-prod", "cluster: 'arn:aws:ecs:eu-central-1:123456789012:cluster/shop-prod'"}, "must be an ECS cluster name (not an ARN)"},
+		{"no service", [2]string{", service: web", ""}, `service "" must be an ECS service name`},
+		{"kubernetes fields", [2]string{"service: web", "service: web, namespace: shop"}, "namespace and labels are not allowed for aws sources"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(ecsConfig, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			_, err := Parse([]byte(strings.Replace(ecsConfig, tt.replace[0], tt.replace[1], 1)), env(nil))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

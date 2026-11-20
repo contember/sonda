@@ -475,18 +475,53 @@ func (s VercelScope) TeamID() string            { return s.source.VercelTeamID }
 func (s VercelScope) Project() string           { return s.project }
 func (s VercelScope) VercelEnvironment() string { return s.environment }
 
-// WorkloadScope restricts a Kubernetes cluster to the objects of one namespace that carry
-// all of the service's labels.
+// WorkloadScope restricts a workloads source to one service. Exactly one of Kubernetes and
+// ECS reports true, by source type.
 type WorkloadScope struct {
 	Target
 	binding *config.WorkloadBinding
 }
 
 func (s WorkloadScope) Source() *config.Source { return s.binding.Source }
-func (s WorkloadScope) Namespace() string      { return s.binding.Namespace }
+
+func (s WorkloadScope) Kubernetes() (KubernetesScope, bool) {
+	if s.binding.Source.Type != config.SourceKubernetes {
+		return KubernetesScope{}, false
+	}
+	return KubernetesScope{Target: s.Target, binding: s.binding}, true
+}
+
+func (s WorkloadScope) ECS() (ECSScope, bool) {
+	if s.binding.Source.Type != config.SourceAWS {
+		return ECSScope{}, false
+	}
+	return ECSScope{Target: s.Target, source: s.binding.Source, cluster: s.binding.Cluster, service: s.binding.ECSService}, true
+}
+
+// KubernetesScope restricts a Kubernetes cluster to the objects of one namespace that carry
+// all of the service's labels.
+type KubernetesScope struct {
+	Target
+	binding *config.WorkloadBinding
+}
+
+func (s KubernetesScope) Source() *config.Source { return s.binding.Source }
+func (s KubernetesScope) Namespace() string      { return s.binding.Namespace }
 
 // Labels returns a copy, so callers cannot change the scope.
-func (s WorkloadScope) Labels() map[string]string { return maps.Clone(s.binding.Labels) }
+func (s KubernetesScope) Labels() map[string]string { return maps.Clone(s.binding.Labels) }
+
+// ECSScope restricts an AWS account to the tasks of one ECS service in one cluster.
+type ECSScope struct {
+	Target
+	source  *config.Source
+	cluster string
+	service string
+}
+
+func (s ECSScope) Source() *config.Source { return s.source }
+func (s ECSScope) Cluster() string        { return s.cluster }
+func (s ECSScope) ECSService() string     { return s.service }
 
 // LogGroupScope restricts an AWS account to the service's CloudWatch log groups.
 type LogGroupScope struct {

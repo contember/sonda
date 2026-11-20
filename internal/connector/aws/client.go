@@ -1,4 +1,5 @@
-// Package aws queries CloudWatch Logs Insights and CloudWatch Metrics.
+// Package aws queries CloudWatch Logs Insights, CloudWatch Metrics, the tasks of ECS services and
+// ECR images with their scan findings.
 package aws
 
 import (
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
@@ -45,6 +47,7 @@ type Client struct {
 	logs     logsAPI
 	metrics  metricsAPI
 	identity identityAPI
+	ecs      ecsAPI
 	// accountMu guards accountID, the account of Sonda's credentials once resolved.
 	accountMu sync.Mutex
 	accountID string
@@ -55,7 +58,9 @@ type Client struct {
 
 // New uses cfg from awsauth.Config, whose credentials are resolved on the first request.
 func New(src *config.Source, cfg sdkaws.Config) *Client {
-	return newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg))
+	c := newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg))
+	c.ecs = ecs.NewFromConfig(cfg)
+	return c
 }
 
 func newClient(src *config.Source, logs logsAPI, metrics metricsAPI, identity identityAPI) *Client {

@@ -14,6 +14,7 @@ an agent may see, and returns compact responses with links back to the source.
 | **Prometheus** (and Mimir, Thanos, VictoriaMetrics, Grafana Cloud) | metrics, alerts |
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
+| **AWS ECS** running tasks, deployments and service events | workloads |
 | **Grafana Tempo** | traces |
 | **Kubernetes** pods, ReplicaSets and events | workloads |
 | **Grafana** managed alerting | alerts |
@@ -93,7 +94,7 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | `sonda logs search/query/fields <svc>`, `sonda result <id>` | Logs |
 | `sonda metrics list/query <svc>`, `sonda signal <svc> <name>` | Metrics |
 | `sonda traces search/query <svc>`, `sonda trace <svc> <id>` | Traces |
-| `sonda workloads <svc>` | Kubernetes pods, rollouts and events |
+| `sonda workloads <svc>` | Kubernetes pods or ECS tasks with their image digests, rollouts and events |
 | `sonda alerts <svc>` | Active alerts of Prometheus or Grafana alerting rules |
 | `sonda data schema/query <svc>` | Application data (read-only GraphQL) |
 
@@ -122,6 +123,8 @@ parts that matter for security:
   - Sentry traces `project` and `environment`, as for errors. Sentry has no project-scoped
     span search, so Sonda checks the project and environment of every span it returns.
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
+  - ECS `cluster` and `service`: the names (not ARNs) of the cluster and the ECS service whose
+    running tasks are the service's workloads.
   - Vercel `project` and `environment`: the project ID (`prj_…`, not the name) and the Vercel
     environment, e.g. `production` or `preview`.
   - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.

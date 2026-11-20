@@ -184,11 +184,15 @@ func bindings(env *config.Environment) []bindingView {
 		}
 	}
 	if b := env.Workloads; b != nil {
-		scope := "namespace " + b.Namespace
-		for _, k := range sortedKeys(b.Labels) {
-			scope += ", " + k + "=" + b.Labels[k]
+		if b.Cluster != "" {
+			add("workloads", b.Source, "ECS cluster "+b.Cluster+", service "+b.ECSService)
+		} else {
+			scope := "namespace " + b.Namespace
+			for _, k := range sortedKeys(b.Labels) {
+				scope += ", " + k + "=" + b.Labels[k]
+			}
+			add("workloads", b.Source, scope)
 		}
-		add("workloads", b.Source, scope)
 	}
 	if b := env.Alerts; b != nil {
 		add("alerts", b.Source, b.Selector.Text)

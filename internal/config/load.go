@@ -108,6 +108,8 @@ type rawWorkloadBinding struct {
 	Source    string            `yaml:"source"`
 	Namespace string            `yaml:"namespace"`
 	Labels    map[string]string `yaml:"labels"`
+	Cluster   string            `yaml:"cluster"`
+	Service   string            `yaml:"service"`
 }
 
 type rawDataBinding struct {
@@ -818,25 +820,53 @@ var (
 	kubernetesLabelValue = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$`)
 )
 
-// workloadBinding requires a namespace and at least one exact label. Empty values are rejected,
-// so the scope never selects every object without the label.
+// ecsName is the name of an ECS cluster or service: letters, digits, hyphens and underscores.
+var ecsName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
+
+// workloadBinding validates the variant of the source type. Kubernetes requires a namespace and
+// at least one exact label; empty values are rejected, so the scope never selects every object
+// without the label. ECS requires a cluster and a service, both exact names.
 func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources map[string]*Source) *WorkloadBinding {
-	src := v.sourceRef(path+".source", raw.Source, sources, SourceKubernetes)
-	if !kubernetesNamespace.MatchString(raw.Namespace) {
-		v.fail("%s.namespace %q must be a Kubernetes namespace name", path, raw.Namespace)
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceKubernetes, SourceAWS)
+	binding := &WorkloadBinding{Source: src}
+	if src == nil {
+		return binding
 	}
-	if len(raw.Labels) == 0 {
-		v.fail("%s.labels must have at least one label, e.g. app.kubernetes.io/name: engine-api", path)
-	}
-	for key, value := range raw.Labels {
-		if !kubernetesLabelKey.MatchString(key) {
-			v.fail("%s.labels: %q is not a valid label key", path, key)
+	kubernetesFields := raw.Namespace != "" || raw.Labels != nil
+	ecsFields := raw.Cluster != "" || raw.Service != ""
+	switch src.Type {
+	case SourceKubernetes:
+		if ecsFields {
+			v.fail("%s: cluster and service are not allowed for kubernetes sources", path)
 		}
-		if !kubernetesLabelValue.MatchString(value) {
-			v.fail("%s.labels.%s: %q must be a non-empty label value", path, key, value)
+		if !kubernetesNamespace.MatchString(raw.Namespace) {
+			v.fail("%s.namespace %q must be a Kubernetes namespace name", path, raw.Namespace)
 		}
+		if len(raw.Labels) == 0 {
+			v.fail("%s.labels must have at least one label, e.g. app.kubernetes.io/name: engine-api", path)
+		}
+		for key, value := range raw.Labels {
+			if !kubernetesLabelKey.MatchString(key) {
+				v.fail("%s.labels: %q is not a valid label key", path, key)
+			}
+			if !kubernetesLabelValue.MatchString(value) {
+				v.fail("%s.labels.%s: %q must be a non-empty label value", path, key, value)
+			}
+		}
+		binding.Namespace, binding.Labels = raw.Namespace, raw.Labels
+	case SourceAWS:
+		if kubernetesFields {
+			v.fail("%s: namespace and labels are not allowed for aws sources", path)
+		}
+		if !ecsName.MatchString(raw.Cluster) {
+			v.fail("%s.cluster %q must be an ECS cluster name (not an ARN)", path, raw.Cluster)
+		}
+		if !ecsName.MatchString(raw.Service) {
+			v.fail("%s.service %q must be an ECS service name (not an ARN)", path, raw.Service)
+		}
+		binding.Cluster, binding.ECSService = raw.Cluster, raw.Service
 	}
-	return &WorkloadBinding{Source: src, Namespace: raw.Namespace, Labels: raw.Labels}
+	return binding
 }
 
 var (

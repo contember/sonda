@@ -189,7 +189,7 @@ type list[T any] struct {
 }
 
 // Pods lists the pods of the scope. Every pod is checked against the scope again.
-func (c *Client) Pods(ctx context.Context, scope authz.WorkloadScope) ([]Pod, bool, error) {
+func (c *Client) Pods(ctx context.Context, scope authz.KubernetesScope) ([]Pod, bool, error) {
 	pods, truncated, err := listAll[Pod](ctx, c, "/api/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/pods", labelSelector(scope), maxPods)
 	if err != nil {
 		return nil, false, err
@@ -203,7 +203,7 @@ func (c *Client) Pods(ctx context.Context, scope authz.WorkloadScope) ([]Pod, bo
 }
 
 // ReplicaSets lists the ReplicaSets of the scope. Every ReplicaSet is checked against the scope again.
-func (c *Client) ReplicaSets(ctx context.Context, scope authz.WorkloadScope) ([]ReplicaSet, bool, error) {
+func (c *Client) ReplicaSets(ctx context.Context, scope authz.KubernetesScope) ([]ReplicaSet, bool, error) {
 	sets, truncated, err := listAll[ReplicaSet](ctx, c, "/apis/apps/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/replicasets", labelSelector(scope), maxReplicaSets)
 	if err != nil {
 		return nil, false, err
@@ -218,7 +218,7 @@ func (c *Client) ReplicaSets(ctx context.Context, scope authz.WorkloadScope) ([]
 
 // Events lists the events of the scope's namespace. Events carry no labels, so they cannot be
 // scoped upstream; the caller keeps only events of the scope's objects.
-func (c *Client) Events(ctx context.Context, scope authz.WorkloadScope) ([]Event, bool, error) {
+func (c *Client) Events(ctx context.Context, scope authz.KubernetesScope) ([]Event, bool, error) {
 	events, truncated, err := listAll[Event](ctx, c, "/api/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/events", "", maxEvents)
 	if err != nil {
 		return nil, false, err
@@ -260,7 +260,7 @@ func listAll[T any](ctx context.Context, c *Client, path, selector string, limit
 
 // labelSelector requires every scope label. Config validation keeps keys and values free of
 // selector syntax.
-func labelSelector(scope authz.WorkloadScope) string {
+func labelSelector(scope authz.KubernetesScope) string {
 	labels := scope.Labels()
 	keys := make([]string, 0, len(labels))
 	for key := range labels {
@@ -274,7 +274,7 @@ func labelSelector(scope authz.WorkloadScope) string {
 	return strings.Join(parts, ",")
 }
 
-func inScope(scope authz.WorkloadScope, meta ObjectMeta) bool {
+func inScope(scope authz.KubernetesScope, meta ObjectMeta) bool {
 	if meta.Namespace != scope.Namespace() {
 		return false
 	}

@@ -44,6 +44,7 @@ authorization, and returns compact, evidence-carrying responses.
 | Kubernetes access | Plain HTTP against the API server: pods and ReplicaSets by namespace and label selector, events of the namespace filtered by object | `client-go`; Kubernetes events through Loki | Three list calls need no client library. Events are not in the log pipelines we run, and the API keeps them for about an hour. |
 | Kubernetes scope | A namespace and exact labels (`key: value`) | A free label selector | Exact labels are both the upstream selector and an exact post-check, and cannot express "everything except". |
 | Workloads capability | A new capability `workloads` | Serve pods under `logs` or `metrics` | Pod state, rollouts and events are a separate kind of data; a grant should name it. |
+| ECS workloads | The running tasks of one ECS service under `workloads`, in the same response shape: tasks as pods, deployments as rollouts, service events as events | A capability of its own; a binding of a whole cluster | The question is the same (what runs now, did a rollout fail), so a grant should not depend on the platform. A service is the unit ECS deploys, and naming it keeps the scope as narrow as Kubernetes labels. |
 | Alerts source | The Prometheus-compatible alerts API of Prometheus/Mimir (`/api/v1/alerts`) or of Grafana-managed alerting (a `grafana` source) | Alertmanager; Grafana's own alerting API | One response shape for both. Alertmanager holds only firing alerts, after grouping and silencing. |
 | Alerts scope | A Prometheus `selector` over the alert labels, applied by Sonda | Upstream filtering | The alerts API has no label filter; it returns every alert the token can read, and Sonda drops those that do not match. |
 | Alerts capability | A new capability `alerts` | Serve alerts under `metrics` | Alerts may come from another source than metrics (Grafana), and a grant should name it. |
@@ -66,7 +67,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `loki` | Loki | logs | `url`, auth, headers |
   | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics, alerts | `url`, auth, headers |
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
-  | `aws` | CloudWatch Logs Insights, CloudWatch metrics | logs, metrics | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
+  | `aws` | CloudWatch Logs Insights, CloudWatch metrics, ECS | logs, metrics, workloads | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster) |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
@@ -107,6 +108,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `traces` | `cloudflare` | `script` |
   | `traces` | `sentry` | `project` + Sentry `environment` |
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty) |
+  | `workloads` | `aws` | ECS `cluster` + `service`: names, not ARNs |
   | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
   | `data` | `contember` | `project` + `stage` (default `live`), optional `entities` allow list and `deny_fields` (`Entity.field` or `*.field`) |
 
@@ -259,7 +261,7 @@ internal/connector
   loki/            Loki HTTP API client
   prometheus/      Prometheus HTTP API client (prometheus/client_golang)
   cloudflare/      Workers Observability and GraphQL Analytics client
-  aws/             CloudWatch Logs and CloudWatch client (aws-sdk-go-v2)
+  aws/             CloudWatch Logs, CloudWatch and ECS client (aws-sdk-go-v2)
   tempo/           Tempo HTTP API client
   kubernetes/      Kubernetes API client: pods, ReplicaSets, events
   alerting/        Prometheus-compatible alerts API client (Prometheus, Mimir, Grafana)
@@ -279,7 +281,7 @@ Boundaries:
   without a scope from `authz`.
 - `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
   `TraceScope`, `WorkloadScope`, `AlertScope` (a `SelectorScope`) and `DataScope`, which resolve to one typed variant per source type (`SelectorScope`,
-  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`, `ContemberScope`). Connector methods
+  `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`, `KubernetesScope`, `ECSScope`, `ContemberScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
 - `policy` is the only code that turns agent text into upstream query text.
@@ -311,6 +313,9 @@ type traceBackend interface {
 	search(ctx, r api.TimeRange, f policy.TraceFilter, limit int) (traceSearch, error)
 	query(ctx, r api.TimeRange, text string, limit int) (traceSearch, error)
 	trace(ctx, r api.TimeRange, id string) (traceFetch, error)
+}
+type workloadBackend interface {
+	workloads(ctx, r api.TimeRange) (workloadState, error)
 }
 type dataBackend interface {
 	dialect() api.Dialect
@@ -347,7 +352,7 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | Client | Upstream calls | Input |
 |---|---|---|
 | `cloudflare` | `POST /accounts/{account}/workers/observability/telemetry/query` (events, calculations, invocations, traces), `…/telemetry/keys`, `POST /graphql` | `policy` Cloudflare query, `CloudflareScope`, `telemetry.CloudflareMetricQuery` |
-| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope` |
+| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. ECS: `DescribeServices`, `ListTasks`, `DescribeTasks`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope`, `ECSScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
 | `vercel` | `POST /v1/observability/events` (event `vercel.log`) | `policy` Vercel query, `VercelScope` |
 | `contember` | `POST /content/{project}/{stage}`: introspection, and queries without variables | `ContemberScope`, `policy.ContemberGraphQL` |
@@ -435,6 +440,26 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   mounted `ca.crt` and reads the mounted service account token on every request, because the
   kubelet rotates it. With `url`, a bearer token is required (a service account token secret
   works for EKS) and `ca_file` names the cluster CA.
+
+### ECS specifics
+
+- A `workloads` binding on an `aws` source names an ECS `cluster` and `service`. Sonda calls
+  `DescribeServices` for the service, and `ListTasks` with `serviceName` and
+  `desiredStatus: RUNNING` (100 per page, at most 500 tasks, then `truncated`), then
+  `DescribeTasks` in chunks of 100. Every task must belong to the scope's cluster and have the
+  group `service:<service>`, and the described service must be the scope's; anything else
+  fails the request with `internal`.
+- The response has the shape of Kubernetes workloads:
+  - a running task is a pod: its ID, `lastStatus` as the phase, ready when running and not
+    `UNHEALTHY`, the deployment that started it as its owner, and its containers with image,
+    `imageDigest` (`digest`), state and reason;
+  - a deployment of the service is a rollout: its ID, the task definition `family:revision` as
+    the revision, desired and running counts and the rollout state. The images of a rollout
+    are in the task definition, which Sonda does not read, so `images` is empty;
+  - a service event is an event of `Service/<service>` in the range. ECS keeps the last 100
+    events and gives them no severity, so all are `Normal` and do not count as warnings.
+- Stopped tasks are not listed: the capability answers what runs now.
+- The source link opens the service's tasks in the ECS console.
 
 ### Sonda's identity and EKS
 
@@ -1088,10 +1113,11 @@ Rules:
   only `services/proxy` with exact `resourceNames`. The proxy forwards every path and method the
   Role allows, so the backend's own write endpoints are reachable with `create`; Sonda sends
   only read calls.
-- **AWS role.** Grant Sonda only these read-only actions: `logs:StartQuery`,
-  `logs:GetQueryResults`, `logs:StopQuery`, `logs:ListLogGroupsForQuery`,
-  `logs:GetLogGroupFields`, `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`, plus
-  `kms:Decrypt` on the keys of encrypted log groups. `sts:GetCallerIdentity` needs no
+- **AWS role.** Grant Sonda only the read-only actions of the capabilities it serves from the
+  account: for logs `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`,
+  `logs:ListLogGroupsForQuery`, `logs:GetLogGroupFields`, plus `kms:Decrypt` on the keys of
+  encrypted log groups; for metrics `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`; for
+  ECS workloads `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`. `sts:GetCallerIdentity` needs no
   permission. With `role_arn` and `credentials: default`, the base credentials need
   `sts:AssumeRole` on that role.
   Restrict `logs:StartQuery` to the ARNs of the configured log groups. Then even a query that

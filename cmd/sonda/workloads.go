@@ -16,9 +16,10 @@ func (a *app) workloadsCmd() *cobra.Command {
 	var window windowFlags
 	cmd := &cobra.Command{
 		Use:   "workloads <service>",
-		Short: "Show the service's Kubernetes pods and rollouts now, and its events in the range",
-		Long: "Show the service's Kubernetes pods and rollouts now, and the events of its objects in the range.\n" +
-			"Kubernetes keeps events for about an hour by default.",
+		Short: "Show the service's pods or ECS tasks and rollouts now, and its events in the range",
+		Long: "Show the service's Kubernetes pods or ECS tasks and its rollouts now, with the image digest each\n" +
+			"container runs, and the events of its objects in the range.\n" +
+			"Kubernetes keeps events for about an hour by default; ECS keeps the last 100 service events.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			params, err := window.query()
@@ -56,7 +57,7 @@ func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 	fmt.Fprintln(w, "\nROLLOUTS")
 	t = table(w)
 	for _, r := range resp.Data.Rollouts {
-		fmt.Fprintf(t, "  %s\trev %s\t%s\t%d/%d ready\t%s\n", r.Name, valueOrDash(r.Revision), r.Created.Format(time.RFC3339), r.ReadyReplicas, r.Replicas, strings.Join(r.Images, ","))
+		fmt.Fprintf(t, "  %s\trev %s\t%s\t%d/%d ready\t%s\n", r.Name, valueOrDash(r.Revision), r.Created.Format(time.RFC3339), r.ReadyReplicas, r.Replicas, strings.TrimSpace(r.State+" "+strings.Join(r.Images, ",")))
 	}
 	t.Flush()
 

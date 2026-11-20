@@ -504,6 +504,8 @@ type Rollout struct {
 	Created       time.Time `json:"created"`
 	Replicas      int       `json:"replicas"`
 	ReadyReplicas int       `json:"readyReplicas"`
+	// State is the rollout state of an ECS deployment: COMPLETED, IN_PROGRESS or FAILED.
+	State string `json:"state,omitempty"`
 }
 
 type WorkloadEvent struct {
