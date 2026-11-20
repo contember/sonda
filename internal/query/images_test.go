@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestImagesValidateRequests(t *testing.T) {
 	s, identity := imagesService(t)
 	many := make([]string, 26)
 	for i := range many {
-		many[i] = digestA
+		many[i] = fmt.Sprintf("sha256:%064x", i)
 	}
 	tests := []struct {
 		name string

@@ -31,8 +31,11 @@ func TestECSTasksAsPods(t *testing.T) {
 	if len(pods) != 2 || pods[0].Name != "a1" || pods[1].Name != "b2" {
 		t.Fatalf("pods = %+v", pods)
 	}
-	if pods[0].Ready || pods[0].Containers[0].State != "waiting" || pods[0].Containers[0].Reason != "PENDING" {
+	if pods[0].Ready || pods[0].Containers[0].State != "waiting" || pods[0].Containers[0].Reason != "" {
 		t.Errorf("unhealthy pending task = %+v", pods[0])
+	}
+	if problem := podProblem(pods[0], workloadRange); problem != "not ready, running" {
+		t.Errorf("problem of a starting task = %q", problem)
 	}
 	b2 := pods[1]
 	if !b2.Ready || b2.Phase != "RUNNING" || b2.Owner != "Deployment/ecs-svc/123" || b2.Started == nil {

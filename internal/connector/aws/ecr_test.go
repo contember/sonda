@@ -48,12 +48,13 @@ projects:
 
 // fakeECR holds count images of repository "shop" and findings pages of one image.
 type fakeECR struct {
-	count     int
-	repoName  string // the repository name in responses; "shop" by default
-	missing   bool   // DescribeImages by digest answers ImageNotFoundException
-	noScan    bool
-	findings  [][]ecrtypes.ImageScanFinding
-	describes []*ecr.DescribeImagesInput
+	count       int
+	repoName    string // the repository name in responses; "shop" by default
+	otherDigest bool   // responses name another digest than requested
+	missing     bool   // DescribeImages by digest answers ImageNotFoundException
+	noScan      bool
+	findings    [][]ecrtypes.ImageScanFinding
+	describes   []*ecr.DescribeImagesInput
 }
 
 func (f *fakeECR) repo() string {
@@ -63,13 +64,20 @@ func (f *fakeECR) repo() string {
 	return f.repoName
 }
 
+func (f *fakeECR) digest(requested *string) *string {
+	if f.otherDigest {
+		return sdkaws.String("sha256:" + strings.Repeat("0", 64))
+	}
+	return requested
+}
+
 func (f *fakeECR) DescribeImages(_ context.Context, in *ecr.DescribeImagesInput, _ ...func(*ecr.Options)) (*ecr.DescribeImagesOutput, error) {
 	f.describes = append(f.describes, in)
 	if len(in.ImageIds) > 0 {
 		if f.missing {
 			return nil, &ecrtypes.ImageNotFoundException{Message: sdkaws.String("not found")}
 		}
-		return &ecr.DescribeImagesOutput{ImageDetails: []ecrtypes.ImageDetail{{RepositoryName: sdkaws.String(f.repo()), ImageDigest: in.ImageIds[0].ImageDigest}}}, nil
+		return &ecr.DescribeImagesOutput{ImageDetails: []ecrtypes.ImageDetail{{RepositoryName: sdkaws.String(f.repo()), ImageDigest: f.digest(in.ImageIds[0].ImageDigest)}}}, nil
 	}
 	start := 0
 	if in.NextToken != nil {
@@ -96,7 +104,7 @@ func (f *fakeECR) DescribeImageScanFindings(_ context.Context, in *ecr.DescribeI
 	}
 	out := &ecr.DescribeImageScanFindingsOutput{
 		RepositoryName:    sdkaws.String(f.repo()),
-		ImageId:           in.ImageId,
+		ImageId:           &ecrtypes.ImageIdentifier{ImageDigest: f.digest(in.ImageId.ImageDigest)},
 		ImageScanStatus:   &ecrtypes.ImageScanStatus{Status: ecrtypes.ScanStatusComplete},
 		ImageScanFindings: &ecrtypes.ImageScanFindings{Findings: f.findings[page]},
 	}
@@ -170,5 +178,40 @@ func TestScanFindingsMergePages(t *testing.T) {
 	scan, _, err = ecrClient(cfg, &fakeECR{noScan: true}).ScanFindings(context.Background(), scope, "shop", testDigest)
 	if err != nil || scan != nil {
 		t.Errorf("never scanned: scan = %+v, err = %v", scan, err)
+	}
+}
+
+func TestECRPostChecks(t *testing.T) {
+	cfg, scope := imageScope(t)
+	findings := [][]ecrtypes.ImageScanFinding{{}}
+	cases := []struct {
+		name string
+		fake *fakeECR
+		call func(*Client) error
+	}{
+		{"image of another digest", &fakeECR{otherDigest: true}, func(c *Client) error {
+			_, _, err := c.Image(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
+		{"image of another repository", &fakeECR{repoName: "other"}, func(c *Client) error {
+			_, _, err := c.Image(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
+		{"scan of another digest", &fakeECR{otherDigest: true, findings: findings}, func(c *Client) error {
+			_, _, err := c.ScanFindings(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
+		{"scan of another repository", &fakeECR{repoName: "other", findings: findings}, func(c *Client) error {
+			_, _, err := c.ScanFindings(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call(ecrClient(cfg, tc.fake))
+			if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal || !strings.Contains(err.Error(), "outside the scope") {
+				t.Errorf("error = %v", err)
+			}
+		})
 	}
 }

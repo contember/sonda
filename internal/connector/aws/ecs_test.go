@@ -54,6 +54,7 @@ projects:
 type fakeECS struct {
 	count        int
 	group        string // the group of every task; service:web by default
+	cluster      string // the cluster ARN of every task; clusterARN by default
 	services     []ecstypes.Service
 	listInputs   []*ecs.ListTasksInput
 	describeArns [][]string
@@ -89,9 +90,13 @@ func (f *fakeECS) DescribeTasks(_ context.Context, in *ecs.DescribeTasksInput, _
 	if group == "" {
 		group = "service:web"
 	}
+	cluster := f.cluster
+	if cluster == "" {
+		cluster = clusterARN
+	}
 	out := &ecs.DescribeTasksOutput{}
 	for _, arn := range in.Tasks {
-		out.Tasks = append(out.Tasks, ecstypes.Task{TaskArn: sdkaws.String(arn), ClusterArn: sdkaws.String(clusterARN), Group: sdkaws.String(group)})
+		out.Tasks = append(out.Tasks, ecstypes.Task{TaskArn: sdkaws.String(arn), ClusterArn: sdkaws.String(cluster), Group: sdkaws.String(group)})
 	}
 	return out, nil
 }
@@ -146,9 +151,14 @@ func TestECSTasksTruncate(t *testing.T) {
 
 func TestECSTasksPostCheck(t *testing.T) {
 	cfg, scope := ecsScope(t)
-	_, _, err := ecsClient(cfg, &fakeECS{count: 2, group: "service:admin"}).ECSTasks(context.Background(), scope)
-	if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal || !strings.Contains(err.Error(), "outside the scope") {
-		t.Errorf("error = %v", err)
+	for _, fake := range []*fakeECS{
+		{count: 2, group: "service:admin"},
+		{count: 2, cluster: "arn:aws:ecs:eu-central-1:123456789012:cluster/other"},
+	} {
+		_, _, err := ecsClient(cfg, fake).ECSTasks(context.Background(), scope)
+		if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal || !strings.Contains(err.Error(), "outside the scope") {
+			t.Errorf("group %q, cluster %q: error = %v", fake.group, fake.cluster, err)
+		}
 	}
 }
 

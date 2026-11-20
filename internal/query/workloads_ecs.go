@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
-	"strings"
 	"sync"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
@@ -60,7 +59,7 @@ func (b ecsWorkloads) shapeTasks(tasks []ecstypes.Task) []api.Pod {
 	for _, task := range tasks {
 		status := sdkaws.ToString(task.LastStatus)
 		pod := api.Pod{
-			Name:    arnName(sdkaws.ToString(task.TaskArn)),
+			Name:    aws.ARNName(sdkaws.ToString(task.TaskArn)),
 			Phase:   status,
 			Ready:   status == "RUNNING" && task.HealthStatus != ecstypes.HealthStatusUnhealthy,
 			Started: task.StartedAt,
@@ -96,10 +95,9 @@ func (b ecsWorkloads) shapeTaskContainer(c ecstypes.Container) api.Container {
 			container.Reason = fmt.Sprintf("exit code %d", *c.ExitCode)
 		}
 	default:
+		// PENDING, PROVISIONING or ACTIVATING are the normal start of every task, like
+		// Kubernetes' ContainerCreating, so they carry no reason the overview would flag.
 		container.State = "waiting"
-		if container.Reason == "" {
-			container.Reason = status
-		}
 	}
 	return container
 }
@@ -112,7 +110,7 @@ func ecsRollouts(svc ecstypes.Service) []api.Rollout {
 		rollout := api.Rollout{
 			Name:          sdkaws.ToString(d.Id),
 			Owner:         "Service/" + sdkaws.ToString(svc.ServiceName),
-			Revision:      arnName(sdkaws.ToString(d.TaskDefinition)),
+			Revision:      aws.ARNName(sdkaws.ToString(d.TaskDefinition)),
 			Images:        []string{},
 			Replicas:      int(d.DesiredCount),
 			ReadyReplicas: int(d.RunningCount),
@@ -157,9 +155,4 @@ func ecsSourceRef(scope authz.ECSScope, query string) api.SourceRef {
 		URL: fmt.Sprintf("https://%s.console.aws.amazon.com/ecs/v2/clusters/%s/services/%s/tasks?region=%s",
 			region, url.PathEscape(scope.Cluster()), url.PathEscape(scope.ECSService()), url.QueryEscape(region)),
 	}
-}
-
-// arnName returns the resource name of an ARN such as arn:aws:ecs:…:task/cluster/id.
-func arnName(arn string) string {
-	return arn[strings.LastIndex(arn, "/")+1:]
 }

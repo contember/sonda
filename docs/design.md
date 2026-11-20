@@ -460,7 +460,13 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
     are in the task definition, which Sonda does not read, so `images` is empty;
   - a service event is an event of `Service/<service>` in the range. ECS keeps the last 100
     events and gives them no severity, so all are `Normal` and do not count as warnings.
+- A container that is still starting (`PENDING`, `PROVISIONING`, `ACTIVATING`) is `waiting`
+  without a reason, like Kubernetes' `ContainerCreating`, so a normal deploy is not reported
+  as a problem.
 - Stopped tasks are not listed: the capability answers what runs now.
+- Verified with services on the ECS deployment controller. Services on the `CODE_DEPLOY` or
+  `EXTERNAL` controllers were not tested; if their tasks carry another group, the post-check
+  fails the request with `internal` rather than returning them.
 - The source link opens the service's tasks in the ECS console.
 
 ### ECR images specifics
@@ -468,9 +474,10 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - An `images` binding names ECR repositories in the account and region of its `aws` source.
   A request may name one of them (`repository`); without it, all of them are read.
 - `GET …/images` lists images, newest push first, at most `limit` (default 20, maximum 100):
-  - with `digest` (repeatable, `sha256:` + 64 hex characters), `DescribeImages` with the digest
-    in each repository, at most 50 lookups per request. A digest a repository does not hold is
-    left out, so the answer to "which running digests are in our registry" is the list itself;
+  - with `digest` (repeatable, `sha256:` + 64 hex characters, duplicates dropped),
+    `DescribeImages` with the digest in each repository, at most 50 lookups per request. A
+    digest a repository does not hold is left out, so the answer to "which running digests are
+    in our registry" is the list itself;
   - without `digest`, `DescribeImages` pages through each repository. ECR returns images in no
     order, so Sonda reads up to 5000 per repository and sorts them; a longer repository makes
     the response `truncated`, and the newest image may be missing from it.
@@ -478,7 +485,12 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   latest scan (`DescribeImageScanFindings`, up to 5000), most severe first, at most `limit`
   (default 100, maximum 1000). Basic scanning reports a finding per vulnerability with the
   package name and version; enhanced scanning (Amazon Inspector) one per vulnerable package,
-  with the fixed version. An image that was never scanned has no `scan` and no findings.
+  with the fixed version; an enhanced finding that is not about a package keeps its title as
+  the ID, so the list matches the counts. An image that was never scanned has no `scan` and
+  no findings.
+- A bound repository that does not exist fails the request with `upstream_error`, also when
+  another repository would answer: it is a configuration error, and a silent gap would read
+  as "not in the registry".
 - Each image carries its tags, push time, size, last recorded pull and the scan summary: status,
   completion time, the update time of the vulnerability database and counts per severity.
   **A basic scan runs once, at push** (unless the repository rescans), so its findings are as
@@ -1150,7 +1162,10 @@ Rules:
   encrypted log groups; for metrics `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`; for
   ECS workloads `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`; for images
   `ecr:DescribeImages`, `ecr:DescribeImageScanFindings`. No pull rights
-  (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`): Sonda never reads image contents. `sts:GetCallerIdentity` needs no
+  (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`): Sonda never reads image contents.
+  The ECR actions can be limited to the ARNs of the bound repositories, the ECS describe
+  actions to the bound clusters, services and their tasks, and `ecs:ListTasks` with the
+  `ecs:cluster` condition key. `sts:GetCallerIdentity` needs no
   permission. With `role_arn` and `credentials: default`, the base credentials need
   `sts:AssumeRole` on that role.
   Restrict `logs:StartQuery` to the ARNs of the configured log groups. Then even a query that

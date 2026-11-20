@@ -21,10 +21,11 @@ type imageFlags struct {
 	limit      int
 }
 
-func (f *imageFlags) register(cmd *cobra.Command) {
+// register adds the shared flags; limitHelp says what --limit caps for the command.
+func (f *imageFlags) register(cmd *cobra.Command, limitHelp string) {
 	cmd.Flags().StringVarP(&f.env, "env", "e", "", "environment (optional when only one is available)")
 	cmd.Flags().StringVar(&f.repository, "repository", "", "one of the service's repositories (default: all)")
-	cmd.Flags().IntVar(&f.limit, "limit", 0, "maximum number of results")
+	cmd.Flags().IntVar(&f.limit, "limit", 0, limitHelp)
 }
 
 func (f *imageFlags) query() url.Values {
@@ -60,7 +61,7 @@ func (a *app) imagesCmd() *cobra.Command {
 			return fetch(a, cmd, "/v1/services/"+url.PathEscape(args[0])+"/images", params, renderImages)
 		},
 	}
-	flags.register(cmd)
+	flags.register(cmd, "maximum number of images (default 20, at most 100)")
 	cmd.Flags().StringArrayVar(&digests, "digest", nil, "image digest sha256:… (repeatable)")
 	return cmd
 }
@@ -76,7 +77,7 @@ func (a *app) imageCmd() *cobra.Command {
 			return fetch(a, cmd, path, flags.query(), renderImage)
 		},
 	}
-	flags.register(cmd)
+	flags.register(cmd, "maximum number of findings (default 100, at most 1000)")
 	return cmd
 }
 

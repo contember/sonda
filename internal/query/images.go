@@ -30,7 +30,8 @@ const (
 var (
 	imageDigestFormat = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	imagesUntrusted   = []string{"data[].tags", "data[].scan.description"}
-	imageUntrusted    = []string{"data.tags", "data.scan.description"}
+	// Package names, versions and URIs come from metadata inside the pushed image.
+	imageUntrusted = []string{"data.tags", "data.scan.description", "data.findings[].package", "data.findings[].version", "data.findings[].uri"}
 )
 
 // Images returns the images of the service's repositories with their scan summaries: those with
@@ -44,6 +45,7 @@ func (s *Service) Images(ctx context.Context, identity *authz.Identity, service 
 	if err != nil {
 		return api.Response[[]api.Image]{}, err
 	}
+	req.Digests = slices.Compact(slices.Sorted(slices.Values(req.Digests)))
 	for _, digest := range req.Digests {
 		if !imageDigestFormat.MatchString(digest) {
 			return api.Response[[]api.Image]{}, apierr.InvalidRequest("digest %q must be sha256: followed by 64 lowercase hex characters", digest)
@@ -231,6 +233,8 @@ func shapeFindings(scan *ecr.DescribeImageScanFindingsOutput) []api.ImageFinding
 	for _, f := range scan.ImageScanFindings.EnhancedFindings {
 		details := f.PackageVulnerabilityDetails
 		if details == nil {
+			// Not a package vulnerability (e.g. a code finding): keep it, so the list matches the counts.
+			findings = append(findings, api.ImageFinding{ID: sdkaws.ToString(f.Title), Severity: sdkaws.ToString(f.Severity)})
 			continue
 		}
 		base := api.ImageFinding{ID: sdkaws.ToString(details.VulnerabilityId), Severity: sdkaws.ToString(f.Severity), URI: sdkaws.ToString(details.SourceUrl)}

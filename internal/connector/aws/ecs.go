@@ -85,7 +85,7 @@ func (c *Client) ECSTasks(ctx context.Context, scope authz.ECSScope) ([]ecstypes
 			return nil, false, c.apiError("DescribeTasks", err)
 		}
 		for _, task := range out.Tasks {
-			if sdkaws.ToString(task.Group) != "service:"+scope.ECSService() || arnName(sdkaws.ToString(task.ClusterArn)) != scope.Cluster() {
+			if sdkaws.ToString(task.Group) != "service:"+scope.ECSService() || ARNName(sdkaws.ToString(task.ClusterArn)) != scope.Cluster() {
 				return nil, false, c.outsideScope()
 			}
 		}
@@ -95,11 +95,12 @@ func (c *Client) ECSTasks(ctx context.Context, scope authz.ECSScope) ([]ecstypes
 }
 
 func ecsServiceInScope(scope authz.ECSScope, svc ecstypes.Service) bool {
-	return sdkaws.ToString(svc.ServiceName) == scope.ECSService() && arnName(sdkaws.ToString(svc.ClusterArn)) == scope.Cluster()
+	return sdkaws.ToString(svc.ServiceName) == scope.ECSService() && ARNName(sdkaws.ToString(svc.ClusterArn)) == scope.Cluster()
 }
 
-// arnName returns the resource name of an ARN such as arn:aws:ecs:…:cluster/name.
-func arnName(arn string) string {
+// ARNName returns the last path segment of an ARN, e.g. the name of arn:aws:ecs:…:cluster/name
+// or the ID of arn:aws:ecs:…:task/cluster/id.
+func ARNName(arn string) string {
 	return arn[strings.LastIndex(arn, "/")+1:]
 }
 
