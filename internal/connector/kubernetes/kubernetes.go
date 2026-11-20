@@ -85,8 +85,11 @@ type Condition struct {
 }
 
 type ContainerStatus struct {
-	Name         string         `json:"name"`
-	Image        string         `json:"image"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+	// ImageID is the image the runtime pulled, e.g. docker.io/library/nginx@sha256:…; empty
+	// until the pull finishes.
+	ImageID      string         `json:"imageID"`
 	Ready        bool           `json:"ready"`
 	RestartCount int            `json:"restartCount"`
 	State        ContainerState `json:"state"`

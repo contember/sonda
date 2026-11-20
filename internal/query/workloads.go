@@ -124,7 +124,7 @@ func (s *Service) shapePods(pods []kubernetes.Pod) []api.Pod {
 }
 
 func (s *Service) shapeContainer(c kubernetes.ContainerStatus) api.Container {
-	container := api.Container{Name: c.Name, Image: c.Image, Ready: c.Ready, Restarts: c.RestartCount}
+	container := api.Container{Name: c.Name, Image: c.Image, Digest: imageDigest(c.ImageID), Ready: c.Ready, Restarts: c.RestartCount}
 	switch {
 	case c.State.Running != nil:
 		container.State = "running"
@@ -137,6 +137,17 @@ func (s *Service) shapeContainer(c kubernetes.ContainerStatus) api.Container {
 		container.LastTermination = &api.Termination{Reason: t.Reason, ExitCode: t.ExitCode, Finished: t.FinishedAt, Message: s.redactor.Redact(t.Message)}
 	}
 	return container
+}
+
+// imageDigest returns the digest of an image reference that has one (repository@sha256:…,
+// optionally prefixed by docker-pullable://). A bare sha256:… image ID is the ID of the image
+// configuration, not a manifest digest a registry knows, so it yields "".
+func imageDigest(ref string) string {
+	_, digest, ok := strings.Cut(ref, "@")
+	if !ok || !strings.HasPrefix(digest, "sha256:") {
+		return ""
+	}
+	return digest
 }
 
 func conditionTrue(conditions []kubernetes.Condition, kind string) bool {

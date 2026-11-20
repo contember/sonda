@@ -103,3 +103,22 @@ func TestShapeRolloutsNewestFirst(t *testing.T) {
 		t.Errorf("rollouts = %+v", got)
 	}
 }
+
+func TestShapePodsReportsRunningDigest(t *testing.T) {
+	const digest = "sha256:0994af66bd88ce73c84ee33852b7a81a8ddef37e5c55187df223fb06d3b6deff"
+	var pod kubernetes.Pod
+	pod.Metadata.Name = "engine-api-7d9f-abcde"
+	pod.Status.ContainerStatuses = []kubernetes.ContainerStatus{
+		{Name: "containerd", Image: "registry.example/engine:v1", ImageID: "registry.example/engine@" + digest},
+		{Name: "docker", Image: "engine:v1", ImageID: "docker-pullable://engine@" + digest},
+		{Name: "config-id", Image: "engine:local", ImageID: "sha256:0123456789abcdef"},
+		{Name: "pulling", Image: "engine:v2"},
+	}
+	got := testService(t).shapePods([]kubernetes.Pod{pod})[0].Containers
+	want := []string{digest, digest, "", ""}
+	for i, c := range got {
+		if c.Digest != want[i] {
+			t.Errorf("%s: digest = %q, want %q", c.Name, c.Digest, want[i])
+		}
+	}
+}

@@ -48,6 +48,11 @@ func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 		fmt.Fprintln(w, "  none")
 	}
 
+	fmt.Fprintln(w, "\nIMAGES")
+	for _, line := range runningImages(resp.Data.Pods) {
+		fmt.Fprintln(w, "  "+line)
+	}
+
 	fmt.Fprintln(w, "\nROLLOUTS")
 	t = table(w)
 	for _, r := range resp.Data.Rollouts {
@@ -62,6 +67,30 @@ func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 	for _, e := range resp.Data.Events {
 		fmt.Fprintf(w, "  %s %s %s %s ×%d: %s\n", e.LastSeen.Format(time.RFC3339), e.Type, e.Reason, e.Object, e.Count, e.Message)
 	}
+}
+
+// runningImages lists each image and digest the containers run, with the number of containers
+// that run it, in order of first appearance.
+func runningImages(pods []api.Pod) []string {
+	var order []string
+	counts := map[string]int{}
+	for _, pod := range pods {
+		for _, c := range pod.Containers {
+			key := c.Image + " " + valueOrDash(c.Digest)
+			if counts[key] == 0 {
+				order = append(order, key)
+			}
+			counts[key]++
+		}
+	}
+	lines := make([]string, len(order))
+	for i, key := range order {
+		lines[i] = fmt.Sprintf("%s  containers=%d", key, counts[key])
+	}
+	if len(lines) == 0 {
+		return []string{"none"}
+	}
+	return lines
 }
 
 // podDetail names the container states that explain an unhealthy pod.

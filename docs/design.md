@@ -426,6 +426,11 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   longer exist; the fixed suffix length keeps out pods of a longer ReplicaSet name.
 - Pods and rollouts are the current state, whatever the range; events are those overlapping
   the range. Kubernetes keeps events for about an hour by default (`--event-ttl`).
+- Each container reports `digest`, the manifest digest of the image it runs, taken from
+  `status.containerStatuses[].imageID` (`<repository>@sha256:…`, with or without the
+  `docker-pullable://` prefix). It is the image the node actually pulled, so pods of one tag can
+  report different digests. An `imageID` without a repository is the ID of the image
+  configuration, which no registry knows, and yields no digest.
 - In-cluster: without `url`, the source connects to `KUBERNETES_SERVICE_HOST`/`PORT`, trusts the
   mounted `ca.crt` and reads the mounted service account token on every request, because the
   kubelet rotates it. With `url`, a bearer token is required (a service account token secret
@@ -954,7 +959,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `POST /v1/services/{s}/traces/search` | `traces` | Duration, error, name and attribute filters → trace summaries |
 | `POST /v1/services/{s}/traces/query` | `traces` | Native query in the backend's dialect (scoped) → trace summaries |
 | `/v1/services/{s}/traces/{id}` | `traces` | Span tree; spans of services without a grant are stubs |
-| `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states, last termination) and rollouts now; events of the service's objects in range |
+| `/v1/services/{s}/workloads` | `workloads` | Pods (phase, readiness, restarts, container states with the running image digest, last termination) and rollouts now; events of the service's objects in range |
 | `/v1/services/{s}/alerts` | `alerts` | Active alerts now: name, state, active since, value, labels, annotations. Takes only `env`. |
 | `/v1/services/{s}/data/schema` | `data` | Entities, fields with types, relations with target and cardinality, unique fields and enums, without denied fields and entities. `entity` (repeatable) selects entities; a schema above 3/4 of `max_response_bytes` comes back as entity names only, marked `truncated` |
 | `POST /v1/services/{s}/data/query` | `data` | `{env, query, variables}` → normalized query, row bound and redacted data |

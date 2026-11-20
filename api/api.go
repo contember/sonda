@@ -475,8 +475,11 @@ type Pod struct {
 }
 
 type Container struct {
-	Name     string `json:"name"`
-	Image    string `json:"image"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+	// Digest is the manifest digest of the image the container runs (sha256:…), resolved by the
+	// runtime even when Image names a tag. Empty until the image is pulled.
+	Digest   string `json:"digest,omitempty"`
 	Ready    bool   `json:"ready"`
 	Restarts int    `json:"restarts"`
 	// State is running, waiting or terminated; Reason explains waiting and terminated states.
