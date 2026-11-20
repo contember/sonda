@@ -194,6 +194,9 @@ func bindings(env *config.Environment) []bindingView {
 			add("workloads", b.Source, scope)
 		}
 	}
+	if b := env.Images; b != nil {
+		add("images", b.Source, "ECR repositories "+strings.Join(b.Repositories, ", "))
+	}
 	if b := env.Alerts; b != nil {
 		add("alerts", b.Source, b.Selector.Text)
 	}

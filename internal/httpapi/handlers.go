@@ -102,6 +102,33 @@ func (s *Server) workloads(r *http.Request) (any, error) {
 	return s.query.Workloads(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
 }
 
+// images and image take no range: they read the registry's current state.
+func (s *Server) images(r *http.Request) (any, error) {
+	req, err := imagesRequest(r)
+	if err != nil {
+		return nil, err
+	}
+	req.Digests = r.URL.Query()["digest"]
+	return s.query.Images(r.Context(), identityFrom(r.Context()), r.PathValue("service"), req)
+}
+
+func (s *Server) image(r *http.Request) (any, error) {
+	req, err := imagesRequest(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.Image(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.PathValue("digest"), req)
+}
+
+func imagesRequest(r *http.Request) (api.ImagesRequest, error) {
+	limit, err := intParam(r, "limit", 0)
+	if err != nil {
+		return api.ImagesRequest{}, err
+	}
+	params := r.URL.Query()
+	return api.ImagesRequest{Environment: params.Get("env"), Repository: params.Get("repository"), Limit: limit}, nil
+}
+
 // alerts takes only env: alerts are current state.
 func (s *Server) alerts(r *http.Request) (any, error) {
 	return s.query.Alerts(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"))

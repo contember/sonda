@@ -112,6 +112,8 @@ func backends(env *config.Environment, capabilities []api.Capability) map[api.Ca
 			result[capability] = api.BackendInfo{Source: string(env.Traces.Source.Type), Dialect: env.Traces.Dialect()}
 		case api.CapabilityWorkloads:
 			result[capability] = api.BackendInfo{Source: string(env.Workloads.Source.Type)}
+		case api.CapabilityImages:
+			result[capability] = api.BackendInfo{Source: string(env.Images.Source.Type)}
 		case api.CapabilityAlerts:
 			result[capability] = api.BackendInfo{Source: string(env.Alerts.Source.Type)}
 		case api.CapabilityData:
@@ -212,6 +214,14 @@ func (a *Authorizer) WorkloadScope(identity *Identity, service, env string) (Wor
 		return WorkloadScope{}, err
 	}
 	return WorkloadScope{Target: target, binding: environment.Workloads}, nil
+}
+
+func (a *Authorizer) ImageScope(identity *Identity, service, env string) (ImageScope, error) {
+	target, environment, err := a.resolve(identity, service, env, api.CapabilityImages)
+	if err != nil {
+		return ImageScope{}, err
+	}
+	return ImageScope{Target: target, source: environment.Images.Source, repositories: environment.Images.Repositories}, nil
 }
 
 // AlertScope restricts a ruler's alerts to those matching the service's selector.
@@ -522,6 +532,21 @@ type ECSScope struct {
 func (s ECSScope) Source() *config.Source { return s.source }
 func (s ECSScope) Cluster() string        { return s.cluster }
 func (s ECSScope) ECSService() string     { return s.service }
+
+// ImageScope restricts an AWS account to the service's ECR repositories.
+type ImageScope struct {
+	Target
+	source       *config.Source
+	repositories []string
+}
+
+func (s ImageScope) Source() *config.Source { return s.source }
+
+// Repositories returns a copy, so callers cannot change the scope.
+func (s ImageScope) Repositories() []string { return slices.Clone(s.repositories) }
+
+// Has reports whether repository is one of the scope's repositories.
+func (s ImageScope) Has(repository string) bool { return slices.Contains(s.repositories, repository) }
 
 // LogGroupScope restricts an AWS account to the service's CloudWatch log groups.
 type LogGroupScope struct {

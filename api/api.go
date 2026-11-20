@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -70,18 +71,19 @@ const (
 	CapabilityMetrics   Capability = "metrics"
 	CapabilityTraces    Capability = "traces"
 	CapabilityWorkloads Capability = "workloads"
+	CapabilityImages    Capability = "images"
 	CapabilityAlerts    Capability = "alerts"
 	CapabilityData      Capability = "data"
 )
 
 // Capabilities lists every capability in display order.
-var Capabilities = []Capability{CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityAlerts, CapabilityData}
+var Capabilities = []Capability{CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityImages, CapabilityAlerts, CapabilityData}
 
 func ParseCapability(s string) (Capability, error) {
 	if c := Capability(s); slices.Contains(Capabilities, c) {
 		return c, nil
 	}
-	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces, workloads, alerts or data)", s)
+	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces, workloads, images, alerts or data)", s)
 }
 
 // Dialect names the query language of a native query endpoint.
@@ -528,6 +530,70 @@ type WorkloadSummary struct {
 	Warnings int      `json:"warnings"`
 	// Rollout is the newest ReplicaSet with replicas.
 	Rollout *Rollout `json:"rollout,omitempty"`
+}
+
+// ImagesRequest selects images of a service: those with Digests, or the newest Limit. An empty
+// Repository means every repository of the service.
+type ImagesRequest struct {
+	Environment string
+	Repository  string
+	Digests     []string
+	Limit       int
+}
+
+// Image is a container image in one of the service's registry repositories.
+type Image struct {
+	Repository string     `json:"repository"`
+	Digest     string     `json:"digest"`
+	Tags       []string   `json:"tags"`
+	PushedAt   *time.Time `json:"pushedAt,omitempty"`
+	SizeBytes  int64      `json:"sizeBytes,omitempty"`
+	// LastPulled is the registry's record of the last pull; it lags by up to a day.
+	LastPulled *time.Time `json:"lastPulled,omitempty"`
+	Scan       *ImageScan `json:"scan,omitempty"`
+}
+
+// ImageScan is the registry's vulnerability scan of an image.
+type ImageScan struct {
+	// Status is e.g. COMPLETE, IN_PROGRESS, FAILED, UNSUPPORTED_IMAGE or ACTIVE (continuous
+	// scanning); Description explains a failure.
+	Status      string     `json:"status"`
+	Description string     `json:"description,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	// SourceUpdatedAt is when the vulnerability database the scan used was last updated. A
+	// basic scan runs at push, so it is as old as the push unless the image was scanned again.
+	SourceUpdatedAt *time.Time `json:"sourceUpdatedAt,omitempty"`
+	// Counts are the findings per severity, e.g. {"CRITICAL": 1, "HIGH": 4}.
+	Counts map[string]int `json:"counts,omitempty"`
+}
+
+// ScanSeverities lists the severities of registry scan findings, most severe first.
+var ScanSeverities = []string{"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "UNDEFINED", "UNTRIAGED"}
+
+// SeverityRank orders a severity by ScanSeverities; unknown severities come last.
+func SeverityRank(severity string) int {
+	if i := slices.Index(ScanSeverities, strings.ToUpper(severity)); i >= 0 {
+		return i
+	}
+	return len(ScanSeverities)
+}
+
+// ImageFinding is one vulnerability the registry's scan found in an image.
+type ImageFinding struct {
+	// ID is the vulnerability ID, e.g. CVE-2024-1234 or a GHSA ID.
+	ID       string `json:"id"`
+	Severity string `json:"severity"`
+	Package  string `json:"package,omitempty"`
+	Version  string `json:"version,omitempty"`
+	// FixedIn is the first fixed version, when the scan reports it (enhanced scanning).
+	FixedIn string `json:"fixedIn,omitempty"`
+	URI     string `json:"uri,omitempty"`
+}
+
+// ImageDetail is one image with its scan findings, most severe first.
+type ImageDetail struct {
+	Image
+	Findings []ImageFinding `json:"findings"`
 }
 
 // Alert is an active alert of the service's alerting rules.

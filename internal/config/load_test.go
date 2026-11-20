@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -613,7 +614,7 @@ func TestParseExistingSourceRules(t *testing.T) {
 		{"prometheus with account", [2]string{"type: prometheus\n", "type: prometheus\n    account_id: acc\n"}, "sources.prom.account_id is allowed only for cloudflare sources"},
 		{"loki with region", [2]string{"type: loki\n", "type: loki\n    region: eu-west-1\n"}, "sources.loki.region is allowed only for aws sources"},
 		{"loki logs with script", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: loki, selector: '{app="api"}', script: w }`}, "logs.script is not allowed for loki sources"},
-		{"empty environment", [2]string{"            errors: { source: sentry, project: api, environment: production }\n            logs: { source: loki, selector: '{app=\"api\"}' }\n            metrics: { source: prom, selector: '{job=\"api\"}' }\n", "            {}\n"}, "at least one of errors, logs, metrics, traces, workloads, alerts or data is required"},
+		{"empty environment", [2]string{"            errors: { source: sentry, project: api, environment: production }\n            logs: { source: loki, selector: '{app=\"api\"}' }\n            metrics: { source: prom, selector: '{job=\"api\"}' }\n", "            {}\n"}, "at least one of errors, logs, metrics, traces, workloads, images, alerts or data is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -832,6 +833,58 @@ func TestParseECSWorkloadsErrors(t *testing.T) {
 				t.Fatalf("replacement %q not found", tt.replace[0])
 			}
 			_, err := Parse([]byte(strings.Replace(ecsConfig, tt.replace[0], tt.replace[1], 1)), env(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+const imagesConfig = `
+sources:
+  aws: { type: aws, region: eu-central-1 }
+projects:
+  shop:
+    services:
+      web:
+        environments:
+          production:
+            images: { source: aws, repositories: [shop/web, shop-worker] }
+`
+
+func TestParseImages(t *testing.T) {
+	cfg, err := Parse([]byte(imagesConfig), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := cfg.Services["web"].Environments["production"]
+	if got := env.Capabilities(); len(got) != 1 || got[0] != api.CapabilityImages {
+		t.Errorf("capabilities = %v", got)
+	}
+	if !slices.Equal(env.Images.Repositories, []string{"shop/web", "shop-worker"}) {
+		t.Errorf("repositories = %v", env.Images.Repositories)
+	}
+}
+
+func TestParseImagesErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"no repositories", [2]string{"[shop/web, shop-worker]", "[]"}, "repositories must list 1 to 20 repositories"},
+		{"uppercase", [2]string{"shop-worker", "Shop"}, `"Shop" must be an ECR repository name`},
+		{"URI", [2]string{"shop-worker", "123456789012.dkr.ecr.eu-central-1.amazonaws.com/shop"}, "must be an ECR repository name (not an ARN or URI)"},
+		{"pattern", [2]string{"shop-worker", "'shop/*'"}, "must be an ECR repository name"},
+		{"duplicate", [2]string{"shop-worker", "shop/web"}, `"shop/web" is listed twice`},
+		{"another source type", [2]string{"aws: { type: aws, region: eu-central-1 }", "aws: { type: tempo, url: https://tempo.example }"}, "expected aws"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(imagesConfig, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			_, err := Parse([]byte(strings.Replace(imagesConfig, tt.replace[0], tt.replace[1], 1)), env(nil))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}

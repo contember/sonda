@@ -173,6 +173,7 @@ type Environment struct {
 	Metrics   *MetricBinding
 	Traces    *TraceBinding
 	Workloads *WorkloadBinding
+	Images    *ImageBinding
 	Alerts    *AlertBinding
 	Data      *DataBinding
 }
@@ -285,6 +286,13 @@ type WorkloadBinding struct {
 	ECSService string
 }
 
+// ImageBinding scopes an AWS account to the images of the service's ECR repositories, in the
+// source's region.
+type ImageBinding struct {
+	Source       *Source
+	Repositories []string
+}
+
 // DataBinding scopes a Contember source to one project stage. Entities is an optional allow
 // list; DenyFields hides fields, as "Entity.field" or "*.field".
 type DataBinding struct {
@@ -313,6 +321,9 @@ func (e *Environment) Capabilities() []api.Capability {
 	}
 	if e.Workloads != nil {
 		caps = append(caps, api.CapabilityWorkloads)
+	}
+	if e.Images != nil {
+		caps = append(caps, api.CapabilityImages)
 	}
 	if e.Alerts != nil {
 		caps = append(caps, api.CapabilityAlerts)

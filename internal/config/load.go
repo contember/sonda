@@ -100,6 +100,7 @@ type rawEnvironment struct {
 	Metrics   *rawBinding         `yaml:"metrics"`
 	Traces    *rawBinding         `yaml:"traces"`
 	Workloads *rawWorkloadBinding `yaml:"workloads"`
+	Images    *rawImageBinding    `yaml:"images"`
 	Alerts    *rawBinding         `yaml:"alerts"`
 	Data      *rawDataBinding     `yaml:"data"`
 }
@@ -110,6 +111,11 @@ type rawWorkloadBinding struct {
 	Labels    map[string]string `yaml:"labels"`
 	Cluster   string            `yaml:"cluster"`
 	Service   string            `yaml:"service"`
+}
+
+type rawImageBinding struct {
+	Source       string   `yaml:"source"`
+	Repositories []string `yaml:"repositories"`
 }
 
 type rawDataBinding struct {
@@ -579,6 +585,9 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 		if re.Workloads != nil {
 			env.Workloads = v.workloadBinding(envPath+".workloads", *re.Workloads, sources)
 		}
+		if re.Images != nil {
+			env.Images = v.imageBinding(envPath+".images", *re.Images, sources)
+		}
 		if re.Alerts != nil {
 			env.Alerts = v.alertBinding(envPath+".alerts", *re.Alerts, sources)
 		}
@@ -586,7 +595,7 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 			env.Data = v.dataBinding(envPath+".data", *re.Data, sources)
 		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs, metrics, traces, workloads, alerts or data is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics, traces, workloads, images, alerts or data is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
@@ -867,6 +876,31 @@ func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources
 		binding.Cluster, binding.ECSService = raw.Cluster, raw.Service
 	}
 	return binding
+}
+
+const maxImageRepositories = 20
+
+// ecrRepository is an ECR repository name: lowercase path segments separated by slashes.
+var ecrRepository = regexp.MustCompile(`^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+
+// imageBinding requires 1 to 20 unique, exact ECR repository names: no ARNs, URIs or patterns.
+func (v *validator) imageBinding(path string, raw rawImageBinding, sources map[string]*Source) *ImageBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceAWS)
+	if len(raw.Repositories) == 0 || len(raw.Repositories) > maxImageRepositories {
+		v.fail("%s.repositories must list 1 to %d repositories", path, maxImageRepositories)
+	}
+	seen := map[string]bool{}
+	for _, repo := range raw.Repositories {
+		// A registry URI is a valid repository name too, but never the intended one.
+		if len(repo) > 256 || !ecrRepository.MatchString(repo) || strings.Contains(repo, ".dkr.ecr.") {
+			v.fail("%s.repositories: %q must be an ECR repository name (not an ARN or URI)", path, repo)
+		}
+		if seen[repo] {
+			v.fail("%s.repositories: %q is listed twice", path, repo)
+		}
+		seen[repo] = true
+	}
+	return &ImageBinding{Source: src, Repositories: raw.Repositories}
 }
 
 var (

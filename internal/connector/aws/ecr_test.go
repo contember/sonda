@@ -1,0 +1,174 @@
+package aws
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"testing"
+
+	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
+	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
+
+	"github.com/contember/sonda/api"
+	"github.com/contember/sonda/internal/apierr"
+	"github.com/contember/sonda/internal/authz"
+	"github.com/contember/sonda/internal/config"
+	"github.com/contember/sonda/internal/identities"
+)
+
+const testDigest = "sha256:0994af66bd88ce73c84ee33852b7a81a8ddef37e5c55187df223fb06d3b6deff"
+
+func imageScope(t *testing.T) (*config.Config, authz.ImageScope) {
+	t.Helper()
+	cfg, err := config.Parse([]byte(`
+sources:
+  aws: { type: aws, region: eu-central-1 }
+projects:
+  shop:
+    services:
+      web:
+        environments:
+          production:
+            images: { source: aws, repositories: [shop] }
+`), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := &authz.Identity{Name: "agent", Grants: []identities.Grant{
+		{Project: "shop", Environment: "production", Capability: api.CapabilityImages},
+	}}
+	scope, err := authz.New(cfg, nil).ImageScope(identity, "web", "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, scope
+}
+
+// fakeECR holds count images of repository "shop" and findings pages of one image.
+type fakeECR struct {
+	count     int
+	repoName  string // the repository name in responses; "shop" by default
+	missing   bool   // DescribeImages by digest answers ImageNotFoundException
+	noScan    bool
+	findings  [][]ecrtypes.ImageScanFinding
+	describes []*ecr.DescribeImagesInput
+}
+
+func (f *fakeECR) repo() string {
+	if f.repoName == "" {
+		return "shop"
+	}
+	return f.repoName
+}
+
+func (f *fakeECR) DescribeImages(_ context.Context, in *ecr.DescribeImagesInput, _ ...func(*ecr.Options)) (*ecr.DescribeImagesOutput, error) {
+	f.describes = append(f.describes, in)
+	if len(in.ImageIds) > 0 {
+		if f.missing {
+			return nil, &ecrtypes.ImageNotFoundException{Message: sdkaws.String("not found")}
+		}
+		return &ecr.DescribeImagesOutput{ImageDetails: []ecrtypes.ImageDetail{{RepositoryName: sdkaws.String(f.repo()), ImageDigest: in.ImageIds[0].ImageDigest}}}, nil
+	}
+	start := 0
+	if in.NextToken != nil {
+		start, _ = strconv.Atoi(*in.NextToken)
+	}
+	end := min(start+int(sdkaws.ToInt32(in.MaxResults)), f.count)
+	out := &ecr.DescribeImagesOutput{}
+	for i := start; i < end; i++ {
+		out.ImageDetails = append(out.ImageDetails, ecrtypes.ImageDetail{RepositoryName: sdkaws.String(f.repo()), ImageDigest: sdkaws.String(fmt.Sprintf("sha256:%064d", i))})
+	}
+	if end < f.count {
+		out.NextToken = sdkaws.String(strconv.Itoa(end))
+	}
+	return out, nil
+}
+
+func (f *fakeECR) DescribeImageScanFindings(_ context.Context, in *ecr.DescribeImageScanFindingsInput, _ ...func(*ecr.Options)) (*ecr.DescribeImageScanFindingsOutput, error) {
+	if f.noScan {
+		return nil, &ecrtypes.ScanNotFoundException{Message: sdkaws.String("no scan")}
+	}
+	page := 0
+	if in.NextToken != nil {
+		page, _ = strconv.Atoi(*in.NextToken)
+	}
+	out := &ecr.DescribeImageScanFindingsOutput{
+		RepositoryName:    sdkaws.String(f.repo()),
+		ImageId:           in.ImageId,
+		ImageScanStatus:   &ecrtypes.ImageScanStatus{Status: ecrtypes.ScanStatusComplete},
+		ImageScanFindings: &ecrtypes.ImageScanFindings{Findings: f.findings[page]},
+	}
+	if page+1 < len(f.findings) {
+		out.NextToken = sdkaws.String(strconv.Itoa(page + 1))
+	}
+	return out, nil
+}
+
+func ecrClient(cfg *config.Config, fake *fakeECR) *Client {
+	c := newClient(cfg.Sources["aws"], nil, nil, &fakeIdentity{})
+	c.ecr = fake
+	return c
+}
+
+func TestImageByDigest(t *testing.T) {
+	cfg, scope := imageScope(t)
+	fake := &fakeECR{}
+	image, found, err := ecrClient(cfg, fake).Image(context.Background(), scope, "shop", testDigest)
+	if err != nil || !found || sdkaws.ToString(image.ImageDigest) != testDigest {
+		t.Fatalf("image = %+v, found = %v, err = %v", image, found, err)
+	}
+	if in := fake.describes[0]; sdkaws.ToString(in.RepositoryName) != "shop" || sdkaws.ToString(in.ImageIds[0].ImageDigest) != testDigest {
+		t.Errorf("DescribeImages input = %+v", in)
+	}
+
+	_, found, err = ecrClient(cfg, &fakeECR{missing: true}).Image(context.Background(), scope, "shop", testDigest)
+	if err != nil || found {
+		t.Errorf("missing image: found = %v, err = %v", found, err)
+	}
+}
+
+func TestImagesRejectOutsideScope(t *testing.T) {
+	cfg, scope := imageScope(t)
+	_, _, err := ecrClient(cfg, &fakeECR{}).Image(context.Background(), scope, "other", testDigest)
+	if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal {
+		t.Errorf("unbound repository: error = %v", err)
+	}
+	_, _, err = ecrClient(cfg, &fakeECR{count: 1, repoName: "other"}).Images(context.Background(), scope, "shop")
+	if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal || !strings.Contains(err.Error(), "outside the scope") {
+		t.Errorf("image of another repository: error = %v", err)
+	}
+}
+
+func TestImagesPageAndTruncate(t *testing.T) {
+	cfg, scope := imageScope(t)
+	images, truncated, err := ecrClient(cfg, &fakeECR{count: 2500}).Images(context.Background(), scope, "shop")
+	if err != nil || len(images) != 2500 || truncated {
+		t.Errorf("images = %d, truncated = %v, err = %v", len(images), truncated, err)
+	}
+	images, truncated, err = ecrClient(cfg, &fakeECR{count: maxRepositoryImages + 1}).Images(context.Background(), scope, "shop")
+	if err != nil || len(images) != maxRepositoryImages || !truncated {
+		t.Errorf("over the cap: images = %d, truncated = %v, err = %v", len(images), truncated, err)
+	}
+}
+
+func TestScanFindingsMergePages(t *testing.T) {
+	cfg, scope := imageScope(t)
+	finding := func(name string) ecrtypes.ImageScanFinding {
+		return ecrtypes.ImageScanFinding{Name: sdkaws.String(name), Severity: ecrtypes.FindingSeverityHigh}
+	}
+	fake := &fakeECR{findings: [][]ecrtypes.ImageScanFinding{{finding("CVE-1"), finding("CVE-2")}, {finding("CVE-3")}}}
+	scan, truncated, err := ecrClient(cfg, fake).ScanFindings(context.Background(), scope, "shop", testDigest)
+	if err != nil || truncated {
+		t.Fatalf("truncated = %v, err = %v", truncated, err)
+	}
+	if got := len(scan.ImageScanFindings.Findings); got != 3 || scan.ImageScanStatus.Status != ecrtypes.ScanStatusComplete {
+		t.Errorf("findings = %d, status = %+v", got, scan.ImageScanStatus)
+	}
+
+	scan, _, err = ecrClient(cfg, &fakeECR{noScan: true}).ScanFindings(context.Background(), scope, "shop", testDigest)
+	if err != nil || scan != nil {
+		t.Errorf("never scanned: scan = %+v, err = %v", scan, err)
+	}
+}

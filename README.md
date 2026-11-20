@@ -15,6 +15,7 @@ an agent may see, and returns compact responses with links back to the source.
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
 | **AWS ECS** running tasks, deployments and service events | workloads |
+| **AWS ECR** images and their scan findings | images |
 | **Grafana Tempo** | traces |
 | **Kubernetes** pods, ReplicaSets and events | workloads |
 | **Grafana** managed alerting | alerts |
@@ -95,6 +96,7 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | `sonda metrics list/query <svc>`, `sonda signal <svc> <name>` | Metrics |
 | `sonda traces search/query <svc>`, `sonda trace <svc> <id>` | Traces |
 | `sonda workloads <svc>` | Kubernetes pods or ECS tasks with their image digests, rollouts and events |
+| `sonda images <svc> [--digest D]...`, `sonda image <svc> <digest>` | ECR images with their scan summary; one image with its findings |
 | `sonda alerts <svc>` | Active alerts of Prometheus or Grafana alerting rules |
 | `sonda data schema/query <svc>` | Application data (read-only GraphQL) |
 
@@ -125,14 +127,16 @@ parts that matter for security:
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
   - ECS `cluster` and `service`: the names (not ARNs) of the cluster and the ECS service whose
     running tasks are the service's workloads.
+  - ECR `repositories`: 1 to 20 exact repository names (not ARNs or URIs) whose images the
+    `images` capability reads.
   - Vercel `project` and `environment`: the project ID (`prj_…`, not the name) and the Vercel
     environment, e.g. `production` or `preview`.
   - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.
     The alerts API returns the alerts of every service, so this filter in Sonda is the scope.
   - Contember `project` and `stage`, with an optional `entities` allow list and
     `deny_fields`. The API key's role is the main boundary (see below).
-- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `alerts`,
-  `data`) in project environments, e.g. `logs` in `production` of project `engine`. A grant covers every
+- **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `images`,
+  `alerts`, `data`) in project environments, e.g. `logs` in `production` of project `engine`. A grant covers every
   service of the project that configures the capability in that environment, including services
   added to the project later. `data` is the exception: it is granted per service, e.g. `data` in
   `production` of service `shop-api`, and opens only that service's data binding; it is never

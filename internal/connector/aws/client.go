@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
@@ -48,6 +49,7 @@ type Client struct {
 	metrics  metricsAPI
 	identity identityAPI
 	ecs      ecsAPI
+	ecr      ecrAPI
 	// accountMu guards accountID, the account of Sonda's credentials once resolved.
 	accountMu sync.Mutex
 	accountID string
@@ -60,6 +62,7 @@ type Client struct {
 func New(src *config.Source, cfg sdkaws.Config) *Client {
 	c := newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg))
 	c.ecs = ecs.NewFromConfig(cfg)
+	c.ecr = ecr.NewFromConfig(cfg)
 	return c
 }
 
