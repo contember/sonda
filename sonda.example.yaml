@@ -69,14 +69,15 @@ sources:
   #   external_id: sonda # optional, only with role_arn and default credentials
   #   max_scan_bytes: 10GB # Logs Insights is billed by scanned bytes; larger queries stop
 
-  # Kubernetes serves pods, rollouts and events (the workloads capability). Without a url,
-  # Sonda uses the service account of its own pod. Give the account only get and list on
-  # pods, events and apps/replicasets in the bound namespaces.
+  # Kubernetes serves pods, rollouts, events and objects (the workloads capability). Without a
+  # url, Sonda uses the service account of its own pod. docs/design.md section 12 lists the
+  # read-only RBAC it needs; never grant secrets.
   # k8s-prod:
   #   type: kubernetes
   #   url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com
   #   auth: { type: bearer, token: "${K8S_TOKEN}" }
   #   ca_file: /etc/sonda/k8s-prod-ca.crt
+  #   argocd_namespace: argocd # optional: Argo CD Applications that manage a service's objects
   #
   # On EKS, eks auth signs tokens with the credentials of an aws source instead of a stored
   # token, and the API server's service proxy reaches a Loki, Prometheus or Tempo inside the
@@ -133,6 +134,7 @@ projects:
             # traces: { source: sentry, project: engine, environment: production } # or Sentry spans
             # Exact labels of the service's pods and ReplicaSets, in one namespace.
             # workloads: { source: k8s-prod, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }
+            # A service that stands for a cluster's nodes binds { source: k8s-prod, nodes: true }.
             # The alerts whose labels match the selector, from a prometheus or grafana source.
             # alerts: { source: grafana, selector: '{service="engine-api"}' }
         # Named PromQL expressions without service matchers; Sonda adds the selector.

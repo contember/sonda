@@ -14,10 +14,10 @@ an agent may see, and returns compact responses with links back to the source.
 | **Prometheus** (and Mimir, Thanos, VictoriaMetrics, Grafana Cloud) | metrics, alerts |
 | **Cloudflare** Workers Observability and GraphQL Analytics | logs, metrics, traces |
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
-| **AWS ECS** running tasks, deployments and service events | workloads |
+| **AWS ECS** running tasks, deployments, service events and task definitions (variable names only) | workloads |
 | **AWS ECR** images and their scan findings | images |
 | **Grafana Tempo** | traces |
-| **Kubernetes** pods, ReplicaSets and events | workloads |
+| **Kubernetes** pods with their usage, ReplicaSets, events, the controllers and the Services, Ingresses, network policies, budgets, autoscalers, ConfigMap keys and Argo CD Applications that relate to them; nodes | workloads |
 | **Grafana** managed alerting | alerts |
 | **Vercel** runtime logs | logs |
 | **Contember** Content API | data (read-only GraphQL) |
@@ -95,7 +95,8 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | `sonda logs search/query/fields <svc>`, `sonda result <id>` | Logs |
 | `sonda metrics list/query <svc>`, `sonda signal <svc> <name>` | Metrics |
 | `sonda traces search/query <svc>`, `sonda trace <svc> <id>` | Traces |
-| `sonda workloads <svc>` | Kubernetes pods or ECS tasks with their image digests, rollouts and events |
+| `sonda workloads <svc>` | Kubernetes pods or ECS tasks with their image digests, rollouts and events; a cluster's nodes |
+| `sonda objects <svc>` | Configuration of what runs the service: controllers, Services, Ingress rules, network policies, autoscalers, budgets, ConfigMap keys, Argo CD status; ECS task definitions. Variable names only |
 | `sonda images <svc> [--digest D]...`, `sonda image <svc> <digest>` | ECR images with their scan summary; one image with its findings |
 | `sonda alerts <svc>` | Active alerts of Prometheus or Grafana alerting rules |
 | `sonda data schema/query <svc>` | Application data (read-only GraphQL) |
@@ -125,6 +126,7 @@ parts that matter for security:
   - Sentry traces `project` and `environment`, as for errors. Sentry has no project-scoped
     span search, so Sonda checks the project and environment of every span it returns.
   - Kubernetes `namespace` and `labels`: exact labels the service's pods and ReplicaSets carry.
+    Or `nodes: true` alone: a service that stands for the cluster's nodes.
   - ECS `cluster` and `service`: the names (not ARNs) of the cluster and the ECS service whose
     running tasks are the service's workloads.
   - ECR `repositories`: 1 to 20 exact repository names (not ARNs or URIs) whose images the
@@ -178,6 +180,7 @@ sources:
     url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com
     auth: { type: bearer, token: "${K8S_TOKEN}" }  # a read-only service account token
     ca_file: /etc/sonda/k8s-prod-ca.crt
+    argocd_namespace: argocd           # optional: read Argo CD Applications there
   grafana:
     type: grafana                      # Grafana-managed alerts; a prometheus source serves its own rules' alerts
     url: https://grafana.example.com
