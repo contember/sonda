@@ -1,0 +1,33 @@
+{{define "actions"}}<form method="post" action="/admin/signing-keys" hx-confirm="Add a signing key? It is published at once; Sonda signs with it after a restart. Wait 5 minutes before restarting so caches of the JWKS pick it up."><button type="submit" class="button">Add key</button></form>{{end}}
+{{define "content"}}
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>Key ID</th><th>Created (UTC)</th><th>State</th><th></th></tr>
+  </thead>
+  <tbody>
+  {{range .}}
+    <tr>
+      <td><code>{{.ID}}</code></td>
+      <td class="nowrap muted">{{time .CreatedAt}}</td>
+      <td class="nowrap">
+        <span class="pills pills-inline">
+        {{if .Signing}}<span class="pill pill-success">signing</span>{{end}}
+        {{if .Newest}}<span class="pill pill-accent">newest</span>{{end}}
+        {{if not (or .Signing .Newest)}}<span class="pill">published</span>{{end}}
+        </span>
+      </td>
+      <td class="end">
+        {{if not (or .Signing .Newest)}}
+        <form method="post" action="/admin/signing-keys/{{.ID}}/delete" hx-confirm="Remove key {{.ID}}? Tokens it signed stop verifying.">
+          <button type="submit" class="button button-danger button-sm">Remove</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted">Rotation: add a key, wait 5 minutes (the JWKS is cacheable for that long), restart every replica so it signs with the newest key, then remove the old one. Sonda refuses to remove the newest key and the key this process signs with; it cannot see what other replicas sign with.</p>
+{{end}}

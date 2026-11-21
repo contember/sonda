@@ -1,15 +1,18 @@
 package issuer
 
 import (
+	"cmp"
 	"context"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,10 +22,25 @@ type memoryStore struct {
 	keys []Key
 }
 
-func (m *memoryStore) SigningKeys(context.Context) ([]Key, error) { return m.keys, nil }
+// SigningKeys orders like the real store: by whole seconds, then by ID.
+func (m *memoryStore) SigningKeys(context.Context) ([]Key, error) {
+	keys := slices.Clone(m.keys)
+	slices.SortStableFunc(keys, func(a, b Key) int {
+		if c := cmp.Compare(a.CreatedAt.Unix(), b.CreatedAt.Unix()); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return keys, nil
+}
 
 func (m *memoryStore) AddSigningKey(_ context.Context, key Key) error {
 	m.keys = append(m.keys, key)
+	return nil
+}
+
+func (m *memoryStore) DeleteSigningKey(_ context.Context, id string) error {
+	m.keys = slices.DeleteFunc(m.keys, func(key Key) bool { return key.ID == id })
 	return nil
 }
 
@@ -150,7 +168,7 @@ func TestOpenReusesStoredKeyAndPublishesAll(t *testing.T) {
 	}
 
 	// Another replica added a newer key: this one signs with it and the JWKS lists both.
-	newer, err := newKey(time.Now())
+	newer, err := newKey(store.keys[0].CreatedAt.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +196,65 @@ func TestOpenReusesStoredKeyAndPublishesAll(t *testing.T) {
 	}
 	if len(set.Keys) != 2 {
 		t.Fatalf("JWKS has %d keys, want 2", len(set.Keys))
+	}
+	verify(t, token, set.Keys)
+}
+
+func TestRotateKey(t *testing.T) {
+	ctx := context.Background()
+	store := &memoryStore{}
+	old, err := Open(ctx, "https://sonda.example.com", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := old.keyID
+	// The new key gets the same second as the old one; it must still sort last.
+	old.now = func() time.Time { return store.keys[0].CreatedAt }
+	newID, err := old.AddKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.RemoveKey(ctx, oldID); !errors.Is(err, ErrKeyInUse) {
+		t.Errorf("remove the key this process signs with: %v", err)
+	}
+
+	// After a restart Sonda signs with the new key, which cannot be removed, and the old one can.
+	restarted, err := Open(ctx, "https://sonda.example.com", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.keyID != newID {
+		t.Fatalf("signing key after restart = %s, want %s", restarted.keyID, newID)
+	}
+	if err := restarted.RemoveKey(ctx, newID); !errors.Is(err, ErrKeyInUse) {
+		t.Errorf("remove the newest key: %v", err)
+	}
+	if err := restarted.RemoveKey(ctx, "missing"); !errors.Is(err, ErrKeyNotFound) {
+		t.Errorf("remove a missing key: %v", err)
+	}
+	if err := restarted.RemoveKey(ctx, oldID); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := restarted.Keys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].ID != newID || !keys[0].Newest || !keys[0].Signing {
+		t.Fatalf("keys after rotation = %+v", keys)
+	}
+	token, err := restarted.Token("sts.amazonaws.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := restarted.jwks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var set struct {
+		Keys []jwk `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &set); err != nil {
+		t.Fatal(err)
 	}
 	verify(t, token, set.Keys)
 }

@@ -34,3 +34,8 @@ func (s *Store) AddSigningKey(ctx context.Context, key issuer.Key) error {
 		key.ID, key.PrivateKey, key.CreatedAt.Unix())
 	return err
 }
+
+func (s *Store) DeleteSigningKey(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM signing_keys WHERE id = $1`, id)
+	return err
+}

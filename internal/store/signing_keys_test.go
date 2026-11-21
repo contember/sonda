@@ -29,6 +29,18 @@ func TestSigningKeys(t *testing.T) {
 		if !bytes.Equal(keys[1].PrivateKey, newer.PrivateKey) || !keys[1].CreatedAt.Equal(newer.CreatedAt) {
 			t.Errorf("key = %+v, want %+v", keys[1], newer)
 		}
+		for range 2 {
+			if err := st.DeleteSigningKey(ctx, "b"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		keys, err = st.SigningKeys(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keys) != 1 || keys[0].ID != "a" {
+			t.Errorf("keys after delete = %+v, want only a", keys)
+		}
 	})
 }
 
