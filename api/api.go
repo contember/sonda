@@ -698,10 +698,13 @@ type ConfigMap struct {
 }
 
 // Application is the status of an Argo CD Application that manages the service's
-// controllers. Resources lists only the service's own objects.
+// controllers. Resources lists only the service's own objects. A Shared Application also
+// manages other objects: Sync and Health are then those of the service's own resources, and
+// HealthMessage, OperationDetail and Conditions are left out.
 type Application struct {
 	Name            string            `json:"name"`
 	Project         string            `json:"project,omitempty"`
+	Shared          bool              `json:"shared,omitempty"`
 	Sync            string            `json:"sync"`
 	Revision        string            `json:"revision,omitempty"`
 	Health          string            `json:"health"`

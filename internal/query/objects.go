@@ -12,6 +12,10 @@ var objectsUntrusted = []string{
 	"data.autoscalers[].conditions[].reason", "data.autoscalers[].conditions[].message",
 	"data.applications[].healthMessage", "data.applications[].operationDetail",
 	"data.applications[].conditions[].message",
+	// Variable names, probes and rules are free text written by whoever deploys the service.
+	"data.controllers[].containers[].env[]", "data.controllers[].containers[].secretEnv[]",
+	"data.controllers[].containers[].probes", "data.ingresses[].rules[]",
+	"data.taskDefinitions[].containers[].env[]", "data.taskDefinitions[].containers[].secretEnv[]",
 }
 
 // Objects returns the configuration of the objects that run the service: on Kubernetes its

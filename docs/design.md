@@ -453,7 +453,8 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   - controllers whose pod template carries every scope label (Jobs: the 20 newest);
   - Services with a non-empty selector that matches one of those templates or a scoped pod,
     with ready and not-ready endpoints counted from their EndpointSlices;
-  - of each Ingress, only the rules whose backend is one of those Services;
+  - of each Ingress, only the rules whose backend is one of those Services, and only the TLS
+    hosts of those rules;
   - NetworkPolicies and PodDisruptionBudgets whose selector matches those pods (an empty pod
     selector matches all pods, so a namespace-wide policy is shown);
   - autoscalers whose target is one of the controllers;
@@ -461,8 +462,11 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
     keys only; a missing one is reported as `missing`;
   - with `argocd_namespace`, the Applications whose `status.resources` hold one of the
     controllers in the namespace: sync and health, revision, last operation and conditions, and
-    of the resources only the service's own objects. `spec.source`, which holds Helm values, is
-    not decoded.
+    of the resources only the service's own objects. An Application that also manages objects
+    of other services or namespaces is `shared`: its sync and health are computed from the
+    service's own resources, and its health message, operation message and conditions, which
+    may name other services, are left out. `spec.source`, which holds Helm values, is not
+    decoded.
   Containers are described with image, requests and limits, ports, probes (an exec probe's
   command is left out), and variable names: plain ones in `env`, those from a Secret in
   `secretEnv`, and `envFrom` sources by name. Env values are not decoded.
@@ -1214,7 +1218,8 @@ Rules:
   encrypted log groups; for metrics `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`; for
   ECS workloads `ecs:DescribeServices`, `ecs:ListTasks`, `ecs:DescribeTasks`,
   `ecs:DescribeTaskDefinition` (task definitions return variable values, which IAM cannot
-  exclude; Sonda drops them); for images
+  exclude; Sonda drops them; the action supports no resource-level permissions, so it needs
+  `Resource: "*"` and reads every task definition of the account); for images
   `ecr:DescribeImages`, `ecr:DescribeImageScanFindings`. No pull rights
   (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`): Sonda never reads image contents.
   The ECR actions can be limited to the ARNs of the bound repositories, the ECS describe

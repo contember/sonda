@@ -18,6 +18,9 @@ import (
 // maxObjects stops each namespace list; a namespace holds far fewer objects of one kind.
 const maxObjects = 500
 
+// applicationPage is the page size for Argo CD Applications, which are large objects.
+const applicationPage = 50
+
 // IntString is a Kubernetes int-or-string value, such as a port or a percentage, kept as text.
 type IntString string
 
@@ -444,8 +447,9 @@ type Application struct {
 	} `json:"spec"`
 	Status struct {
 		Sync struct {
-			Status   string `json:"status"`
-			Revision string `json:"revision"`
+			Status    string   `json:"status"`
+			Revision  string   `json:"revision"`
+			Revisions []string `json:"revisions"`
 		} `json:"sync"`
 		Health struct {
 			Status  string `json:"status"`
@@ -599,7 +603,9 @@ func (c *Client) Applications(ctx context.Context) ([]Application, bool, error) 
 	if ns == "" {
 		return nil, false, nil
 	}
-	apps, truncated, err := listAll[Application](ctx, c, "/apis/argoproj.io/v1alpha1/namespaces/"+url.PathEscape(ns)+"/applications", nil, maxObjects)
+	// Applications carry their history and resource lists, so a page of 500 could pass the
+	// body limit; smaller pages keep each response small.
+	apps, truncated, err := listAll[Application](ctx, c, "/apis/argoproj.io/v1alpha1/namespaces/"+url.PathEscape(ns)+"/applications", url.Values{"limit": {strconv.Itoa(applicationPage)}}, maxObjects)
 	if err != nil {
 		return nil, false, err
 	}
@@ -654,7 +660,7 @@ func (c *Client) NodeEvents(ctx context.Context, _ authz.NodeScope) ([]Event, bo
 		return nil, false, err
 	}
 	for _, e := range events {
-		if e.InvolvedObject.Kind != "Node" {
+		if e.InvolvedObject.Kind != "Node" || e.Metadata.Namespace != nodeEventsNamespace {
 			return nil, false, c.outsideScope()
 		}
 	}

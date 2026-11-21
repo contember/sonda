@@ -112,7 +112,11 @@ func renderObjects(w io.Writer, resp api.Response[api.WorkloadObjects]) {
 	if len(d.Applications) > 0 {
 		fmt.Fprintln(w, "\nARGO CD")
 		for _, app := range d.Applications {
-			fmt.Fprintf(w, "  %s  sync=%s health=%s rev=%s\n", app.Name, app.Sync, app.Health, valueOrDash(app.Revision))
+			shared := ""
+			if app.Shared {
+				shared = "  shared, sync and health of this service's objects"
+			}
+			fmt.Fprintf(w, "  %s  sync=%s health=%s rev=%s%s\n", app.Name, app.Sync, app.Health, valueOrDash(app.Revision), shared)
 			if app.Operation != "" {
 				ended := ""
 				if app.OperationEnded != nil {

@@ -53,7 +53,7 @@ func namespaceObjects(t *testing.T) kubernetesObjects {
 		ingresses: decode[kubernetes.Ingress](t, `[
 			{"metadata":{"name":"public"},"spec":{"ingressClassName":"traefik","rules":[{"host":"api.example.com","http":{"paths":[
 				{"path":"/","backend":{"service":{"name":"engine-api","port":{"name":"http"}}}},
-				{"path":"/admin","backend":{"service":{"name":"admin","port":{"number":80}}}}]}}],"tls":[{"hosts":["api.example.com"]}]}},
+				{"path":"/admin","backend":{"service":{"name":"admin","port":{"number":80}}}}]}}],"tls":[{"hosts":["api.example.com","admin.example.com"]}]}},
 			{"metadata":{"name":"admin-only"},"spec":{"rules":[{"host":"admin.example.com","http":{"paths":[{"path":"/","backend":{"service":{"name":"admin","port":{"number":80}}}}]}}]}}
 		]`),
 		policies: decode[kubernetes.NetworkPolicy](t, `[
@@ -73,8 +73,8 @@ func namespaceObjects(t *testing.T) kubernetesObjects {
 			{"metadata":{"name":"admin"},"spec":{"scaleTargetRef":{"kind":"Deployment","name":"admin"},"maxReplicas":2}}
 		]`),
 		applications: decode[kubernetes.Application](t, `[
-			{"metadata":{"name":"engine","namespace":"argocd"},"spec":{"project":"default"},"status":{"sync":{"status":"OutOfSync","revision":"abc123"},"health":{"status":"Degraded"},
-			 "operationState":{"phase":"Failed","message":"one or more objects failed"},
+			{"metadata":{"name":"engine","namespace":"argocd"},"spec":{"project":"default"},"status":{"sync":{"status":"OutOfSync","revision":"abc123"},"health":{"status":"Degraded","message":"Deployment admin is degraded"},
+			 "operationState":{"phase":"Failed","message":"admin: invalid spec"},"conditions":[{"type":"SyncError","message":"admin failed"}],
 			 "resources":[{"kind":"Deployment","namespace":"engine","name":"engine-api","status":"OutOfSync","health":{"status":"Degraded"}},
 			  {"kind":"Deployment","namespace":"engine","name":"admin","status":"Synced"},
 			  {"kind":"Service","namespace":"engine","name":"engine-api","status":"Synced"}]}},
@@ -113,7 +113,7 @@ func TestRelateObjectsKeepsTheServiceOnly(t *testing.T) {
 	if len(data.Services) != 1 || data.Services[0].Name != "engine-api" || data.Services[0].ReadyEndpoints != 2 || data.Services[0].NotReadyEndpoints != 1 {
 		t.Errorf("services = %+v", data.Services)
 	}
-	if len(data.Ingresses) != 1 || fmt.Sprint(data.Ingresses[0].Rules) != "[api.example.com/ → engine-api:http]" {
+	if len(data.Ingresses) != 1 || fmt.Sprint(data.Ingresses[0].Rules) != "[api.example.com/ → engine-api:http]" || fmt.Sprint(data.Ingresses[0].TLSHosts) != "[api.example.com]" {
 		t.Errorf("ingresses = %+v", data.Ingresses)
 	}
 	var policies []string
@@ -133,7 +133,9 @@ func TestRelateObjectsKeepsTheServiceOnly(t *testing.T) {
 		t.Fatalf("applications = %+v", data.Applications)
 	}
 	a := data.Applications[0]
-	if a.Name != "engine" || a.Sync != "OutOfSync" || a.Operation != "Failed" || fmt.Sprint(a.Resources) != "[{Deployment/engine-api OutOfSync Degraded} {Service/engine-api Synced }]" {
+	if a.Name != "engine" || !a.Shared || a.Sync != "OutOfSync" || a.Health != "Degraded" || a.Operation != "Failed" ||
+		a.HealthMessage != "" || a.OperationDetail != "" || a.Conditions != nil ||
+		fmt.Sprint(a.Resources) != "[{Deployment/engine-api OutOfSync Degraded} {Service/engine-api Synced }]" {
 		t.Errorf("application = %+v", a)
 	}
 
@@ -215,5 +217,16 @@ func TestECSObjects(t *testing.T) {
 	td := apiTaskDefinition(aws.TaskDefinition{Family: "web", Revision: 42, Containers: []aws.TaskContainer{{Name: "app", CPU: 256, Memory: 512, Env: []string{"PORT"}}}})
 	if td.Containers[0].Requests["cpu"] != "256 units" || td.Containers[0].Limits["memory"] != "512MiB" || fmt.Sprint(td.Containers[0].Env) != "[PORT]" {
 		t.Errorf("task definition = %+v", td)
+	}
+}
+
+func TestApplicationOfTheServiceOnlyKeepsItsMessages(t *testing.T) {
+	apps := decode[kubernetes.Application](t, `[{"metadata":{"name":"engine"},"status":{"sync":{"status":"Synced","revisions":["a1","b2"]},
+		"health":{"status":"Progressing","message":"waiting for rollout"},"operationState":{"phase":"Running","message":"syncing"},
+		"resources":[{"kind":"Deployment","namespace":"engine","name":"engine-api","status":"Synced","health":{"status":"Progressing"}}]}}]`)
+	controllers := []api.Controller{{Kind: "Deployment", Name: "engine-api"}}
+	got := testService(t).applications("engine", apps, controllers, map[string]bool{"Deployment/engine-api": true})
+	if len(got) != 1 || got[0].Shared || got[0].Health != "Progressing" || got[0].HealthMessage != "waiting for rollout" || got[0].OperationDetail != "syncing" || got[0].Revision != "a1,b2" {
+		t.Errorf("applications = %+v", got)
 	}
 }

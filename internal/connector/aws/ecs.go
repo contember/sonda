@@ -195,7 +195,11 @@ func taskDefinition(td ecstypes.TaskDefinition) TaskDefinition {
 			container.SecretEnv = append(container.SecretEnv, sdkaws.ToString(s.Name))
 		}
 		for _, p := range c.PortMappings {
-			port := fmt.Sprintf("%d/%s", sdkaws.ToInt32(p.ContainerPort), strings.ToUpper(string(p.Protocol)))
+			protocol := strings.ToUpper(string(p.Protocol))
+			if protocol == "" {
+				protocol = "TCP"
+			}
+			port := fmt.Sprintf("%d/%s", sdkaws.ToInt32(p.ContainerPort), protocol)
 			if name := sdkaws.ToString(p.Name); name != "" {
 				port = name + " " + port
 			}

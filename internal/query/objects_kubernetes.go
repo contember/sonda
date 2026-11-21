@@ -268,7 +268,7 @@ func (s *Service) relateObjects(namespace string, scopeLabels map[string]string,
 	}
 
 	for _, ing := range o.ingresses {
-		routed := ingressRules(ing, services)
+		routed, hosts := ingressRules(ing, services)
 		if len(routed) == 0 {
 			continue
 		}
@@ -277,8 +277,13 @@ func (s *Service) relateObjects(namespace string, scopeLabels map[string]string,
 		if ing.Spec.IngressClassName != nil {
 			out.Class = *ing.Spec.IngressClassName
 		}
+		// Only the TLS hosts of the kept rules: the others belong to other services.
 		for _, tls := range ing.Spec.TLS {
-			out.TLSHosts = append(out.TLSHosts, tls.Hosts...)
+			for _, host := range tls.Hosts {
+				if hosts[host] {
+					out.TLSHosts = append(out.TLSHosts, host)
+				}
+			}
 		}
 		result.data.Ingresses = append(result.data.Ingresses, out)
 	}
@@ -339,7 +344,9 @@ func (s *Service) relateObjects(namespace string, scopeLabels map[string]string,
 }
 
 // applications keeps the Argo CD Applications that manage one of the service's controllers and
-// lists only the service's own objects among their resources.
+// lists only the service's own objects among their resources. An Application that also manages
+// other objects is shared: its sync and health then come from the service's own resources, and
+// its messages and conditions, which can describe the other objects, are left out.
 func (s *Service) applications(namespace string, apps []kubernetes.Application, controllers []api.Controller, owned map[string]bool) []api.Application {
 	controls := map[string]bool{}
 	for _, c := range controllers {
@@ -353,19 +360,15 @@ func (s *Service) applications(namespace string, apps []kubernetes.Application, 
 		if !manages {
 			continue
 		}
-		out := api.Application{Name: app.Metadata.Name, Project: app.Spec.Project, Sync: app.Status.Sync.Status,
-			Revision: app.Status.Sync.Revision, Health: app.Status.Health.Status,
-			HealthMessage: s.redactor.Redact(app.Status.Health.Message), Reconciled: app.Status.ReconciledAt,
-			Resources: []api.AppResource{}}
-		if op := app.Status.OperationState; op != nil {
-			out.Operation, out.OperationDetail, out.OperationEnded = op.Phase, s.redactor.Redact(op.Message), op.FinishedAt
-		}
-		for _, c := range app.Status.Conditions {
-			out.Conditions = append(out.Conditions, api.ObjectCondition{Type: c.Type, Status: "True", Message: s.redactor.Redact(c.Message), Changed: c.LastTransitionTime})
+		out := api.Application{Name: app.Metadata.Name, Project: app.Spec.Project, Revision: app.Status.Sync.Revision,
+			Reconciled: app.Status.ReconciledAt, Resources: []api.AppResource{}}
+		if out.Revision == "" {
+			out.Revision = strings.Join(app.Status.Sync.Revisions, ",")
 		}
 		for _, r := range app.Status.Resources {
 			object := r.Kind + "/" + r.Name
 			if r.Namespace != namespace || !owned[object] {
+				out.Shared = true
 				continue
 			}
 			resource := api.AppResource{Object: object, Sync: r.Status}
@@ -374,9 +377,48 @@ func (s *Service) applications(namespace string, apps []kubernetes.Application, 
 			}
 			out.Resources = append(out.Resources, resource)
 		}
+		if op := app.Status.OperationState; op != nil {
+			out.Operation, out.OperationEnded = op.Phase, op.FinishedAt
+		}
+		if out.Shared {
+			out.Sync, out.Health = ownSync(out.Resources), ownHealth(out.Resources)
+		} else {
+			out.Sync, out.Health = app.Status.Sync.Status, app.Status.Health.Status
+			out.HealthMessage = s.redactor.Redact(app.Status.Health.Message)
+			if op := app.Status.OperationState; op != nil {
+				out.OperationDetail = s.redactor.Redact(op.Message)
+			}
+			for _, c := range app.Status.Conditions {
+				out.Conditions = append(out.Conditions, api.ObjectCondition{Type: c.Type, Status: "True", Message: s.redactor.Redact(c.Message), Changed: c.LastTransitionTime})
+			}
+		}
 		result = append(result, out)
 	}
 	return result
+}
+
+// ownSync is OutOfSync when one of the resources is, as Argo CD aggregates it.
+func ownSync(resources []api.AppResource) string {
+	for _, r := range resources {
+		if r.Sync != "Synced" {
+			return "OutOfSync"
+		}
+	}
+	return "Synced"
+}
+
+// argoHealthOrder ranks health states from best to worst, as Argo CD aggregates them.
+var argoHealthOrder = []string{"Healthy", "Suspended", "Progressing", "Missing", "Degraded", "Unknown"}
+
+// ownHealth is the worst health of the resources; resources without health do not count.
+func ownHealth(resources []api.AppResource) string {
+	worst := "Healthy"
+	for _, r := range resources {
+		if r.Health != "" && slices.Index(argoHealthOrder, r.Health) > slices.Index(argoHealthOrder, worst) {
+			worst = r.Health
+		}
+	}
+	return worst
 }
 
 func (s *Service) conditions(conditions []kubernetes.StatusCondition) []api.ObjectCondition {
@@ -477,8 +519,10 @@ func loadBalancer(lb kubernetes.LoadBalancerStatus) []string {
 	return result
 }
 
-// ingressRules returns the rules that route to one of services, as "host/path → service:port".
-func ingressRules(ing kubernetes.Ingress, services map[string]bool) []string {
+// ingressRules returns the rules that route to one of services, as "host/path → service:port",
+// and the hosts of those rules.
+func ingressRules(ing kubernetes.Ingress, services map[string]bool) ([]string, map[string]bool) {
+	hosts := map[string]bool{}
 	backend := func(b kubernetes.IngressBackend) (string, bool) {
 		if b.Service == nil || !services[b.Service.Name] {
 			return "", false
@@ -502,10 +546,11 @@ func ingressRules(ing kubernetes.Ingress, services map[string]bool) []string {
 		for _, path := range rule.HTTP.Paths {
 			if target, ok := backend(path.Backend); ok {
 				rules = append(rules, cmpOr(rule.Host, "*")+cmpOr(path.Path, "/")+" → "+target)
+				hosts[rule.Host] = true
 			}
 		}
 	}
-	return rules
+	return rules, hosts
 }
 
 // policyRule describes one ingress or egress rule; no peers means all, no ports all ports.

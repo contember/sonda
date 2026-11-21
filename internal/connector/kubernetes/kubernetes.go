@@ -307,6 +307,7 @@ func listAllRaw[T any](ctx context.Context, c *Client, path string, filter url.V
 	next := ""
 	for {
 		params := url.Values{"limit": {strconv.Itoa(pageSize)}}
+		// filter may also set a smaller page size.
 		for key, values := range filter {
 			params[key] = values
 		}
