@@ -622,9 +622,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   Kubernetes group, and a Role that allows `get` on `services/proxy` with `resourceNames` set to
   `<scheme>:<service>:<port>` (Prometheus also needs `create`: its client POSTs queries). The
   same role and `auth: eks` serve a `kubernetes` source. The EKS control plane reaches pods only
-  on the ports the node security group opens to it (the `terraform-aws-eks` module opens 443,
-  10250 and the webhook ports 4443, 6443, 8443, 9443, 10251); a backend on another port times
-  out.
+  on the ports the security groups on the nodes open to it (the recommended node rules of the
+  `terraform-aws-eks` module open 443, 10250 and the webhook ports 4443, 6443, 8443, 9443,
+  10251); a backend on another port times out.
 
 ### Alerts specifics
 
