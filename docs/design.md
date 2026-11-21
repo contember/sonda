@@ -5,7 +5,8 @@ Status: implemented (v1). Deviations found during implementation are folded into
 Sonda is a self-hostable, read-only gateway that gives AI agents one credential and one
 service-centric interface to production telemetry in Sentry, Loki, Prometheus, Cloudflare
 Workers Observability, AWS CloudWatch and Grafana Tempo, to what runs in Kubernetes and ECS
-and the scans of its images in ECR, and to application data in Contember projects.
+the scans of its images in ECR and the versions, maintenance and expiry of its managed AWS
+resources, and to application data in Contember projects.
 It stores no telemetry and no data. It queries sources on demand, enforces per-service
 authorization, and returns compact, evidence-carrying responses.
 
@@ -49,6 +50,7 @@ authorization, and returns compact, evidence-carrying responses.
 | Variable and ConfigMap values | Never returned. Kubernetes env values, exec probe commands, ConfigMap data and Argo CD `spec.source` are not decoded at all; ECS task definitions are cut to names in the connector | Redaction | RBAC and IAM cannot exclude them from the objects Sonda reads, and redaction is not complete. |
 | Cluster nodes | A service bound with `nodes: true` stands for a cluster's nodes; `workloads` returns the nodes, their usage and their events | Nodes in every service's workloads | Nodes are shared by all services; a service of its own lets a grant name them per project. |
 | Images capability | A new capability `images`: the images of the service's ECR repositories with the registry's own scan, read with `DescribeImages` and `DescribeImageScanFindings` | Pulling and scanning images in Sonda; listing every repository of an account | Sonda stays read-only and stateless and needs no pull rights. Repositories are bound per service like log groups, so a grant cannot reach an image the service does not own. |
+| Resources capability | A new capability `resources`: the configuration state of the managed resources a service names (RDS and Aurora, ElastiCache, ACM certificates, Lambda functions, EKS clusters) from describe calls: versions, upgrades, support dates, pending maintenance, backups, expiry | A capability per resource kind; listing every resource of an account; reading it from Terraform state | One question (what needs upgrading, renewing or attention) across kinds, so one grant. Resources are bound per service by exact identifier like log groups, so a grant cannot reach a database the service does not own. Terraform state holds secrets and lags reality. |
 | Alerts source | The Prometheus-compatible alerts API of Prometheus/Mimir (`/api/v1/alerts`) or of Grafana-managed alerting (a `grafana` source) | Alertmanager; Grafana's own alerting API | One response shape for both. Alertmanager holds only firing alerts, after grouping and silencing. |
 | Alerts scope | A Prometheus `selector` over the alert labels, applied by Sonda | Upstream filtering | The alerts API has no label filter; it returns every alert the token can read, and Sonda drops those that do not match. |
 | Alerts capability | A new capability `alerts` | Serve alerts under `metrics` | Alerts may come from another source than metrics (Grafana), and a grant should name it. |
@@ -71,7 +73,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `loki` | Loki | logs | `url`, auth, headers |
   | `prometheus` | Prometheus, Mimir, Thanos, VictoriaMetrics, Grafana Cloud | metrics, alerts | `url`, auth, headers |
   | `cloudflare` | Workers Observability, GraphQL Analytics | logs, metrics, traces | `account_id`, bearer token; `url` defaults to `https://api.cloudflare.com/client/v4` |
-  | `aws` | CloudWatch Logs Insights, CloudWatch metrics, ECS, ECR | logs, metrics, workloads, images | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
+  | `aws` | CloudWatch Logs Insights, CloudWatch metrics, ECS, ECR, RDS, ElastiCache, ACM, Lambda, EKS | logs, metrics, workloads, images, resources | `region`, `credentials` (`default` or `identity`), `role_arn` (optional with `default`) + `external_id`, `max_scan_bytes` (default 10 GB) |
   | `tempo` | Grafana Tempo | traces | `url`, auth, headers |
   | `kubernetes` | Kubernetes API server | workloads | `url`, bearer token; without `url`, the pod's service account (in-cluster); optional `argocd_namespace` where Argo CD Applications live |
   | `grafana` | Grafana-managed alerting | alerts | `url`, auth, headers |
@@ -114,6 +116,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty); or `nodes: true` alone, for a service that stands for the cluster's nodes |
   | `workloads` | `aws` | ECS `cluster` + `service`: names, not ARNs |
   | `images` | `aws` | `repositories`: 1 to 20 unique ECR repository names in the source's region, not ARNs or URIs |
+  | `resources` | `aws` | any of `rds_clusters`, `rds_instances` (standalone instances), `elasticache` (replication group IDs), `certificates` (ACM certificate ARNs in the source's region), `lambdas` (function names), `eks_clusters`: at least one entry, each list unique and at most 20 long, exact identifiers, no ARNs except certificates |
   | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
   | `data` | `contember` | `project` + `stage` (default `live`), optional `entities` allow list and `deny_fields` (`Entity.field` or `*.field`) |
 
@@ -131,7 +134,7 @@ Identity ──< Grant (projects × environments × capabilities)
 - **Grant**: one `(project, environment, capability)`. It covers every service of the project
   that configures the capability in that environment, including services added to the project
   later. It never covers another environment or capability. Capabilities: `errors`, `logs`,
-  `metrics`, `traces`, `workloads`, `images`, `alerts`, `data`. `data` is never implied by another
+  `metrics`, `traces`, `workloads`, `images`, `resources`, `alerts`, `data`. `data` is never implied by another
   grant, and it is granted per service instead of per project: a `data` grant names one
   service environment and opens only its data binding. A native query requires the same capability as the structured tool for
   that signal type. A `traces` grant also makes the project's spans visible in full inside
@@ -266,13 +269,13 @@ internal/connector
   loki/            Loki HTTP API client
   prometheus/      Prometheus HTTP API client (prometheus/client_golang)
   cloudflare/      Workers Observability and GraphQL Analytics client
-  aws/             CloudWatch Logs, CloudWatch, ECS and ECR client (aws-sdk-go-v2)
+  aws/             CloudWatch Logs, CloudWatch, ECS, ECR, RDS, ElastiCache, ACM, Lambda and EKS client (aws-sdk-go-v2)
   tempo/           Tempo HTTP API client
   kubernetes/      Kubernetes API client: pods, controllers and the objects that select them, events, Argo CD Applications, nodes, metrics API
   alerting/        Prometheus-compatible alerts API client (Prometheus, Mimir, Grafana)
   vercel/          Vercel Observability events client: runtime logs
   contember/       Contember Content API client (introspection and checked queries)
-internal/query     use cases: overview, errors, logs, metrics, traces, workloads, objects, images, alerts, data, results; one backend per source type
+internal/query     use cases: overview, errors, logs, metrics, traces, workloads, objects, images, resources, alerts, data, results; one backend per source type
 internal/shape     grouping (Drain), redaction, truncation, series summaries, trace trees, source links
 internal/audit     per-request record of service, environment and upstream queries
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles, signing keys
@@ -285,7 +288,7 @@ Boundaries:
 - `httpapi` parses requests into `api` types and calls `query`. Nothing reaches a connector
   without a scope from `authz`.
 - `authz` is the only way to get a scope: `ErrorScope`, `LogScope`, `MetricScope`,
-  `TraceScope`, `WorkloadScope`, `ImageScope`, `AlertScope` (a `SelectorScope`) and `DataScope`, which resolve to one typed variant per source type (`SelectorScope`,
+  `TraceScope`, `WorkloadScope`, `ImageScope`, `ResourceScope`, `AlertScope` (a `SelectorScope`) and `DataScope`, which resolve to one typed variant per source type (`SelectorScope`,
   `CloudflareScope`, `LogGroupScope`, `CloudWatchMetricScope`, `TempoScope`, `VercelScope`, `KubernetesScope`, `ECSScope`, `ContemberScope`). Connector methods
   take a scope or a `policy` value, never a service name from the request. A usable scope
   cannot be built outside `authz` (fields are unexported; accessors return copies).
@@ -358,7 +361,7 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | Client | Upstream calls | Input |
 |---|---|---|
 | `cloudflare` | `POST /accounts/{account}/workers/observability/telemetry/query` (events, calculations, invocations, traces), `…/telemetry/keys`, `POST /graphql` | `policy` Cloudflare query, `CloudflareScope`, `telemetry.CloudflareMetricQuery` |
-| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. ECS: `DescribeServices`, `ListTasks`, `DescribeTasks`, `DescribeTaskDefinition`. ECR: `DescribeImages`, `DescribeImageScanFindings`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope`, `ECSScope`, `ImageScope` |
+| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. ECS: `DescribeServices`, `ListTasks`, `DescribeTasks`, `DescribeTaskDefinition`. ECR: `DescribeImages`, `DescribeImageScanFindings`. RDS: `DescribeDBClusters`, `DescribeDBInstances`, `DescribeDBEngineVersions`, `DescribeDBMajorEngineVersions`, `DescribePendingMaintenanceActions`, `DescribeDBClusterSnapshots`, `DescribeDBSnapshots`, `DescribeEvents`. ElastiCache: `DescribeReplicationGroups`, `DescribeCacheClusters`, `DescribeCacheEngineVersions`, `DescribeUpdateActions`. ACM: `DescribeCertificate`. Lambda: `GetFunctionConfiguration`. EKS: `DescribeCluster`, `ListAddons`, `DescribeAddon`, `DescribeAddonVersions`, `DescribeClusterVersions`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope`, `ECSScope`, `ImageScope`, `ResourceScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
 | `vercel` | `POST /v1/observability/events` (event `vercel.log`) | `policy` Vercel query, `VercelScope` |
 | `contember` | `POST /content/{project}/{stage}`: introspection, and queries without variables | `ContemberScope`, `policy.ContemberGraphQL` |
@@ -544,6 +547,49 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - Every returned image and scan must belong to the requested repository and digest; anything
   else fails the request with `internal`. Tags and scan descriptions are marked untrusted.
 - The source link opens the repository in the ECR console.
+
+### Resources specifics
+
+- A `resources` binding names managed resources in the account and region of its `aws` source
+  by exact identifier: DB clusters, standalone DB instances, ElastiCache replication groups,
+  ACM certificates (by ARN, the only way ACM addresses them), Lambda functions and EKS clusters.
+  Sonda never lists the resources of an account.
+- `GET …/resources` reads every bound resource (at most 8 at once) and returns their current
+  state; the range (default 24 hours) selects only the database events. Calls that name a
+  resource carry its identifier, and every returned item must match it: a cluster, instance,
+  replication group, certificate, function, add-on, snapshot, event or maintenance action of
+  another resource fails the request with `internal`. A cluster member must report the bound
+  cluster as its own, a cache member the bound replication group. A bound resource that does
+  not exist fails the request with `upstream_error`, as a missing ECR repository does.
+- Catalog calls name no resource of the account: `DescribeDBEngineVersions` (the current
+  version's status and `ValidUpgradeTarget`, split into minor and major upgrades),
+  `DescribeDBMajorEngineVersions` (standard and extended support dates of the major version),
+  `DescribeCacheEngineVersions`, `DescribeAddonVersions` (with the cluster's Kubernetes version)
+  and `DescribeClusterVersions` (end of standard and extended support).
+- Databases: engine and version, upgrades, support periods, the resource's own lifecycle
+  setting, status, backup retention and window, latest and earliest restorable time,
+  maintenance window, deletion protection, automatic minor upgrades, pending maintenance
+  (`DescribePendingMaintenanceActions` by the resource's ARN, also per cluster member), a few
+  pending modifications (never the master password), the newest 5 snapshots of up to 500 read,
+  and per instance its class, status, parameter group apply status and the expiry of its server
+  certificate's CA. Events (`DescribeEvents`) cover the cluster, its members and standalone
+  instances; RDS keeps them for 14 days. At most 50, newest first, then `truncated`.
+- ElastiCache: the replication group carries no engine version or maintenance window, so Sonda
+  describes its first member cluster. Newer versions are the exact versions of the catalog
+  above the current one (placeholders such as `6.x` are skipped). Pending updates are the
+  service update actions that are not complete.
+- Certificates: `DescribeCertificate` only, never `GetCertificate` or `ExportCertificate`.
+  `daysLeft` counts whole days to `notAfter` from the server's clock.
+- Lambda: `GetFunctionConfiguration`, never `GetFunction`, whose response holds a presigned
+  URL to the code. The configuration includes the values of the environment variables, and
+  IAM cannot exclude them, so the connector keeps only the variable names and whether Lambda
+  reported an environment error; the values and the error message never leave it.
+- EKS: version, platform version, support type, health issues, endpoint access, and per add-on
+  its version, status, health issues, the newer versions compatible with the cluster's
+  Kubernetes version and the default one. Add-on configuration values are not returned.
+- Event messages, maintenance descriptions, health issue messages and Lambda state reasons are
+  redacted and marked untrusted. The source link opens the first database in the RDS console,
+  or else the first bound resource in its console.
 
 ### Sonda's identity and EKS
 
@@ -1072,6 +1118,7 @@ All endpoints are `GET` unless stated. Time parameters: `from`, `to` (RFC 3339) 
 | `/v1/services/{s}/workloads/objects` | `workloads` | Configuration of the objects that run the service: Kubernetes controllers with container specs, related Services, Ingress rules, NetworkPolicies, budgets, autoscalers, ConfigMap keys and Argo CD status; or the ECS service and its task definitions. Variable names only. Takes only `env` |
 | `/v1/services/{s}/images` | `images` | Images of the service's repositories with tags, push time and scan summary: those with `digest` (repeatable), or the newest `limit`. Takes `env`, `repository`, `limit`; no range |
 | `/v1/services/{s}/images/{digest}` | `images` | One image with the findings of its latest scan, most severe first. Takes `env`, `repository`, `limit` |
+| `/v1/services/{s}/resources` | `resources` | Bound RDS/Aurora databases, ElastiCache replication groups, ACM certificates, Lambda functions and EKS clusters now: versions, upgrades, support dates, pending maintenance, backups, expiry; database events in the range (default 24h) |
 | `/v1/services/{s}/alerts` | `alerts` | Active alerts now: name, state, active since, value, labels, annotations. Takes only `env`. |
 | `/v1/services/{s}/data/schema` | `data` | Entities, fields with types, relations with target and cardinality, unique fields and enums, without denied fields and entities. `entity` (repeatable) selects entities; a schema above 3/4 of `max_response_bytes` comes back as entity names only, marked `truncated` |
 | `POST /v1/services/{s}/data/query` | `data` | `{env, query, variables}` → normalized query, row bound and redacted data |
@@ -1109,6 +1156,7 @@ sonda objects engine-api -e production
 sonda workloads eks-prod-nodes
 sonda images shop-web -e production --digest sha256:d403…
 sonda image shop-web sha256:d403… --limit 20
+sonda resources engine-db -e production --since 7d
 sonda alerts engine-api -e production
 sonda result res_8KcW --group 2
 sonda data schema shop-api -e production
@@ -1230,6 +1278,23 @@ Rules:
   Restrict `logs:StartQuery` to the ARNs of the configured log groups. Then even a query that
   passed the command allowlist could not read other groups, independently of the
   `ListLogGroupsForQuery` post-check (section 6).
+  For resources: `rds:DescribeDBClusters`, `rds:DescribeDBInstances`,
+  `rds:DescribeDBEngineVersions`, `rds:DescribeDBMajorEngineVersions`,
+  `rds:DescribePendingMaintenanceActions`, `rds:DescribeDBClusterSnapshots`,
+  `rds:DescribeDBSnapshots`, `rds:DescribeEvents`; `elasticache:DescribeReplicationGroups`,
+  `elasticache:DescribeCacheClusters`, `elasticache:DescribeCacheEngineVersions`,
+  `elasticache:DescribeUpdateActions`; `acm:DescribeCertificate`;
+  `lambda:GetFunctionConfiguration`; `eks:DescribeCluster`, `eks:ListAddons`,
+  `eks:DescribeAddon`, `eks:DescribeAddonVersions`, `eks:DescribeClusterVersions`. Nothing
+  else: no `acm:GetCertificate`/`ExportCertificate`, no `lambda:GetFunction` (it returns a code
+  download URL). `lambda:GetFunctionConfiguration` returns the values of the function's
+  environment variables, which often hold credentials, and IAM cannot exclude them; Sonda drops
+  them in the connector (section 4, Resources specifics), so the role is trusted with them.
+- **Deny secret reads on the role.** Add an explicit `Deny` of `secretsmanager:GetSecretValue`,
+  `ssm:GetParameter*`, `kms:Decrypt` and `s3:GetObject` to Sonda's role, so a later broad grant
+  cannot open them. An explicit Deny wins over every Allow: if Sonda reads log groups encrypted
+  with a customer key and needs `kms:Decrypt` for them, exclude those keys from the Deny with
+  `NotResource`.
 
 ## 13. Out of scope for v1
 
