@@ -485,8 +485,8 @@ func (s VercelScope) TeamID() string            { return s.source.VercelTeamID }
 func (s VercelScope) Project() string           { return s.project }
 func (s VercelScope) VercelEnvironment() string { return s.environment }
 
-// WorkloadScope restricts a workloads source to one service. Exactly one of Kubernetes and
-// ECS reports true, by source type.
+// WorkloadScope restricts a workloads source to one service. Exactly one of Kubernetes, Nodes
+// and ECS reports true, by the binding's variant.
 type WorkloadScope struct {
 	Target
 	binding *config.WorkloadBinding
@@ -495,10 +495,17 @@ type WorkloadScope struct {
 func (s WorkloadScope) Source() *config.Source { return s.binding.Source }
 
 func (s WorkloadScope) Kubernetes() (KubernetesScope, bool) {
-	if s.binding.Source.Type != config.SourceKubernetes {
+	if s.binding.Source.Type != config.SourceKubernetes || s.binding.Nodes {
 		return KubernetesScope{}, false
 	}
 	return KubernetesScope{Target: s.Target, binding: s.binding}, true
+}
+
+func (s WorkloadScope) Nodes() (NodeScope, bool) {
+	if s.binding.Source.Type != config.SourceKubernetes || !s.binding.Nodes {
+		return NodeScope{}, false
+	}
+	return NodeScope{Target: s.Target, source: s.binding.Source}, true
 }
 
 func (s WorkloadScope) ECS() (ECSScope, bool) {
@@ -520,6 +527,14 @@ func (s KubernetesScope) Namespace() string      { return s.binding.Namespace }
 
 // Labels returns a copy, so callers cannot change the scope.
 func (s KubernetesScope) Labels() map[string]string { return maps.Clone(s.binding.Labels) }
+
+// NodeScope opens the nodes of one Kubernetes cluster and their events.
+type NodeScope struct {
+	Target
+	source *config.Source
+}
+
+func (s NodeScope) Source() *config.Source { return s.source }
 
 // ECSScope restricts an AWS account to the tasks of one ECS service in one cluster.
 type ECSScope struct {

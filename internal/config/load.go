@@ -70,6 +70,7 @@ type rawSource struct {
 	ExternalID           string            `yaml:"external_id"`
 	MaxScanBytes         string            `yaml:"max_scan_bytes"`
 	CAFile               string            `yaml:"ca_file"`
+	ArgoCDNamespace      string            `yaml:"argocd_namespace"`
 }
 
 type rawAuth struct {
@@ -111,6 +112,7 @@ type rawWorkloadBinding struct {
 	Labels    map[string]string `yaml:"labels"`
 	Cluster   string            `yaml:"cluster"`
 	Service   string            `yaml:"service"`
+	Nodes     bool              `yaml:"nodes"`
 }
 
 type rawImageBinding struct {
@@ -333,6 +335,7 @@ func (v *validator) source(name string, raw rawSource) *Source {
 	v.onlyFor(path+".role_arn", raw.RoleARN != "", src.Type, SourceAWS)
 	v.onlyFor(path+".external_id", raw.ExternalID != "", src.Type, SourceAWS)
 	v.onlyFor(path+".max_scan_bytes", raw.MaxScanBytes != "", src.Type, SourceAWS)
+	v.onlyFor(path+".argocd_namespace", raw.ArgoCDNamespace != "", src.Type, SourceKubernetes)
 	switch src.Type {
 	case SourceSentry:
 		if src.URL == "" {
@@ -371,6 +374,10 @@ func (v *validator) source(name string, raw rawSource) *Source {
 		src.Auth = Auth{Type: AuthNone}
 		return src
 	case SourceKubernetes:
+		if raw.ArgoCDNamespace != "" && !kubernetesNamespace.MatchString(raw.ArgoCDNamespace) {
+			v.fail("%s.argocd_namespace %q must be a Kubernetes namespace name", path, raw.ArgoCDNamespace)
+		}
+		src.ArgoCDNamespace = raw.ArgoCDNamespace
 		if src.URL == "" {
 			return v.inClusterSource(path, src, raw)
 		}
@@ -834,7 +841,8 @@ var ecsName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
 
 // workloadBinding validates the variant of the source type. Kubernetes requires a namespace and
 // at least one exact label; empty values are rejected, so the scope never selects every object
-// without the label. ECS requires a cluster and a service, both exact names.
+// without the label. Alone, nodes: true binds the cluster's nodes instead. ECS requires a cluster
+// and a service, both exact names.
 func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources map[string]*Source) *WorkloadBinding {
 	src := v.sourceRef(path+".source", raw.Source, sources, SourceKubernetes, SourceAWS)
 	binding := &WorkloadBinding{Source: src}
@@ -847,6 +855,13 @@ func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources
 	case SourceKubernetes:
 		if ecsFields {
 			v.fail("%s: cluster and service are not allowed for kubernetes sources", path)
+		}
+		if raw.Nodes {
+			if kubernetesFields {
+				v.fail("%s: nodes binds the whole cluster's nodes; namespace and labels are not allowed with it", path)
+			}
+			binding.Nodes = true
+			return binding
 		}
 		if !kubernetesNamespace.MatchString(raw.Namespace) {
 			v.fail("%s.namespace %q must be a Kubernetes namespace name", path, raw.Namespace)
@@ -864,8 +879,8 @@ func (v *validator) workloadBinding(path string, raw rawWorkloadBinding, sources
 		}
 		binding.Namespace, binding.Labels = raw.Namespace, raw.Labels
 	case SourceAWS:
-		if kubernetesFields {
-			v.fail("%s: namespace and labels are not allowed for aws sources", path)
+		if kubernetesFields || raw.Nodes {
+			v.fail("%s: namespace, labels and nodes are not allowed for aws sources", path)
 		}
 		if !ecsName.MatchString(raw.Cluster) {
 			v.fail("%s.cluster %q must be an ECS cluster name (not an ARN)", path, raw.Cluster)

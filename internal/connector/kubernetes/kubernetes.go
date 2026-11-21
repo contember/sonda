@@ -1,4 +1,5 @@
-// Package kubernetes reads pods, ReplicaSets and events from the Kubernetes API.
+// Package kubernetes reads pods, their controllers and the objects that select them, events,
+// nodes and resource usage from the Kubernetes API.
 package kubernetes
 
 import (
@@ -74,9 +75,68 @@ type Pod struct {
 	} `json:"status"`
 }
 
+// ContainerSpec is a container of a pod or pod template. Env values are not decoded, so a
+// literal value never reaches Sonda's types.
 type ContainerSpec struct {
-	Name  string `json:"name"`
-	Image string `json:"image"`
+	Name      string `json:"name"`
+	Image     string `json:"image"`
+	Resources struct {
+		Requests map[string]string `json:"requests"`
+		Limits   map[string]string `json:"limits"`
+	} `json:"resources"`
+	Env            []EnvVar        `json:"env"`
+	EnvFrom        []EnvFromSource `json:"envFrom"`
+	Ports          []ContainerPort `json:"ports"`
+	LivenessProbe  *Probe          `json:"livenessProbe"`
+	ReadinessProbe *Probe          `json:"readinessProbe"`
+	StartupProbe   *Probe          `json:"startupProbe"`
+}
+
+// EnvVar has no Value field on purpose: a literal value can hold a secret.
+type EnvVar struct {
+	Name      string `json:"name"`
+	ValueFrom *struct {
+		ConfigMapKeyRef *KeyRef `json:"configMapKeyRef"`
+		SecretKeyRef    *KeyRef `json:"secretKeyRef"`
+	} `json:"valueFrom"`
+}
+
+type KeyRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
+type EnvFromSource struct {
+	ConfigMapRef *struct {
+		Name string `json:"name"`
+	} `json:"configMapRef"`
+	SecretRef *struct {
+		Name string `json:"name"`
+	} `json:"secretRef"`
+}
+
+type ContainerPort struct {
+	Name          string `json:"name"`
+	ContainerPort int    `json:"containerPort"`
+	Protocol      string `json:"protocol"`
+}
+
+// Probe keeps the kind of check and its timing; an exec probe's command is not decoded.
+type Probe struct {
+	HTTPGet *struct {
+		Path string    `json:"path"`
+		Port IntString `json:"port"`
+	} `json:"httpGet"`
+	TCPSocket *struct {
+		Port IntString `json:"port"`
+	} `json:"tcpSocket"`
+	GRPC *struct {
+		Port int `json:"port"`
+	} `json:"grpc"`
+	Exec                *struct{} `json:"exec"`
+	InitialDelaySeconds int       `json:"initialDelaySeconds"`
+	PeriodSeconds       int       `json:"periodSeconds"`
+	FailureThreshold    int       `json:"failureThreshold"`
 }
 
 type Condition struct {
@@ -190,7 +250,7 @@ type list[T any] struct {
 
 // Pods lists the pods of the scope. Every pod is checked against the scope again.
 func (c *Client) Pods(ctx context.Context, scope authz.KubernetesScope) ([]Pod, bool, error) {
-	pods, truncated, err := listAll[Pod](ctx, c, "/api/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/pods", labelSelector(scope), maxPods)
+	pods, truncated, err := listAll[Pod](ctx, c, "/api/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/pods", selectorParams(scope), maxPods)
 	if err != nil {
 		return nil, false, err
 	}
@@ -204,7 +264,7 @@ func (c *Client) Pods(ctx context.Context, scope authz.KubernetesScope) ([]Pod, 
 
 // ReplicaSets lists the ReplicaSets of the scope. Every ReplicaSet is checked against the scope again.
 func (c *Client) ReplicaSets(ctx context.Context, scope authz.KubernetesScope) ([]ReplicaSet, bool, error) {
-	sets, truncated, err := listAll[ReplicaSet](ctx, c, "/apis/apps/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/replicasets", labelSelector(scope), maxReplicaSets)
+	sets, truncated, err := listAll[ReplicaSet](ctx, c, "/apis/apps/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/replicasets", selectorParams(scope), maxReplicaSets)
 	if err != nil {
 		return nil, false, err
 	}
@@ -219,7 +279,7 @@ func (c *Client) ReplicaSets(ctx context.Context, scope authz.KubernetesScope) (
 // Events lists the events of the scope's namespace. Events carry no labels, so they cannot be
 // scoped upstream; the caller keeps only events of the scope's objects.
 func (c *Client) Events(ctx context.Context, scope authz.KubernetesScope) ([]Event, bool, error) {
-	events, truncated, err := listAll[Event](ctx, c, "/api/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/events", "", maxEvents)
+	events, truncated, err := listAll[Event](ctx, c, "/api/v1/namespaces/"+url.PathEscape(scope.Namespace())+"/events", nil, maxEvents)
 	if err != nil {
 		return nil, false, err
 	}
@@ -231,21 +291,32 @@ func (c *Client) Events(ctx context.Context, scope authz.KubernetesScope) ([]Eve
 	return events, truncated, nil
 }
 
-// listAll follows continue tokens until the list ends or holds limit items.
-func listAll[T any](ctx context.Context, c *Client, path, selector string, limit int) ([]T, bool, error) {
+// listAll follows continue tokens until the list ends or holds limit items. filter holds
+// label or field selectors.
+func listAll[T any](ctx context.Context, c *Client, path string, filter url.Values, limit int) ([]T, bool, error) {
+	items, truncated, err := listAllRaw[T](ctx, c, path, filter, limit)
+	if err != nil {
+		return nil, false, upstream.Wrap(c.source.Name, err)
+	}
+	return items, truncated, nil
+}
+
+// listAllRaw is listAll with the upstream error as it came, so callers can read its status.
+func listAllRaw[T any](ctx context.Context, c *Client, path string, filter url.Values, limit int) ([]T, bool, error) {
 	var items []T
 	next := ""
 	for {
 		params := url.Values{"limit": {strconv.Itoa(pageSize)}}
-		if selector != "" {
-			params.Set("labelSelector", selector)
+		// filter may also set a smaller page size.
+		for key, values := range filter {
+			params[key] = values
 		}
 		if next != "" {
 			params.Set("continue", next)
 		}
 		var page list[T]
-		if err := upstream.GetJSON(ctx, c.http, c.source.Name, strings.TrimRight(c.source.URL, "/")+path+"?"+params.Encode(), &page); err != nil {
-			return nil, false, upstream.Wrap(c.source.Name, err)
+		if err := upstream.GetJSON(ctx, c.http, c.source.Name, c.url(path)+"?"+params.Encode(), &page); err != nil {
+			return nil, false, err
 		}
 		items = append(items, page.Items...)
 		if len(items) >= limit {
@@ -256,6 +327,10 @@ func listAll[T any](ctx context.Context, c *Client, path, selector string, limit
 		}
 		next = page.Metadata.Continue
 	}
+}
+
+func selectorParams(scope authz.KubernetesScope) url.Values {
+	return url.Values{"labelSelector": {labelSelector(scope)}}
 }
 
 // labelSelector requires every scope label. Config validation keeps keys and values free of

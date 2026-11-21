@@ -25,25 +25,29 @@ func (b kubernetesWorkloads) workloads(ctx context.Context, r api.TimeRange) (wo
 	recordQuery(ctx, b.scope.Target, query)
 
 	var (
-		wg                          sync.WaitGroup
-		pods                        []kubernetes.Pod
-		sets                        []kubernetes.ReplicaSet
-		events                      []kubernetes.Event
-		podsCut, setsCut, eventsCut bool
-		podsErr, setsErr, eventsErr error
+		wg                                      sync.WaitGroup
+		pods                                    []kubernetes.Pod
+		sets                                    []kubernetes.ReplicaSet
+		events                                  []kubernetes.Event
+		usage                                   []kubernetes.PodMetrics
+		podsCut, setsCut, eventsCut             bool
+		podsErr, setsErr, eventsErr, metricsErr error
 	)
 	wg.Go(func() { pods, podsCut, podsErr = b.client.Pods(ctx, b.scope) })
 	wg.Go(func() { sets, setsCut, setsErr = b.client.ReplicaSets(ctx, b.scope) })
 	wg.Go(func() { events, eventsCut, eventsErr = b.client.Events(ctx, b.scope) })
+	wg.Go(func() { usage, _, metricsErr = b.client.PodMetrics(ctx, b.scope) })
 	wg.Wait()
-	for _, err := range []error{podsErr, setsErr, eventsErr} {
+	for _, err := range []error{podsErr, setsErr, eventsErr, metricsErr} {
 		if err != nil {
 			return workloadState{}, err
 		}
 	}
+	shaped := b.s.shapePods(pods)
+	addPodUsage(shaped, usage)
 	return workloadState{
 		data: api.Workloads{
-			Pods:     b.s.shapePods(pods),
+			Pods:     shaped,
 			Rollouts: shapeRollouts(sets),
 			Events:   b.s.workloadEvents(events, pods, sets, r),
 		},
@@ -104,6 +108,38 @@ func (s *Service) shapeContainer(c kubernetes.ContainerStatus) api.Container {
 		container.LastTermination = &api.Termination{Reason: t.Reason, ExitCode: t.ExitCode, Finished: t.FinishedAt, Message: s.redactor.Redact(t.Message)}
 	}
 	return container
+}
+
+// addPodUsage sets the usage of each container from the metrics of its pod. Metrics are joined
+// by pod name, so those of pods outside the scope are never used.
+func addPodUsage(pods []api.Pod, metrics []kubernetes.PodMetrics) {
+	byPod := map[string]kubernetes.PodMetrics{}
+	for _, m := range metrics {
+		byPod[m.Metadata.Name] = m
+	}
+	for i := range pods {
+		m, ok := byPod[pods[i].Name]
+		if !ok {
+			continue
+		}
+		for j := range pods[i].Containers {
+			for _, c := range m.Containers {
+				if c.Name == pods[i].Containers[j].Name {
+					pods[i].Containers[j].Usage = usageOf(c.Usage)
+				}
+			}
+		}
+	}
+}
+
+// usageOf converts metrics API quantities; an unparsable one leaves the usage out.
+func usageOf(quantities map[string]string) *api.Usage {
+	cpu, cpuOK := kubernetes.ParseCPU(quantities["cpu"])
+	memory, memoryOK := kubernetes.ParseMemory(quantities["memory"])
+	if !cpuOK || !memoryOK {
+		return nil
+	}
+	return &api.Usage{CPUMillicores: cpu, MemoryBytes: memory}
 }
 
 // imageDigest returns the digest of an image reference that has one (repository@sha256:…,

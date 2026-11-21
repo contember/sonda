@@ -184,9 +184,12 @@ func bindings(env *config.Environment) []bindingView {
 		}
 	}
 	if b := env.Workloads; b != nil {
-		if b.Cluster != "" {
+		switch {
+		case b.Cluster != "":
 			add("workloads", b.Source, "ECS cluster "+b.Cluster+", service "+b.ECSService)
-		} else {
+		case b.Nodes:
+			add("workloads", b.Source, "the cluster's nodes")
+		default:
 			scope := "namespace " + b.Namespace
 			for _, k := range sortedKeys(b.Labels) {
 				scope += ", " + k + "=" + b.Labels[k]
