@@ -120,8 +120,8 @@ func (c *Client) EKSAddonVersions(ctx context.Context, addon, kubernetesVersion 
 // false when EKS no longer lists it.
 func (c *Client) EKSClusterVersion(ctx context.Context, version string) (ekstypes.ClusterVersionInformation, bool, error) {
 	out, err := c.eks.DescribeClusterVersions(ctx, &eks.DescribeClusterVersionsInput{
+		// Alone it also returns unsupported versions; EKS rejects it combined with includeAll.
 		ClusterVersions: []string{version},
-		IncludeAll:      sdkaws.Bool(true),
 	})
 	if err != nil {
 		return ekstypes.ClusterVersionInformation{}, false, c.apiError("DescribeClusterVersions", err)
