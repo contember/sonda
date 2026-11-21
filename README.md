@@ -267,7 +267,7 @@ sources:
   backend's namespace with `get` on `services/proxy` for `resourceNames: ["http:loki:3100"]`
   (`get` and `create` for Prometheus).
 - The signing key lives in Sonda's database and the issuer URL is the trust anchor; see
-  Security in `docs/design.md`.
+  Security in `docs/design.md`. Rotate it on the admin page Signing keys.
 
 ### Application data (Contember)
 
@@ -319,6 +319,8 @@ Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served
 - **Services**: a read-only view of the configuration: projects, their services and
   environments, what each capability reads, and the sources. It shows no credentials.
 - **Audit log**: every agent request and every admin action, filterable by identity.
+- **Signing keys** (with `identity.issuer`): rotate the key of Sonda's own identity. Add a key,
+  restart every replica so it signs with the new key, then remove the old one.
 
 The UI is server-rendered with htmx and embedded in `sonda-server`.
 

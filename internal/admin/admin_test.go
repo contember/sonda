@@ -19,6 +19,7 @@ import (
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/identities"
+	"github.com/contember/sonda/internal/issuer"
 	"github.com/contember/sonda/internal/store"
 )
 
@@ -29,6 +30,7 @@ type testEnv struct {
 	client *http.Client
 	store  *store.Store
 	authz  *authz.Authorizer
+	cfg    *config.Config
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -72,20 +74,43 @@ projects:
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	handler, err := New(cfg, st, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env := &testEnv{store: st, authz: authz.New(cfg, st), cfg: cfg}
+	env.start(t)
+	return env
+}
+
+// start serves the admin UI with a freshly opened issuer, as a (re)started Sonda does, and
+// signs in a new client.
+func (e *testEnv) start(t *testing.T) {
+	t.Helper()
+	iss, err := issuer.Open(context.Background(), "https://sonda.example.com", e.store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	handler, err := New(e.cfg, e.store, e.store, iss, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.server = httptest.NewServer(handler)
+	t.Cleanup(e.server.Close)
 	jar, _ := cookiejar.New(nil)
-	client := &http.Client{
+	e.client = &http.Client{
 		Jar: jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	return &testEnv{server: server, client: client, store: st, authz: authz.New(cfg, st)}
+}
+
+func (e *testEnv) get(t *testing.T, path string) (int, string) {
+	t.Helper()
+	resp, err := e.client.Get(e.server.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
 }
 
 func (e *testEnv) post(t *testing.T, path string, form url.Values) (int, string) {
@@ -340,5 +365,75 @@ func TestServicesPageCountsOnlyConfiguredGrants(t *testing.T) {
 	}
 	if !strings.Contains(worker, `<span class="subtle">0</span>`) {
 		t.Errorf("want 0 identities for worker:\n%s", worker)
+	}
+}
+
+func keyIDs(t *testing.T, st *store.Store) []string {
+	t.Helper()
+	keys, err := st.SigningKeys(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, key := range keys {
+		ids = append(ids, key.ID)
+	}
+	return ids
+}
+
+func TestRotateSigningKey(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	old := keyIDs(t, env.store)[0]
+	if status, body := env.get(t, "/admin/signing-keys"); status != http.StatusOK || !strings.Contains(body, old) || strings.Contains(body, "/delete") {
+		t.Fatalf("status %d; want the key without a remove button:\n%s", status, body)
+	}
+	if status, _ := env.post(t, "/admin/signing-keys", nil); status != http.StatusSeeOther {
+		t.Fatalf("add: status %d", status)
+	}
+	ids := keyIDs(t, env.store)
+	if len(ids) != 2 || ids[0] != old {
+		t.Fatalf("keys after add = %v", ids)
+	}
+	added := ids[1]
+	// Neither key can go: this process signs with the old one, the new one is the newest.
+	for _, id := range ids {
+		if status, body := env.post(t, "/admin/signing-keys/"+id+"/delete", nil); status != http.StatusUnprocessableEntity || !strings.Contains(body, "is in use") {
+			t.Errorf("remove %s before restart: status %d", id, status)
+		}
+	}
+
+	env.start(t)
+	env.login(t)
+	if status, _ := env.post(t, "/admin/signing-keys/"+old+"/delete", nil); status != http.StatusSeeOther {
+		t.Fatalf("remove the old key after restart: status %d", status)
+	}
+	if ids := keyIDs(t, env.store); !slices.Equal(ids, []string{added}) {
+		t.Errorf("keys after removal = %v, want [%s]", ids, added)
+	}
+
+	records, err := env.store.ListAudit(context.Background(), store.AuditFilter{Identity: auditIdentity, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Path != "/admin/signing-keys/"+old+"/delete" {
+		t.Errorf("last audited admin action = %+v", records)
+	}
+}
+
+func TestSigningKeysPageNeedsIssuer(t *testing.T) {
+	env := newTestEnv(t)
+	handler, err := New(env.cfg, env.store, env.store, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.server = httptest.NewServer(handler)
+	t.Cleanup(env.server.Close)
+	env.login(t)
+	if status, _ := env.get(t, "/admin/signing-keys"); status != http.StatusNotFound {
+		t.Errorf("status %d without identity.issuer", status)
+	}
+	if _, body := env.get(t, "/admin/identities"); strings.Contains(body, "Signing keys") {
+		t.Error("navigation links the signing keys page without identity.issuer")
 	}
 }

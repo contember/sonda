@@ -30,6 +30,8 @@ func (m *memoryKeys) AddSigningKey(_ context.Context, key issuer.Key) error {
 	return nil
 }
 
+func (m *memoryKeys) DeleteSigningKey(context.Context, string) error { return nil }
+
 // isolateAWSEnvironment keeps the developer's AWS profile and credentials out of the test.
 func isolateAWSEnvironment(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")

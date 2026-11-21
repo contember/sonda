@@ -175,7 +175,7 @@ func serve(ctx context.Context, configPath string) error {
 		}
 	}
 	if cfg.Admin != nil {
-		adminHandler, err := admin.New(cfg, st, st, log)
+		adminHandler, err := admin.New(cfg, st, st, identity, log)
 		if err != nil {
 			return err
 		}

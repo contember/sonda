@@ -20,6 +20,7 @@ import (
 
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/identities"
+	"github.com/contember/sonda/internal/issuer"
 	"github.com/contember/sonda/internal/store"
 )
 
@@ -38,17 +39,19 @@ type Handler struct {
 	cfg        *config.Config
 	identities identities.Store
 	store      *store.Store
-	log        *slog.Logger
-	pages      map[string]*template.Template
-	now        func() time.Time
+	// issuer is nil without identity.issuer; the signing keys page is then absent.
+	issuer *issuer.Issuer
+	log    *slog.Logger
+	pages  map[string]*template.Template
+	now    func() time.Time
 }
 
-func New(cfg *config.Config, ids identities.Store, st *store.Store, log *slog.Logger) (http.Handler, error) {
+func New(cfg *config.Config, ids identities.Store, st *store.Store, iss *issuer.Issuer, log *slog.Logger) (http.Handler, error) {
 	pages, err := parsePages()
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{cfg: cfg, identities: ids, store: st, log: log, pages: pages, now: time.Now}
+	h := &Handler{cfg: cfg, identities: ids, store: st, issuer: iss, log: log, pages: pages, now: time.Now}
 
 	static, err := fs.Sub(assets, "static")
 	if err != nil {
@@ -68,6 +71,11 @@ func New(cfg *config.Config, ids identities.Store, st *store.Store, log *slog.Lo
 	authed.HandleFunc("POST /admin/identities/{name}/delete", h.deleteIdentity)
 	authed.HandleFunc("GET /admin/services", h.listServices)
 	authed.HandleFunc("GET /admin/audit", h.auditLog)
+	if iss != nil {
+		authed.HandleFunc("GET /admin/signing-keys", h.listSigningKeys)
+		authed.HandleFunc("POST /admin/signing-keys", h.addSigningKey)
+		authed.HandleFunc("POST /admin/signing-keys/{id}/delete", h.removeSigningKey)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServerFS(static)))
@@ -207,12 +215,15 @@ type view struct {
 	Nav   string
 	Error string
 	Data  any
+	// SigningKeys shows the signing keys page in the navigation.
+	SigningKeys bool
 }
 
 func (h *Handler) render(w http.ResponseWriter, status int, page string, v view) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
+	v.SigningKeys = h.issuer != nil
 	if err := h.pages[page].ExecuteTemplate(w, "layout", v); err != nil {
 		h.log.Error("render admin page", "page", page, "error", err)
 	}
@@ -223,7 +234,7 @@ func (h *Handler) serverError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
-var pageNames = []string{"login", "identities", "identity", "token", "services", "audit"}
+var pageNames = []string{"login", "identities", "identity", "token", "services", "audit", "signing-keys"}
 
 func parsePages() (map[string]*template.Template, error) {
 	funcs := template.FuncMap{

@@ -280,7 +280,7 @@ internal/shape     grouping (Drain), redaction, truncation, series summaries, tr
 internal/audit     per-request record of service, environment and upstream queries
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles, signing keys
 internal/httpapi   routing, authentication, rate and concurrency limits, audit, JSON encoding
-internal/admin     admin UI: sign-in, identity management, audit log viewer
+internal/admin     admin UI: sign-in, identity management, audit log viewer, signing keys
 ```
 
 Boundaries:
@@ -602,9 +602,12 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   (`sts.amazonaws.com` for AWS) and a lifetime of 5 minutes. They never leave Sonda except to
   the relying party.
 - The signing key is a 2048-bit RSA key in the `signing_keys` table, created on the first
-  start; its ID is the RFC 7638 thumbprint. Sonda signs with the newest key and the JWKS lists
-  all keys, so replicas that started with different keys still verify. Rotation is not
-  automated in v1.
+  start; its ID is the RFC 7638 thumbprint. Sonda signs with the key that was newest when it
+  started, and the JWKS lists all keys, so replicas that started with different keys still
+  verify.
+- Rotation is manual, on the admin page Signing keys: add a key (published at once), restart
+  every replica so it signs with it, then remove the old key. Sonda refuses to remove the newest
+  key and the key the serving process signs with; it cannot see what other replicas sign with.
 - In AWS: an IAM OIDC identity provider for the issuer URL with audience `sts.amazonaws.com`,
   and a role whose trust policy allows `sts:AssumeRoleWithWebIdentity` for that provider with
   conditions on `<issuer host and path>:aud` = `sts.amazonaws.com` and `:sub` = `sonda`. Each
@@ -1188,6 +1191,9 @@ Served under `/admin` only when `admin.token` is set. Pages:
   type, scheme and host, auth type and header names. Credentials, header values, URL paths and
   query strings are never shown.
 - **Audit log**: newest first, filterable by identity, 100 records per page.
+- **Signing keys**, only with `identity.issuer`: the keys of Sonda's identity with ID, creation
+  time and which one this process signs with; add a key, remove one that is neither the newest
+  nor the signing key. Private keys are never shown.
 
 The look follows the Fabrika admin kit (`@fabrika/ui`): sidebar shell, page headers, bordered
 tables, pills; light and dark by `prefers-color-scheme`. One stylesheet, no build step.
@@ -1315,7 +1321,7 @@ Rules:
 - Multi-workspace, SSO/OIDC for the admin UI, a token management API.
 - Editing sources, projects and services at runtime.
 - Identity stores other than SQLite and Postgres (the `identities.Store` interface allows adding them).
-- Automated rotation of the signing key of Sonda's identity.
+- Automated rotation of the signing key of Sonda's identity (the admin UI rotates it by hand).
 - Data: mutations, the Contember System API (event history, a candidate for "who changed this
   record") and Tenant API, other databases (the `dataBackend` interface allows adding them),
   per-identity data limits, and result handles for data.

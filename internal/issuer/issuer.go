@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -42,6 +43,25 @@ type KeyStore interface {
 	// SigningKeys returns all keys, oldest first.
 	SigningKeys(ctx context.Context) ([]Key, error)
 	AddSigningKey(ctx context.Context, key Key) error
+	// DeleteSigningKey removes a key; a missing key is not an error.
+	DeleteSigningKey(ctx context.Context, id string) error
+}
+
+var (
+	ErrKeyNotFound = errors.New("signing key not found")
+	// ErrKeyInUse refuses to remove the newest key, which every replica signs with after a
+	// restart, and the key this process signs with.
+	ErrKeyInUse = errors.New("signing key is in use")
+)
+
+// KeyInfo describes a stored key without its private part.
+type KeyInfo struct {
+	ID        string
+	CreatedAt time.Time
+	// Newest keys are what every replica signs with after its next start.
+	Newest bool
+	// Signing marks the key this process signs with.
+	Signing bool
 }
 
 type Issuer struct {
@@ -99,6 +119,60 @@ func parseKey(key Key) (*rsa.PrivateKey, error) {
 		return nil, fmt.Errorf("signing key %s is not an RSA key", key.ID)
 	}
 	return private, nil
+}
+
+// Keys lists the stored keys, oldest first.
+func (i *Issuer) Keys(ctx context.Context) ([]KeyInfo, error) {
+	keys, err := i.store.SigningKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	infos := make([]KeyInfo, len(keys))
+	for n, key := range keys {
+		infos[n] = KeyInfo{ID: key.ID, CreatedAt: key.CreatedAt, Newest: n == len(keys)-1, Signing: key.ID == i.keyID}
+	}
+	return infos, nil
+}
+
+// AddKey stores a new key and publishes it in the JWKS. Sonda signs with it after a restart,
+// so relying parties that cache the JWKS see it before the first token.
+func (i *Issuer) AddKey(ctx context.Context) (string, error) {
+	keys, err := i.store.SigningKeys(ctx)
+	if err != nil {
+		return "", err
+	}
+	created := i.now()
+	// The store orders keys by whole seconds; the new key must sort last.
+	if n := len(keys); n > 0 && created.Unix() <= keys[n-1].CreatedAt.Unix() {
+		created = keys[n-1].CreatedAt.Add(time.Second)
+	}
+	key, err := newKey(created)
+	if err != nil {
+		return "", err
+	}
+	if err := i.store.AddSigningKey(ctx, key); err != nil {
+		return "", fmt.Errorf("store signing key: %w", err)
+	}
+	return key.ID, nil
+}
+
+// RemoveKey drops a key from the store and the JWKS. Tokens it signed stop verifying, so
+// every replica must sign with a newer key first.
+func (i *Issuer) RemoveKey(ctx context.Context, id string) error {
+	keys, err := i.Keys(ctx)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if key.ID != id {
+			continue
+		}
+		if key.Newest || key.Signing {
+			return ErrKeyInUse
+		}
+		return i.store.DeleteSigningKey(ctx, id)
+	}
+	return ErrKeyNotFound
 }
 
 // Token returns a signed token for audience, e.g. sts.amazonaws.com.
