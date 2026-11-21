@@ -166,7 +166,7 @@ func (f *fakeResources) DescribeAddonVersions(context.Context, *eks.DescribeAddo
 // DescribeClusterVersions accepts one filter at a time, as EKS does.
 func (f *fakeResources) DescribeClusterVersions(_ context.Context, in *eks.DescribeClusterVersionsInput, _ ...func(*eks.Options)) (*eks.DescribeClusterVersionsOutput, error) {
 	filters := 0
-	for _, set := range []bool{in.DefaultOnly != nil, len(in.ClusterVersions) > 0, in.IncludeAll != nil, in.Status != ""} {
+	for _, set := range []bool{sdkaws.ToBool(in.DefaultOnly), len(in.ClusterVersions) > 0, sdkaws.ToBool(in.IncludeAll), in.Status != "", in.VersionStatus != ""} {
 		if set {
 			filters++
 		}
