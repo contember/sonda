@@ -520,6 +520,14 @@ func TestWorkloadsAreScoped(t *testing.T) {
 	}
 }
 
+func TestResourcesNeedTheCapability(t *testing.T) {
+	env := newTestEnv(t)
+	var errResp api.ErrorResponse
+	if status := env.call(t, "agent-token", "GET", "/v1/services/api/resources", nil, &errResp); status != http.StatusNotFound || errResp.Error.Code != api.CodeNotFound {
+		t.Errorf("service without resources: %d %+v", status, errResp)
+	}
+}
+
 func TestTracesAreAuthorizedBeforeTheBackend(t *testing.T) {
 	env := newTestEnv(t)
 	requests := []struct {

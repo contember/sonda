@@ -16,6 +16,7 @@ an agent may see, and returns compact responses with links back to the source.
 | **AWS CloudWatch** Logs Insights and metrics | logs, metrics |
 | **AWS ECS** running tasks, deployments, service events and task definitions (variable names only) | workloads |
 | **AWS ECR** images and their scan findings | images |
+| **AWS RDS/Aurora, ElastiCache, ACM, Lambda, EKS**: versions, upgrades, maintenance, backups, expiry | resources |
 | **Grafana Tempo** | traces |
 | **Kubernetes** pods with their usage, ReplicaSets, events, the controllers and the Services, Ingresses, network policies, budgets, autoscalers, ConfigMap keys and Argo CD Applications that relate to them; nodes | workloads |
 | **Grafana** managed alerting | alerts |
@@ -98,6 +99,7 @@ it as a skill for Claude Code, or paste it into the agent's instructions.
 | `sonda workloads <svc>` | Kubernetes pods or ECS tasks with their image digests, rollouts and events; a cluster's nodes |
 | `sonda objects <svc>` | Configuration of what runs the service: controllers, Services, Ingress rules, network policies, autoscalers, budgets, ConfigMap keys, Argo CD status; ECS task definitions. Variable names only |
 | `sonda images <svc> [--digest D]...`, `sonda image <svc> <digest>` | ECR images with their scan summary; one image with its findings |
+| `sonda resources <svc>` | Databases, caches, certificates, Lambda functions and EKS clusters: versions, upgrades, support dates, maintenance, backups, expiry |
 | `sonda alerts <svc>` | Active alerts of Prometheus or Grafana alerting rules |
 | `sonda data schema/query <svc>` | Application data (read-only GraphQL) |
 
@@ -131,6 +133,10 @@ parts that matter for security:
     running tasks are the service's workloads.
   - ECR `repositories`: 1 to 20 exact repository names (not ARNs or URIs) whose images the
     `images` capability reads.
+  - AWS resources: any of `rds_clusters`, `rds_instances`, `elasticache` (replication group
+    IDs), `certificates` (ACM certificate ARNs), `lambdas` and `eks_clusters`, exact identifiers,
+    at most 20 per kind (50 certificates). Sonda reads only their descriptions; it keeps the names of Lambda
+    environment variables and drops their values.
   - Vercel `project` and `environment`: the project ID (`prj_…`, not the name) and the Vercel
     environment, e.g. `production` or `preview`.
   - Alerts `selector`: a Prometheus selector over the alert labels, with the same rule as above.
@@ -138,7 +144,7 @@ parts that matter for security:
   - Contember `project` and `stage`, with an optional `entities` allow list and
     `deny_fields`. The API key's role is the main boundary (see below).
 - **Grants** give an identity capabilities (`errors`, `logs`, `metrics`, `traces`, `workloads`, `images`,
-  `alerts`, `data`) in project environments, e.g. `logs` in `production` of project `engine`. A grant covers every
+  `resources`, `alerts`, `data`) in project environments, e.g. `logs` in `production` of project `engine`. A grant covers every
   service of the project that configures the capability in that environment, including services
   added to the project later. `data` is the exception: it is granted per service, e.g. `data` in
   `production` of service `shop-api`, and opens only that service's data binding; it is never

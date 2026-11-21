@@ -200,6 +200,21 @@ func bindings(env *config.Environment) []bindingView {
 	if b := env.Images; b != nil {
 		add("images", b.Source, "ECR repositories "+strings.Join(b.Repositories, ", "))
 	}
+	if b := env.Resources; b != nil {
+		var parts []string
+		for _, kind := range []struct {
+			name  string
+			items []string
+		}{
+			{"RDS clusters", b.RDSClusters}, {"RDS instances", b.RDSInstances}, {"ElastiCache replication groups", b.ElastiCache},
+			{"certificates", b.Certificates}, {"Lambda functions", b.Lambdas}, {"EKS clusters", b.EKSClusters},
+		} {
+			if len(kind.items) > 0 {
+				parts = append(parts, kind.name+" "+strings.Join(kind.items, ", "))
+			}
+		}
+		add("resources", b.Source, strings.Join(parts, "; "))
+	}
 	if b := env.Alerts; b != nil {
 		add("alerts", b.Source, b.Selector.Text)
 	}

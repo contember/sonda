@@ -176,6 +176,7 @@ type Environment struct {
 	Traces    *TraceBinding
 	Workloads *WorkloadBinding
 	Images    *ImageBinding
+	Resources *ResourceBinding
 	Alerts    *AlertBinding
 	Data      *DataBinding
 }
@@ -297,6 +298,18 @@ type ImageBinding struct {
 	Repositories []string
 }
 
+// ResourceBinding scopes an AWS account to the managed resources of one service, in the
+// source's region. Lists hold exact identifiers; Certificates holds ACM certificate ARNs.
+type ResourceBinding struct {
+	Source       *Source
+	RDSClusters  []string
+	RDSInstances []string
+	ElastiCache  []string
+	Certificates []string
+	Lambdas      []string
+	EKSClusters  []string
+}
+
 // DataBinding scopes a Contember source to one project stage. Entities is an optional allow
 // list; DenyFields hides fields, as "Entity.field" or "*.field".
 type DataBinding struct {
@@ -328,6 +341,9 @@ func (e *Environment) Capabilities() []api.Capability {
 	}
 	if e.Images != nil {
 		caps = append(caps, api.CapabilityImages)
+	}
+	if e.Resources != nil {
+		caps = append(caps, api.CapabilityResources)
 	}
 	if e.Alerts != nil {
 		caps = append(caps, api.CapabilityAlerts)

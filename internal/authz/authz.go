@@ -114,6 +114,8 @@ func backends(env *config.Environment, capabilities []api.Capability) map[api.Ca
 			result[capability] = api.BackendInfo{Source: string(env.Workloads.Source.Type)}
 		case api.CapabilityImages:
 			result[capability] = api.BackendInfo{Source: string(env.Images.Source.Type)}
+		case api.CapabilityResources:
+			result[capability] = api.BackendInfo{Source: string(env.Resources.Source.Type)}
 		case api.CapabilityAlerts:
 			result[capability] = api.BackendInfo{Source: string(env.Alerts.Source.Type)}
 		case api.CapabilityData:
@@ -222,6 +224,14 @@ func (a *Authorizer) ImageScope(identity *Identity, service, env string) (ImageS
 		return ImageScope{}, err
 	}
 	return ImageScope{Target: target, source: environment.Images.Source, repositories: environment.Images.Repositories}, nil
+}
+
+func (a *Authorizer) ResourceScope(identity *Identity, service, env string) (ResourceScope, error) {
+	target, environment, err := a.resolve(identity, service, env, api.CapabilityResources)
+	if err != nil {
+		return ResourceScope{}, err
+	}
+	return ResourceScope{Target: target, binding: environment.Resources}, nil
 }
 
 // AlertScope restricts a ruler's alerts to those matching the service's selector.
@@ -562,6 +572,41 @@ func (s ImageScope) Repositories() []string { return slices.Clone(s.repositories
 
 // Has reports whether repository is one of the scope's repositories.
 func (s ImageScope) Has(repository string) bool { return slices.Contains(s.repositories, repository) }
+
+// ResourceScope restricts an AWS account to the service's managed resources: RDS clusters and
+// instances, ElastiCache replication groups, ACM certificates, Lambda functions and EKS clusters.
+// Accessors return copies, so callers cannot change the scope.
+type ResourceScope struct {
+	Target
+	binding *config.ResourceBinding
+}
+
+func (s ResourceScope) Source() *config.Source { return s.binding.Source }
+func (s ResourceScope) RDSClusters() []string  { return slices.Clone(s.binding.RDSClusters) }
+func (s ResourceScope) RDSInstances() []string { return slices.Clone(s.binding.RDSInstances) }
+func (s ResourceScope) ElastiCache() []string  { return slices.Clone(s.binding.ElastiCache) }
+func (s ResourceScope) Certificates() []string { return slices.Clone(s.binding.Certificates) }
+func (s ResourceScope) Lambdas() []string      { return slices.Clone(s.binding.Lambdas) }
+func (s ResourceScope) EKSClusters() []string  { return slices.Clone(s.binding.EKSClusters) }
+
+func (s ResourceScope) HasRDSCluster(id string) bool {
+	return slices.Contains(s.binding.RDSClusters, id)
+}
+func (s ResourceScope) HasRDSInstance(id string) bool {
+	return slices.Contains(s.binding.RDSInstances, id)
+}
+func (s ResourceScope) HasElastiCache(id string) bool {
+	return slices.Contains(s.binding.ElastiCache, id)
+}
+func (s ResourceScope) HasCertificate(arn string) bool {
+	return slices.Contains(s.binding.Certificates, arn)
+}
+func (s ResourceScope) HasLambda(name string) bool {
+	return slices.Contains(s.binding.Lambdas, name)
+}
+func (s ResourceScope) HasEKSCluster(name string) bool {
+	return slices.Contains(s.binding.EKSClusters, name)
+}
 
 // LogGroupScope restricts an AWS account to the service's CloudWatch log groups.
 type LogGroupScope struct {

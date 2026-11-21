@@ -144,6 +144,51 @@ func TestRenderAlerts(t *testing.T) {
 	}
 }
 
+func TestRenderResources(t *testing.T) {
+	at := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	days := 20
+	resp := api.Response[api.Resources]{Data: api.Resources{
+		Databases: []api.Database{{
+			Identifier: "shop-db", Kind: "cluster", Engine: "aurora-postgresql", EngineVersion: "16.4", VersionStatus: "available", Status: "available",
+			Upgrades:            api.Upgrades{Minor: []string{"16.6"}, Major: []string{}},
+			Support:             []api.SupportPeriod{{Name: "open-source-rds-standard-support", End: &at}},
+			BackupRetentionDays: 7, BackupWindow: "02:00-03:00", LatestRestorableTime: &at, MaintenanceWindow: "sun:04:00-sun:05:00",
+			PendingMaintenance: []api.MaintenanceItem{{Action: "system-update", AutoAppliedAfter: &at, Description: "New OS"}},
+			Members:            []api.DatabaseInstance{{Identifier: "shop-db-1", Writer: true, Class: "db.r6g.large", Status: "available", CA: "rds-ca-rsa2048-g1", CAValidTill: &at}},
+			Snapshots:          []api.DatabaseSnapshot{{Identifier: "rds:shop-db-1", Type: "automated", Created: &at, Status: "available"}},
+		}},
+		Certificates: []api.Certificate{{Domain: "shop.example.com", Status: "ISSUED", NotAfter: &at, DaysLeft: &days, RenewalEligibility: "ELIGIBLE", InUseBy: []string{}}},
+		Functions:    []api.Function{{Name: "shop-resize", Runtime: "nodejs18.x", State: "Active", Environment: []string{"API_KEY"}}},
+		Events:       []api.ResourceEvent{{Time: at, Source: "db-cluster/shop-db", Message: "Backup completed"}},
+	}}
+	want := []string{
+		"",
+		"cluster shop-db  aurora-postgresql 16.4  available",
+		"  version: available",
+		"  upgrades: minor=16.6  major=-",
+		"  support: open-source-rds-standard-support until 2026-10-26",
+		"  backups: retention=7d window=02:00-03:00 latest restorable=2026-10-26T10:00:00Z",
+		"  maintenance: window=sun:04:00-sun:05:00 autoMinor=false",
+		"  pending system-update  auto after 2026-10-26  New OS",
+		"  instance shop-db-1 writer  db.r6g.large  available  ca=rds-ca-rsa2048-g1 until 2026-10-26",
+		"  snapshot rds:shop-db-1  automated  2026-10-26T10:00:00Z  available",
+		"",
+		"certificate shop.example.com  ISSUED  expires 2026-10-26 (20d left)  renewal=ELIGIBLE",
+		"  in use by: -",
+		"",
+		"function shop-resize  nodejs18.x  Active  last modified -",
+		"  env (names only): API_KEY",
+		"",
+		"EVENTS",
+		"  2026-10-26T10:00:00Z  db-cluster/shop-db  Backup completed",
+	}
+	var out bytes.Buffer
+	renderResources(&out, resp)
+	if got := trimLines(out.String()); !slices.Equal(got, want) {
+		t.Errorf("output:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestRenderEmptyOverviewSaysWhy(t *testing.T) {
 	var out bytes.Buffer
 	renderOverview(&out, api.Response[api.Overview]{})

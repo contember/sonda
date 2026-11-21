@@ -1,5 +1,6 @@
-// Package aws queries CloudWatch Logs Insights, CloudWatch Metrics, the tasks of ECS services and
-// ECR images with their scan findings.
+// Package aws queries CloudWatch Logs Insights, CloudWatch Metrics, the tasks of ECS services,
+// ECR images with their scan findings, and the configuration of RDS, ElastiCache, ACM, Lambda and
+// EKS resources.
 package aws
 
 import (
@@ -12,10 +13,15 @@ import (
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/elasticache"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
@@ -50,6 +56,11 @@ type Client struct {
 	identity identityAPI
 	ecs      ecsAPI
 	ecr      ecrAPI
+	rds      rdsAPI
+	cache    elastiCacheAPI
+	acm      acmAPI
+	lambda   lambdaAPI
+	eks      eksAPI
 	// accountMu guards accountID, the account of Sonda's credentials once resolved.
 	accountMu sync.Mutex
 	accountID string
@@ -63,6 +74,11 @@ func New(src *config.Source, cfg sdkaws.Config) *Client {
 	c := newClient(src, cloudwatchlogs.NewFromConfig(cfg), cloudwatch.NewFromConfig(cfg), sts.NewFromConfig(cfg))
 	c.ecs = ecs.NewFromConfig(cfg)
 	c.ecr = ecr.NewFromConfig(cfg)
+	c.rds = rds.NewFromConfig(cfg)
+	c.cache = elasticache.NewFromConfig(cfg)
+	c.acm = acm.NewFromConfig(cfg)
+	c.lambda = lambda.NewFromConfig(cfg)
+	c.eks = eks.NewFromConfig(cfg)
 	return c
 }
 

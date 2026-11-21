@@ -72,18 +72,19 @@ const (
 	CapabilityTraces    Capability = "traces"
 	CapabilityWorkloads Capability = "workloads"
 	CapabilityImages    Capability = "images"
+	CapabilityResources Capability = "resources"
 	CapabilityAlerts    Capability = "alerts"
 	CapabilityData      Capability = "data"
 )
 
 // Capabilities lists every capability in display order.
-var Capabilities = []Capability{CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityImages, CapabilityAlerts, CapabilityData}
+var Capabilities = []Capability{CapabilityErrors, CapabilityLogs, CapabilityMetrics, CapabilityTraces, CapabilityWorkloads, CapabilityImages, CapabilityResources, CapabilityAlerts, CapabilityData}
 
 func ParseCapability(s string) (Capability, error) {
 	if c := Capability(s); slices.Contains(Capabilities, c) {
 		return c, nil
 	}
-	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces, workloads, images, alerts or data)", s)
+	return "", fmt.Errorf("unknown capability %q (expected errors, logs, metrics, traces, workloads, images, resources, alerts or data)", s)
 }
 
 // Dialect names the query language of a native query endpoint.
@@ -800,6 +801,214 @@ type ImageFinding struct {
 type ImageDetail struct {
 	Image
 	Findings []ImageFinding `json:"findings"`
+}
+
+// Resources is the configuration state of the managed resources bound to a service: versions,
+// upgrades, maintenance, backups and expiry. Every list is present, empty when nothing is bound.
+type Resources struct {
+	Databases    []Database          `json:"databases"`
+	Caches       []Cache             `json:"caches"`
+	Certificates []Certificate       `json:"certificates"`
+	Functions    []Function          `json:"functions"`
+	Clusters     []KubernetesCluster `json:"clusters"`
+	// Events are the database events in the range, newest first.
+	Events []ResourceEvent `json:"events"`
+}
+
+// Database is an RDS or Aurora DB cluster (Kind cluster) or a standalone DB instance (Kind
+// instance).
+type Database struct {
+	Identifier    string `json:"identifier"`
+	Kind          string `json:"kind"`
+	Engine        string `json:"engine"`
+	EngineVersion string `json:"engineVersion"`
+	// VersionStatus is the status of the engine version in RDS, e.g. available or deprecated.
+	VersionStatus string `json:"versionStatus,omitempty"`
+	// Upgrades are the versions RDS can upgrade the engine to, split into minor and major.
+	Upgrades Upgrades `json:"upgrades"`
+	// Support lists the support periods of the engine's major version, e.g. the end of
+	// standard support and of RDS Extended Support.
+	Support []SupportPeriod `json:"support,omitempty"`
+	// Lifecycle is the resource's own support setting, e.g. open-source-rds-extended-support.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	Status    string `json:"status"`
+	// Members are the instances of a cluster.
+	Members []DatabaseInstance `json:"members,omitempty"`
+	// Instance describes a standalone instance.
+	Instance                *DatabaseInstance  `json:"instance,omitempty"`
+	BackupRetentionDays     int                `json:"backupRetentionDays"`
+	BackupWindow            string             `json:"backupWindow,omitempty"`
+	MaintenanceWindow       string             `json:"maintenanceWindow,omitempty"`
+	LatestRestorableTime    *time.Time         `json:"latestRestorableTime,omitempty"`
+	EarliestRestorableTime  *time.Time         `json:"earliestRestorableTime,omitempty"`
+	DeletionProtection      bool               `json:"deletionProtection"`
+	AutoMinorVersionUpgrade bool               `json:"autoMinorVersionUpgrade"`
+	StorageEncrypted        bool               `json:"storageEncrypted"`
+	ParameterGroup          string             `json:"parameterGroup,omitempty"`
+	PendingMaintenance      []MaintenanceItem  `json:"pendingMaintenance"`
+	PendingModified         map[string]string  `json:"pendingModified,omitempty"`
+	Snapshots               []DatabaseSnapshot `json:"snapshots"`
+}
+
+type Upgrades struct {
+	Minor []string `json:"minor"`
+	Major []string `json:"major"`
+}
+
+// SupportPeriod is one support period of an engine version, e.g. open-source-rds-standard-support.
+type SupportPeriod struct {
+	Name  string     `json:"name"`
+	Start *time.Time `json:"start,omitempty"`
+	End   *time.Time `json:"end,omitempty"`
+}
+
+// DatabaseInstance is a DB instance, alone or as a cluster member.
+type DatabaseInstance struct {
+	Identifier       string `json:"identifier"`
+	Class            string `json:"class"`
+	Writer           bool   `json:"writer,omitempty"`
+	Status           string `json:"status"`
+	AvailabilityZone string `json:"availabilityZone,omitempty"`
+	MultiAZ          bool   `json:"multiAZ,omitempty"`
+	EngineVersion    string `json:"engineVersion,omitempty"`
+	StorageGB        int    `json:"storageGB,omitempty"`
+	StorageType      string `json:"storageType,omitempty"`
+	// ParameterApply is the apply status of the instance's parameter group, e.g. in-sync or
+	// pending-reboot.
+	ParameterApply string `json:"parameterApply,omitempty"`
+	// CA is the certificate authority of the server certificate and CAValidTill its expiry.
+	CA                 string            `json:"ca,omitempty"`
+	CAValidTill        *time.Time        `json:"caValidTill,omitempty"`
+	PendingMaintenance []MaintenanceItem `json:"pendingMaintenance,omitempty"`
+}
+
+// MaintenanceItem is a maintenance action that RDS or ElastiCache has scheduled or offers.
+type MaintenanceItem struct {
+	Action      string `json:"action"`
+	Description string `json:"description,omitempty"`
+	// Status is the opt-in status (RDS) or the update action status (ElastiCache).
+	Status           string     `json:"status,omitempty"`
+	Severity         string     `json:"severity,omitempty"`
+	AutoAppliedAfter *time.Time `json:"autoAppliedAfter,omitempty"`
+	ForcedApplyDate  *time.Time `json:"forcedApplyDate,omitempty"`
+	CurrentApplyDate *time.Time `json:"currentApplyDate,omitempty"`
+	// ApplyBy is the date by which ElastiCache recommends applying the update.
+	ApplyBy *time.Time `json:"applyBy,omitempty"`
+}
+
+type DatabaseSnapshot struct {
+	Identifier string     `json:"identifier"`
+	Type       string     `json:"type"` // automated, manual, awsbackup
+	Created    *time.Time `json:"created,omitempty"`
+	Status     string     `json:"status"`
+	StorageGB  int        `json:"storageGB,omitempty"`
+}
+
+// Cache is an ElastiCache replication group.
+type Cache struct {
+	Identifier    string `json:"identifier"`
+	Engine        string `json:"engine"`
+	EngineVersion string `json:"engineVersion"`
+	// NewerVersions are the engine versions ElastiCache offers above the current one, newest first.
+	NewerVersions           []string          `json:"newerVersions"`
+	Status                  string            `json:"status"`
+	NodeType                string            `json:"nodeType,omitempty"`
+	Members                 int               `json:"members"`
+	MultiAZ                 bool              `json:"multiAZ"`
+	AutomaticFailover       bool              `json:"automaticFailover"`
+	SnapshotRetentionDays   int               `json:"snapshotRetentionDays"`
+	SnapshotWindow          string            `json:"snapshotWindow,omitempty"`
+	MaintenanceWindow       string            `json:"maintenanceWindow,omitempty"`
+	TransitEncryption       bool              `json:"transitEncryption"`
+	AtRestEncryption        bool              `json:"atRestEncryption"`
+	AuthToken               bool              `json:"authToken"`
+	AutoMinorVersionUpgrade bool              `json:"autoMinorVersionUpgrade"`
+	PendingUpdates          []MaintenanceItem `json:"pendingUpdates"`
+}
+
+// Certificate is an ACM certificate. Sonda reads only its description, never the certificate
+// or its key.
+type Certificate struct {
+	ARN       string     `json:"arn"`
+	Domain    string     `json:"domain"`
+	Names     []string   `json:"names,omitempty"`
+	Status    string     `json:"status"`
+	Type      string     `json:"type"` // AMAZON_ISSUED, IMPORTED, PRIVATE
+	NotBefore *time.Time `json:"notBefore,omitempty"`
+	NotAfter  *time.Time `json:"notAfter,omitempty"`
+	// DaysLeft counts whole days until NotAfter; negative once expired.
+	DaysLeft           *int     `json:"daysLeft,omitempty"`
+	RenewalEligibility string   `json:"renewalEligibility,omitempty"`
+	RenewalStatus      string   `json:"renewalStatus,omitempty"`
+	RenewalFailure     string   `json:"renewalFailure,omitempty"`
+	InUseBy            []string `json:"inUseBy"`
+	KeyAlgorithm       string   `json:"keyAlgorithm,omitempty"`
+}
+
+// Function is a Lambda function's configuration. Environment holds variable names only.
+type Function struct {
+	Name             string   `json:"name"`
+	Runtime          string   `json:"runtime,omitempty"`
+	Architectures    []string `json:"architectures,omitempty"`
+	PackageType      string   `json:"packageType,omitempty"`
+	Handler          string   `json:"handler,omitempty"`
+	MemoryMB         int      `json:"memoryMB,omitempty"`
+	TimeoutSeconds   int      `json:"timeoutSeconds,omitempty"`
+	State            string   `json:"state,omitempty"`
+	StateReason      string   `json:"stateReason,omitempty"`
+	LastUpdateStatus string   `json:"lastUpdateStatus,omitempty"`
+	LastModified     string   `json:"lastModified,omitempty"`
+	CodeSizeBytes    int64    `json:"codeSizeBytes,omitempty"`
+	Layers           []Layer  `json:"layers,omitempty"`
+	Environment      []string `json:"environment"`
+	// EnvironmentError is true when Lambda could not decrypt the variables.
+	EnvironmentError bool `json:"environmentError,omitempty"`
+}
+
+type Layer struct {
+	ARN           string `json:"arn"`
+	CodeSizeBytes int64  `json:"codeSizeBytes,omitempty"`
+}
+
+// KubernetesCluster is an EKS cluster with its add-ons.
+type KubernetesCluster struct {
+	Name            string `json:"name"`
+	Version         string `json:"version"`
+	PlatformVersion string `json:"platformVersion,omitempty"`
+	Status          string `json:"status"`
+	// SupportType is STANDARD or EXTENDED: whether the cluster enters extended support.
+	SupportType string `json:"supportType,omitempty"`
+	// StandardSupportEnd and ExtendedSupportEnd are the end dates of the cluster's version.
+	StandardSupportEnd *time.Time    `json:"standardSupportEnd,omitempty"`
+	ExtendedSupportEnd *time.Time    `json:"extendedSupportEnd,omitempty"`
+	Health             []HealthIssue `json:"health,omitempty"`
+	PublicEndpoint     bool          `json:"publicEndpoint"`
+	PrivateEndpoint    bool          `json:"privateEndpoint"`
+	Addons             []Addon       `json:"addons"`
+}
+
+type HealthIssue struct {
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
+}
+
+type Addon struct {
+	Name    string        `json:"name"`
+	Version string        `json:"version"`
+	Status  string        `json:"status"`
+	Health  []HealthIssue `json:"health,omitempty"`
+	// NewerVersions are the versions compatible with the cluster's version above the current
+	// one, newest first; DefaultVersion is the one EKS installs by default.
+	NewerVersions  []string `json:"newerVersions"`
+	DefaultVersion string   `json:"defaultVersion,omitempty"`
+}
+
+// ResourceEvent is an RDS event of a bound cluster or instance.
+type ResourceEvent struct {
+	Time       time.Time `json:"time"`
+	Source     string    `json:"source"` // e.g. db-cluster/shop-db
+	Categories []string  `json:"categories,omitempty"`
+	Message    string    `json:"message"`
 }
 
 // Alert is an active alert of the service's alerting rules.
