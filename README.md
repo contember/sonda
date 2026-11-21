@@ -320,7 +320,8 @@ Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served
   environments, what each capability reads, and the sources. It shows no credentials.
 - **Audit log**: every agent request and every admin action, filterable by identity.
 - **Signing keys** (with `identity.issuer`): rotate the key of Sonda's own identity. Add a key,
-  restart every replica so it signs with the new key, then remove the old one.
+  wait 5 minutes for cached copies of the JWKS, restart every replica so it signs with the new
+  key, then remove the old one.
 
 The UI is server-rendered with htmx and embedded in `sonda-server`.
 

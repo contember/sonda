@@ -605,8 +605,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   start; its ID is the RFC 7638 thumbprint. Sonda signs with the key that was newest when it
   started, and the JWKS lists all keys, so replicas that started with different keys still
   verify.
-- Rotation is manual, on the admin page Signing keys: add a key (published at once), restart
-  every replica so it signs with it, then remove the old key. Sonda refuses to remove the newest
+- Rotation is manual, on the admin page Signing keys: add a key (published at once), wait 5
+  minutes (the JWKS `max-age`, so cached copies include it), restart every replica so it signs
+  with it, then remove the old key. Sonda refuses to remove the newest
   key and the key the serving process signs with; it cannot see what other replicas sign with.
 - In AWS: an IAM OIDC identity provider for the issuer URL with audience `sts.amazonaws.com`,
   and a role whose trust policy allows `sts:AssumeRoleWithWebIdentity` for that provider with

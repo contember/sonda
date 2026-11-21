@@ -1,4 +1,4 @@
-{{define "actions"}}<form method="post" action="/admin/signing-keys" hx-confirm="Add a signing key? It is published at once; Sonda signs with it after a restart."><button type="submit" class="button">Add key</button></form>{{end}}
+{{define "actions"}}<form method="post" action="/admin/signing-keys" hx-confirm="Add a signing key? It is published at once; Sonda signs with it after a restart. Wait 5 minutes before restarting so caches of the JWKS pick it up."><button type="submit" class="button">Add key</button></form>{{end}}
 {{define "content"}}
 <div class="table-wrap">
 <table>
@@ -29,5 +29,5 @@
   </tbody>
 </table>
 </div>
-<p class="muted">Rotation: add a key, restart every replica so it signs with the newest key, then remove the old one. Sonda refuses to remove the newest key and the key this process signs with; it cannot see what other replicas sign with.</p>
+<p class="muted">Rotation: add a key, wait 5 minutes (the JWKS is cacheable for that long), restart every replica so it signs with the newest key, then remove the old one. Sonda refuses to remove the newest key and the key this process signs with; it cannot see what other replicas sign with.</p>
 {{end}}

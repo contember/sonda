@@ -1,6 +1,7 @@
 package issuer
 
 import (
+	"cmp"
 	"context"
 	"crypto"
 	"crypto/rsa"
@@ -21,7 +22,17 @@ type memoryStore struct {
 	keys []Key
 }
 
-func (m *memoryStore) SigningKeys(context.Context) ([]Key, error) { return m.keys, nil }
+// SigningKeys orders like the real store: by whole seconds, then by ID.
+func (m *memoryStore) SigningKeys(context.Context) ([]Key, error) {
+	keys := slices.Clone(m.keys)
+	slices.SortStableFunc(keys, func(a, b Key) int {
+		if c := cmp.Compare(a.CreatedAt.Unix(), b.CreatedAt.Unix()); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return keys, nil
+}
 
 func (m *memoryStore) AddSigningKey(_ context.Context, key Key) error {
 	m.keys = append(m.keys, key)
@@ -157,7 +168,7 @@ func TestOpenReusesStoredKeyAndPublishesAll(t *testing.T) {
 	}
 
 	// Another replica added a newer key: this one signs with it and the JWKS lists both.
-	newer, err := newKey(time.Now())
+	newer, err := newKey(store.keys[0].CreatedAt.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
