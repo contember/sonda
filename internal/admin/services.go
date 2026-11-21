@@ -206,7 +206,7 @@ func bindings(env *config.Environment) []bindingView {
 			name  string
 			items []string
 		}{
-			{"RDS clusters", b.RDSClusters}, {"RDS instances", b.RDSInstances}, {"ElastiCache", b.ElastiCache},
+			{"RDS clusters", b.RDSClusters}, {"RDS instances", b.RDSInstances}, {"ElastiCache replication groups", b.ElastiCache},
 			{"certificates", b.Certificates}, {"Lambda functions", b.Lambdas}, {"EKS clusters", b.EKSClusters},
 		} {
 			if len(kind.items) > 0 {

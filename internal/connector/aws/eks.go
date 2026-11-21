@@ -43,22 +43,29 @@ func (c *Client) EKSCluster(ctx context.Context, scope authz.ResourceScope, name
 	return *out.Cluster, nil
 }
 
-// EKSAddons lists and describes the add-ons of a bound cluster.
-func (c *Client) EKSAddons(ctx context.Context, scope authz.ResourceScope, cluster string) ([]ekstypes.Addon, error) {
+// EKSAddons lists and describes up to maxAddons add-ons of a bound cluster and reports whether
+// more exist.
+func (c *Client) EKSAddons(ctx context.Context, scope authz.ResourceScope, cluster string) ([]ekstypes.Addon, bool, error) {
 	if !scope.HasEKSCluster(cluster) {
-		return nil, c.outsideScope()
+		return nil, false, c.outsideScope()
 	}
 	var (
-		names []string
-		next  *string
+		names     []string
+		next      *string
+		truncated bool
 	)
 	for {
 		out, err := c.eks.ListAddons(ctx, &eks.ListAddonsInput{ClusterName: sdkaws.String(cluster), MaxResults: sdkaws.Int32(maxAddons), NextToken: next})
 		if err != nil {
-			return nil, c.apiError("ListAddons", err)
+			return nil, false, c.apiError("ListAddons", err)
 		}
 		names = append(names, out.Addons...)
-		if out.NextToken == nil || len(names) >= maxAddons {
+		if len(names) >= maxAddons {
+			truncated = len(names) > maxAddons || out.NextToken != nil
+			names = names[:maxAddons]
+			break
+		}
+		if out.NextToken == nil {
 			break
 		}
 		next = out.NextToken
@@ -67,17 +74,17 @@ func (c *Client) EKSAddons(ctx context.Context, scope authz.ResourceScope, clust
 	for _, name := range names {
 		out, err := c.eks.DescribeAddon(ctx, &eks.DescribeAddonInput{ClusterName: sdkaws.String(cluster), AddonName: sdkaws.String(name)})
 		if err != nil {
-			return nil, c.apiError("DescribeAddon", err)
+			return nil, false, c.apiError("DescribeAddon", err)
 		}
 		if out.Addon == nil {
 			continue
 		}
 		if sdkaws.ToString(out.Addon.ClusterName) != cluster || sdkaws.ToString(out.Addon.AddonName) != name {
-			return nil, c.outsideScope()
+			return nil, false, c.outsideScope()
 		}
 		addons = append(addons, *out.Addon)
 	}
-	return addons, nil
+	return addons, truncated, nil
 }
 
 // EKSAddonVersions lists the versions of an add-on compatible with a Kubernetes version, from

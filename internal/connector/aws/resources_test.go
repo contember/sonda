@@ -76,6 +76,10 @@ type fakeResources struct {
 	cluster        *ekstypes.Cluster
 	addons         map[string]*ekstypes.Addon
 	maintenanceARN []string
+	clusterSnaps   []rdstypes.DBClusterSnapshot
+	instanceSnaps  []rdstypes.DBSnapshot
+	updateActions  []ectypes.UpdateAction
+	majorCalls     int
 }
 
 func (f *fakeResources) DescribeDBClusters(context.Context, *rds.DescribeDBClustersInput, ...func(*rds.Options)) (*rds.DescribeDBClustersOutput, error) {
@@ -91,6 +95,7 @@ func (f *fakeResources) DescribeDBEngineVersions(context.Context, *rds.DescribeD
 }
 
 func (f *fakeResources) DescribeDBMajorEngineVersions(context.Context, *rds.DescribeDBMajorEngineVersionsInput, ...func(*rds.Options)) (*rds.DescribeDBMajorEngineVersionsOutput, error) {
+	f.majorCalls++
 	return &rds.DescribeDBMajorEngineVersionsOutput{}, nil
 }
 
@@ -100,11 +105,11 @@ func (f *fakeResources) DescribePendingMaintenanceActions(_ context.Context, in 
 }
 
 func (f *fakeResources) DescribeDBClusterSnapshots(context.Context, *rds.DescribeDBClusterSnapshotsInput, ...func(*rds.Options)) (*rds.DescribeDBClusterSnapshotsOutput, error) {
-	return &rds.DescribeDBClusterSnapshotsOutput{}, nil
+	return &rds.DescribeDBClusterSnapshotsOutput{DBClusterSnapshots: f.clusterSnaps}, nil
 }
 
 func (f *fakeResources) DescribeDBSnapshots(context.Context, *rds.DescribeDBSnapshotsInput, ...func(*rds.Options)) (*rds.DescribeDBSnapshotsOutput, error) {
-	return &rds.DescribeDBSnapshotsOutput{}, nil
+	return &rds.DescribeDBSnapshotsOutput{DBSnapshots: f.instanceSnaps}, nil
 }
 
 func (f *fakeResources) DescribeEvents(context.Context, *rds.DescribeEventsInput, ...func(*rds.Options)) (*rds.DescribeEventsOutput, error) {
@@ -124,7 +129,7 @@ func (f *fakeResources) DescribeCacheEngineVersions(context.Context, *elasticach
 }
 
 func (f *fakeResources) DescribeUpdateActions(context.Context, *elasticache.DescribeUpdateActionsInput, ...func(*elasticache.Options)) (*elasticache.DescribeUpdateActionsOutput, error) {
-	return &elasticache.DescribeUpdateActionsOutput{}, nil
+	return &elasticache.DescribeUpdateActionsOutput{UpdateActions: f.updateActions}, nil
 }
 
 func (f *fakeResources) DescribeCertificate(context.Context, *acm.DescribeCertificateInput, ...func(*acm.Options)) (*acm.DescribeCertificateOutput, error) {
@@ -310,15 +315,71 @@ func TestEKSAddonsScope(t *testing.T) {
 	fake := &fakeResources{addons: map[string]*ekstypes.Addon{
 		"vpc-cni": {AddonName: sdkaws.String("vpc-cni"), ClusterName: sdkaws.String("shop-prod"), AddonVersion: sdkaws.String("v1.19.0-eksbuild.1")},
 	}}
-	addons, err := resourceClient(cfg, fake).EKSAddons(context.Background(), scope, "shop-prod")
-	if err != nil || len(addons) != 1 {
+	addons, truncated, err := resourceClient(cfg, fake).EKSAddons(context.Background(), scope, "shop-prod")
+	if err != nil || len(addons) != 1 || truncated {
 		t.Errorf("addons = %v, err = %v", addons, err)
 	}
 	fake.addons["coredns"] = &ekstypes.Addon{AddonName: sdkaws.String("coredns"), ClusterName: sdkaws.String("other")}
-	_, err = resourceClient(cfg, fake).EKSAddons(context.Background(), scope, "shop-prod")
+	_, _, err = resourceClient(cfg, fake).EKSAddons(context.Background(), scope, "shop-prod")
 	wantCode(t, "add-on of another cluster", err, api.CodeInternal)
 	_, err = resourceClient(cfg, &fakeResources{cluster: &ekstypes.Cluster{Name: sdkaws.String("other")}}).EKSCluster(context.Background(), scope, "shop-prod")
 	wantCode(t, "another cluster returned", err, api.CodeInternal)
 	_, err = resourceClient(cfg, &fakeResources{}).EKSCluster(context.Background(), scope, "shop-prod")
 	wantCode(t, "missing cluster", err, api.CodeUpstreamError)
+}
+
+func TestRDSSnapshotsScope(t *testing.T) {
+	cfg, scope := resourceScope(t)
+	own := &fakeResources{
+		clusterSnaps:  []rdstypes.DBClusterSnapshot{{DBClusterIdentifier: sdkaws.String("shop-db")}},
+		instanceSnaps: []rdstypes.DBSnapshot{{DBInstanceIdentifier: sdkaws.String("shop-legacy")}},
+	}
+	if snaps, _, err := resourceClient(cfg, own).RDSClusterSnapshots(context.Background(), scope, "shop-db"); err != nil || len(snaps) != 1 {
+		t.Errorf("cluster snapshots = %v, err = %v", snaps, err)
+	}
+	if snaps, _, err := resourceClient(cfg, own).RDSInstanceSnapshots(context.Background(), scope, "shop-legacy"); err != nil || len(snaps) != 1 {
+		t.Errorf("instance snapshots = %v, err = %v", snaps, err)
+	}
+	foreign := &fakeResources{
+		clusterSnaps:  []rdstypes.DBClusterSnapshot{{DBClusterIdentifier: sdkaws.String("other-db")}},
+		instanceSnaps: []rdstypes.DBSnapshot{{DBInstanceIdentifier: sdkaws.String("other")}},
+	}
+	_, _, err := resourceClient(cfg, foreign).RDSClusterSnapshots(context.Background(), scope, "shop-db")
+	wantCode(t, "snapshot of another cluster", err, api.CodeInternal)
+	_, _, err = resourceClient(cfg, foreign).RDSInstanceSnapshots(context.Background(), scope, "shop-legacy")
+	wantCode(t, "snapshot of another instance", err, api.CodeInternal)
+	_, _, err = resourceClient(cfg, own).RDSClusterSnapshots(context.Background(), scope, "other-db")
+	wantCode(t, "unbound cluster", err, api.CodeInternal)
+	_, _, err = resourceClient(cfg, own).RDSInstanceSnapshots(context.Background(), scope, "shop-db-1")
+	wantCode(t, "unbound instance", err, api.CodeInternal)
+}
+
+func TestCacheUpdateActionsScope(t *testing.T) {
+	cfg, scope := resourceScope(t)
+	own := &fakeResources{updateActions: []ectypes.UpdateAction{{ReplicationGroupId: sdkaws.String("shop-cache")}}}
+	if actions, truncated, err := resourceClient(cfg, own).CacheUpdateActions(context.Background(), scope, "shop-cache"); err != nil || len(actions) != 1 || truncated {
+		t.Errorf("actions = %v, truncated = %v, err = %v", actions, truncated, err)
+	}
+	foreign := &fakeResources{updateActions: []ectypes.UpdateAction{{ReplicationGroupId: sdkaws.String("other")}}}
+	_, _, err := resourceClient(cfg, foreign).CacheUpdateActions(context.Background(), scope, "shop-cache")
+	wantCode(t, "update of another group", err, api.CodeInternal)
+	_, _, err = resourceClient(cfg, own).CacheUpdateActions(context.Background(), scope, "other")
+	wantCode(t, "unbound group", err, api.CodeInternal)
+	many := &fakeResources{updateActions: slices.Repeat(own.updateActions, maxResourceEvents+1)}
+	if actions, truncated, err := resourceClient(cfg, many).CacheUpdateActions(context.Background(), scope, "shop-cache"); err != nil || len(actions) != maxResourceEvents || !truncated {
+		t.Errorf("actions = %d, truncated = %v, err = %v", len(actions), truncated, err)
+	}
+}
+
+func TestRDSMajorEngineVersionSkipsEnginesWithoutLifecycle(t *testing.T) {
+	cfg, _ := resourceScope(t)
+	fake := &fakeResources{}
+	for _, engine := range []string{"docdb", "neptune"} {
+		if lifecycles, err := resourceClient(cfg, fake).RDSMajorEngineVersion(context.Background(), engine, "5"); err != nil || lifecycles != nil {
+			t.Errorf("%s: lifecycles = %v, err = %v", engine, lifecycles, err)
+		}
+	}
+	if _, err := resourceClient(cfg, fake).RDSMajorEngineVersion(context.Background(), "aurora-postgresql", "16"); err != nil || fake.majorCalls != 1 {
+		t.Errorf("aurora-postgresql: calls = %d, err = %v", fake.majorCalls, err)
+	}
 }

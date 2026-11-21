@@ -158,7 +158,7 @@ func TestRenderResources(t *testing.T) {
 			Snapshots:          []api.DatabaseSnapshot{{Identifier: "rds:shop-db-1", Type: "automated", Created: &at, Status: "available"}},
 		}},
 		Certificates: []api.Certificate{{Domain: "shop.example.com", Status: "ISSUED", NotAfter: &at, DaysLeft: &days, RenewalEligibility: "ELIGIBLE", InUseBy: []string{}}},
-		Functions:    []api.Function{{Name: "shop-resize", Runtime: "nodejs18.x", State: "Active"}},
+		Functions:    []api.Function{{Name: "shop-resize", Runtime: "nodejs18.x", State: "Active", Environment: []string{"API_KEY"}}},
 		Events:       []api.ResourceEvent{{Time: at, Source: "db-cluster/shop-db", Message: "Backup completed"}},
 	}}
 	want := []string{
@@ -177,6 +177,7 @@ func TestRenderResources(t *testing.T) {
 		"  in use by: -",
 		"",
 		"function shop-resize  nodejs18.x  Active  last modified -",
+		"  env (names only): API_KEY",
 		"",
 		"EVENTS",
 		"  2026-10-26T10:00:00Z  db-cluster/shop-db  Backup completed",

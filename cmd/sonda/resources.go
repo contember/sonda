@@ -83,11 +83,20 @@ func renderResources(w io.Writer, resp api.Response[api.Resources]) {
 	}
 	for _, f := range d.Functions {
 		fmt.Fprintf(w, "\nfunction %s  %s  %s  last modified %s\n", f.Name, valueOrDash(f.Runtime), valueOrDash(f.State), valueOrDash(f.LastModified))
+		if f.StateReason != "" {
+			fmt.Fprintf(w, "  state reason: %s\n", f.StateReason)
+		}
+		fmt.Fprintf(w, "  env (names only): %s\n", listOrDash(f.Environment))
+		if f.EnvironmentError {
+			fmt.Fprintln(w, "  environment: Lambda could not decrypt the variables")
+		}
 	}
 	for _, c := range d.Clusters {
 		fmt.Fprintf(w, "\nkubernetes %s  %s  %s  support=%s  standard until %s, extended until %s\n", c.Name, c.Version, valueOrDash(c.Status), valueOrDash(c.SupportType), formatDate(c.StandardSupportEnd), formatDate(c.ExtendedSupportEnd))
+		writeHealth(w, "  ", c.Health)
 		for _, a := range c.Addons {
 			fmt.Fprintf(w, "  addon %s %s  %s  newer=%s default=%s\n", a.Name, a.Version, valueOrDash(a.Status), listOrDash(a.NewerVersions), valueOrDash(a.DefaultVersion))
+			writeHealth(w, "    ", a.Health)
 		}
 	}
 	if len(d.Events) > 0 {
@@ -130,4 +139,10 @@ func formatDate(t *time.Time) string {
 		return "-"
 	}
 	return t.Format(time.DateOnly)
+}
+
+func writeHealth(w io.Writer, indent string, issues []api.HealthIssue) {
+	for _, h := range issues {
+		fmt.Fprintf(w, "%shealth %s %s\n", indent, h.Code, h.Message)
+	}
 }

@@ -15,6 +15,7 @@ import (
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 
 	"github.com/contember/sonda/api"
+	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/connector/aws"
@@ -61,6 +62,10 @@ func at(hours int) *time.Time {
 // a certificate, a function and an EKS cluster.
 type fakeResourceReader struct {
 	events int // events per database source
+	// failCertificates makes every certificate read fail.
+	failCertificates bool
+	// notAfter replaces the certificate expiry.
+	notAfter *time.Time
 }
 
 func (f fakeResourceReader) RDSCluster(_ context.Context, _ authz.ResourceScope, id string) (rdstypes.DBCluster, error) {
@@ -139,13 +144,20 @@ func (f fakeResourceReader) CacheEngineVersions(context.Context, string) ([]stri
 	return []string{"7.2", "7.2.4", "8.0", "7.x", "8.1", "6.2"}, nil
 }
 
-func (f fakeResourceReader) CacheUpdateActions(context.Context, authz.ResourceScope, string) ([]ectypes.UpdateAction, error) {
-	return []ectypes.UpdateAction{{ServiceUpdateName: sdkaws.String("elc-2026-001"), ServiceUpdateSeverity: ectypes.ServiceUpdateSeverityImportant, UpdateActionStatus: ectypes.UpdateActionStatusNotApplied}}, nil
+func (f fakeResourceReader) CacheUpdateActions(context.Context, authz.ResourceScope, string) ([]ectypes.UpdateAction, bool, error) {
+	return []ectypes.UpdateAction{{ServiceUpdateName: sdkaws.String("elc-2026-001"), ServiceUpdateSeverity: ectypes.ServiceUpdateSeverityImportant, UpdateActionStatus: ectypes.UpdateActionStatusNotApplied}}, false, nil
 }
 
 func (f fakeResourceReader) Certificate(_ context.Context, _ authz.ResourceScope, arn string) (acmtypes.CertificateDetail, error) {
+	if f.failCertificates {
+		return acmtypes.CertificateDetail{}, apierr.Upstream("certificate %s not found", arn)
+	}
+	notAfter := at(24*20 + 5)
+	if f.notAfter != nil {
+		notAfter = f.notAfter
+	}
 	return acmtypes.CertificateDetail{CertificateArn: sdkaws.String(arn), DomainName: sdkaws.String("shop.example.com"), Status: acmtypes.CertificateStatusIssued,
-		NotAfter: at(24*20 + 5), RenewalEligibility: acmtypes.RenewalEligibilityEligible, InUseBy: []string{"arn:b", "arn:a"}}, nil
+		NotAfter: notAfter, RenewalEligibility: acmtypes.RenewalEligibilityEligible, InUseBy: []string{"arn:b", "arn:a"}}, nil
 }
 
 func (f fakeResourceReader) Function(_ context.Context, _ authz.ResourceScope, name string) (aws.FunctionConfig, error) {
@@ -157,8 +169,8 @@ func (f fakeResourceReader) EKSCluster(_ context.Context, _ authz.ResourceScope,
 		UpgradePolicy: &ekstypes.UpgradePolicyResponse{SupportType: ekstypes.SupportTypeExtended}}, nil
 }
 
-func (f fakeResourceReader) EKSAddons(_ context.Context, _ authz.ResourceScope, cluster string) ([]ekstypes.Addon, error) {
-	return []ekstypes.Addon{{AddonName: sdkaws.String("vpc-cni"), ClusterName: sdkaws.String(cluster), AddonVersion: sdkaws.String("v1.19.0-eksbuild.2"), Status: ekstypes.AddonStatusActive}}, nil
+func (f fakeResourceReader) EKSAddons(_ context.Context, _ authz.ResourceScope, cluster string) ([]ekstypes.Addon, bool, error) {
+	return []ekstypes.Addon{{AddonName: sdkaws.String("vpc-cni"), ClusterName: sdkaws.String(cluster), AddonVersion: sdkaws.String("v1.19.0-eksbuild.2"), Status: ekstypes.AddonStatusActive}}, false, nil
 }
 
 func (f fakeResourceReader) EKSAddonVersions(context.Context, string, string) ([]ekstypes.AddonVersionInfo, error) {
@@ -288,5 +300,25 @@ func TestResourcesSourceRef(t *testing.T) {
 	ref := resourcesSourceRef(testResourceScope(t, `{ source: aws, lambdas: [shop-resize], rds_instances: [shop-legacy] }`), "q")
 	if ref.URL != "https://eu-central-1.console.aws.amazon.com/rds/home?region=eu-central-1#database:id=shop-legacy;is-cluster=false" {
 		t.Errorf("url = %s", ref.URL)
+	}
+}
+
+func TestResourcesFailWhenOneResourceFails(t *testing.T) {
+	redactor, err := shape.NewRedactor(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := &resourceRead{reader: fakeResourceReader{failCertificates: true}, redactor: redactor, now: resourcesNow,
+		scope: testResourceScope(t, `{ source: aws, rds_clusters: [shop-db], certificates: [`+testCertificateARN+`] }`),
+		r:     api.TimeRange{From: resourcesNow.Add(-24 * time.Hour), To: resourcesNow}}
+	if _, _, err := read.read(context.Background()); err == nil {
+		t.Fatal("a failing certificate must fail the request")
+	}
+}
+
+func TestCertificateExpiredHoursAgoHasNegativeDays(t *testing.T) {
+	data, _ := readResources(t, fakeResourceReader{notAfter: at(-1)}, `{ source: aws, certificates: [`+testCertificateARN+`] }`)
+	if len(data.Certificates) != 1 || data.Certificates[0].DaysLeft == nil || *data.Certificates[0].DaysLeft != -1 {
+		t.Errorf("certificates = %+v, want daysLeft -1", data.Certificates)
 	}
 }

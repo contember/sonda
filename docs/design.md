@@ -116,7 +116,7 @@ Identity ──< Grant (projects × environments × capabilities)
   | `workloads` | `kubernetes` | `namespace` + `labels` (1 or more exact `key: value` pairs, values not empty); or `nodes: true` alone, for a service that stands for the cluster's nodes |
   | `workloads` | `aws` | ECS `cluster` + `service`: names, not ARNs |
   | `images` | `aws` | `repositories`: 1 to 20 unique ECR repository names in the source's region, not ARNs or URIs |
-  | `resources` | `aws` | any of `rds_clusters`, `rds_instances` (standalone instances), `elasticache` (replication group IDs), `certificates` (ACM certificate ARNs in the source's region), `lambdas` (function names), `eks_clusters`: at least one entry, each list unique and at most 20 long, exact identifiers, no ARNs except certificates |
+  | `resources` | `aws` | any of `rds_clusters`, `rds_instances` (standalone instances), `elasticache` (replication group IDs), `certificates` (ACM certificate ARNs in the source's region), `lambdas` (function names), `eks_clusters`: at least one entry, each list unique and at most 20 long (certificates 50), exact identifiers (RDS and ElastiCache lowercase, as AWS stores them), no ARNs except certificates |
   | `alerts` | `prometheus`, `grafana` | `selector` over the alert labels, e.g. `{service="engine"}` |
   | `data` | `contember` | `project` + `stage` (default `live`), optional `entities` allow list and `deny_fields` (`Entity.field` or `*.field`) |
 
@@ -563,7 +563,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   not exist fails the request with `upstream_error`, as a missing ECR repository does.
 - Catalog calls name no resource of the account: `DescribeDBEngineVersions` (the current
   version's status and `ValidUpgradeTarget`, split into minor and major upgrades),
-  `DescribeDBMajorEngineVersions` (standard and extended support dates of the major version),
+  `DescribeDBMajorEngineVersions` (standard and extended support dates of the major version;
+  called only for the engines it accepts, so DocumentDB and Neptune clusters have no support
+  periods),
   `DescribeCacheEngineVersions`, `DescribeAddonVersions` (with the cluster's Kubernetes version)
   and `DescribeClusterVersions` (end of standard and extended support).
 - Databases: engine and version, upgrades, support periods, the resource's own lifecycle
@@ -1294,7 +1296,9 @@ Rules:
   `ssm:GetParameter*`, `kms:Decrypt` and `s3:GetObject` to Sonda's role, so a later broad grant
   cannot open them. An explicit Deny wins over every Allow: if Sonda reads log groups encrypted
   with a customer key and needs `kms:Decrypt` for them, exclude those keys from the Deny with
-  `NotResource`.
+  `NotResource`. The Deny also stops Lambda from returning the variables of a function encrypted
+  with a customer key (assumption, not verified against AWS): such a function shows
+  `environmentError` and no variable names.
 
 ## 13. Out of scope for v1
 

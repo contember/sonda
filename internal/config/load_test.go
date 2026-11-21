@@ -954,9 +954,11 @@ func TestParseResourcesErrors(t *testing.T) {
 		replace [2]string
 		want    string
 	}{
-		{"cluster ARN", [2]string{"[shop-db]", "[arn:aws:rds:eu-central-1:123456789012:cluster:shop-db]"}, "must be a DB cluster identifier (not an ARN)"},
+		{"cluster ARN", [2]string{"[shop-db]", "[arn:aws:rds:eu-central-1:123456789012:cluster:shop-db]"}, "must be a lowercase DB cluster identifier (not an ARN)"},
+		{"uppercase cluster", [2]string{"[shop-db]", "[Shop-DB]"}, "must be a lowercase DB cluster identifier"},
+		{"uppercase cache", [2]string{"[shop-cache]", "[Shop-Cache]"}, "must be a lowercase ElastiCache replication group ID"},
 		{"duplicate instance", [2]string{"[shop-legacy]", "[shop-legacy, shop-legacy]"}, `"shop-legacy" is listed twice`},
-		{"cache pattern", [2]string{"[shop-cache]", "['shop-*']"}, "must be an ElastiCache replication group ID"},
+		{"cache pattern", [2]string{"[shop-cache]", "['shop-*']"}, "must be a lowercase ElastiCache replication group ID"},
 		{"certificate ID", [2]string{certificate, "0f6a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b"}, "must be an ACM certificate ARN"},
 		{"certificate region", [2]string{"acm:eu-central-1", "acm:us-east-1"}, "is not in the region of source aws (eu-central-1)"},
 		{"lambda ARN", [2]string{"[shop-resize]", "[arn:aws:lambda:eu-central-1:123456789012:function:shop-resize]"}, "must be a Lambda function name"},
@@ -992,6 +994,24 @@ projects:
 	_, err := Parse([]byte(config), env(nil))
 	if err == nil || !strings.Contains(err.Error(), "at least one of rds_clusters, rds_instances, elasticache, certificates, lambdas or eks_clusters is required") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseResourcesCertificateLimit(t *testing.T) {
+	const arn = "arn:aws:acm:eu-central-1:123456789012:certificate/0f6a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
+	arns := func(n int) string {
+		list := make([]string, n)
+		for i := range list {
+			list[i] = fmt.Sprintf("%s%02d", arn[:len(arn)-2], i)
+		}
+		return "[" + strings.Join(list, ", ") + "]"
+	}
+	if _, err := Parse([]byte(strings.Replace(resourcesConfig, "["+arn+"]", arns(50), 1)), env(nil)); err != nil {
+		t.Fatalf("50 certificates: %v", err)
+	}
+	_, err := Parse([]byte(strings.Replace(resourcesConfig, "["+arn+"]", arns(51), 1)), env(nil))
+	if err == nil || !strings.Contains(err.Error(), "certificates must list at most 50 entries") {
+		t.Fatalf("51 certificates: error = %v", err)
 	}
 }
 

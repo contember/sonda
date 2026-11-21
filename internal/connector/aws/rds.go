@@ -107,9 +107,22 @@ func (c *Client) RDSEngineVersion(ctx context.Context, engine, version string) (
 	return rdstypes.DBEngineVersion{}, false, nil
 }
 
+// lifecycleEngines are the engines DescribeDBMajorEngineVersions accepts; it rejects others,
+// such as DocumentDB and Neptune, which DescribeDBClusters also returns.
+var lifecycleEngines = map[string]bool{
+	"aurora-mysql": true, "aurora-postgresql": true, "mariadb": true, "mysql": true, "postgres": true,
+	"custom-sqlserver-ee": true, "custom-sqlserver-se": true, "custom-sqlserver-web": true,
+	"db2-ae": true, "db2-ce": true, "db2-se": true,
+	"oracle-ee": true, "oracle-ee-cdb": true, "oracle-se2": true, "oracle-se2-cdb": true,
+	"sqlserver-ee": true, "sqlserver-se": true, "sqlserver-ex": true, "sqlserver-web": true,
+}
+
 // RDSMajorEngineVersion returns the support periods of a major engine version from the RDS
 // catalog, or none when RDS has no lifecycle for it.
 func (c *Client) RDSMajorEngineVersion(ctx context.Context, engine, major string) ([]rdstypes.SupportedEngineLifecycle, error) {
+	if !lifecycleEngines[engine] {
+		return nil, nil
+	}
 	out, err := c.rds.DescribeDBMajorEngineVersions(ctx, &rds.DescribeDBMajorEngineVersionsInput{
 		Engine:             sdkaws.String(engine),
 		MajorEngineVersion: sdkaws.String(major),

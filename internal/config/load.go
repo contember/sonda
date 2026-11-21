@@ -932,20 +932,26 @@ func (v *validator) imageBinding(path string, raw rawImageBinding, sources map[s
 	return &ImageBinding{Source: src, Repositories: raw.Repositories}
 }
 
-const maxBoundResources = 20
+const (
+	maxBoundResources = 20
+	// maxBoundCertificates is higher: a service that serves customer domains has one each.
+	maxBoundCertificates = 50
+)
 
 var (
-	// rdsIdentifier is a DB cluster or instance identifier: a letter, then letters, numbers and hyphens.
-	rdsIdentifier = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,62}$`)
-	// elastiCacheID is a replication group ID: a letter, then letters, numbers and hyphens.
-	elastiCacheID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,39}$`)
+	// rdsIdentifier is a DB cluster or instance identifier: a letter, then letters, numbers and
+	// hyphens. RDS stores identifiers lowercase, so the binding must match what it returns.
+	rdsIdentifier = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	// elastiCacheID is a replication group ID, stored lowercase like RDS identifiers.
+	elastiCacheID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 	// lambdaName is an unqualified function name, not an ARN or a name with a version or alias.
 	lambdaName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	eksName    = regexp.MustCompile(`^[0-9A-Za-z][A-Za-z0-9_-]{0,99}$`)
 	acmARN     = regexp.MustCompile(`^arn:aws[a-z-]*:acm:([a-z0-9-]+):[0-9]{12}:certificate/[A-Za-z0-9-]+$`)
 )
 
-// resourceBinding requires at least one resource, each list unique and at most 20 entries long,
+// resourceBinding requires at least one resource, each list unique and at most 20 entries long
+// (certificates 50),
 // with exact identifiers (no ARNs or patterns), except certificates, which ACM addresses by ARN
 // only; their region must be the source's.
 func (v *validator) resourceBinding(path string, raw rawResourceBinding, sources map[string]*Source) *ResourceBinding {
@@ -955,19 +961,20 @@ func (v *validator) resourceBinding(path string, raw rawResourceBinding, sources
 		values []string
 		valid  func(string) bool
 		what   string
+		max    int
 	}{
-		{"rds_clusters", raw.RDSClusters, rdsIdentifier.MatchString, "a DB cluster identifier (not an ARN)"},
-		{"rds_instances", raw.RDSInstances, rdsIdentifier.MatchString, "a DB instance identifier (not an ARN)"},
-		{"elasticache", raw.ElastiCache, elastiCacheID.MatchString, "an ElastiCache replication group ID (not an ARN)"},
-		{"certificates", raw.Certificates, acmARN.MatchString, "an ACM certificate ARN"},
-		{"lambdas", raw.Lambdas, lambdaName.MatchString, "a Lambda function name (not an ARN, version or alias)"},
-		{"eks_clusters", raw.EKSClusters, eksName.MatchString, "an EKS cluster name (not an ARN)"},
+		{"rds_clusters", raw.RDSClusters, rdsIdentifier.MatchString, "a lowercase DB cluster identifier (not an ARN)", maxBoundResources},
+		{"rds_instances", raw.RDSInstances, rdsIdentifier.MatchString, "a lowercase DB instance identifier (not an ARN)", maxBoundResources},
+		{"elasticache", raw.ElastiCache, elastiCacheID.MatchString, "a lowercase ElastiCache replication group ID (not an ARN)", maxBoundResources},
+		{"certificates", raw.Certificates, acmARN.MatchString, "an ACM certificate ARN", maxBoundCertificates},
+		{"lambdas", raw.Lambdas, lambdaName.MatchString, "a Lambda function name (not an ARN, version or alias)", maxBoundResources},
+		{"eks_clusters", raw.EKSClusters, eksName.MatchString, "an EKS cluster name (not an ARN)", maxBoundResources},
 	}
 	total := 0
 	for _, list := range lists {
 		total += len(list.values)
-		if len(list.values) > maxBoundResources {
-			v.fail("%s.%s must list at most %d entries", path, list.field, maxBoundResources)
+		if len(list.values) > list.max {
+			v.fail("%s.%s must list at most %d entries", path, list.field, list.max)
 		}
 		seen := map[string]bool{}
 		for _, value := range list.values {

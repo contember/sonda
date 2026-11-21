@@ -135,7 +135,7 @@ parts that matter for security:
     `images` capability reads.
   - AWS resources: any of `rds_clusters`, `rds_instances`, `elasticache` (replication group
     IDs), `certificates` (ACM certificate ARNs), `lambdas` and `eks_clusters`, exact identifiers,
-    at most 20 per kind. Sonda reads only their descriptions; it keeps the names of Lambda
+    at most 20 per kind (50 certificates). Sonda reads only their descriptions; it keeps the names of Lambda
     environment variables and drops their values.
   - Vercel `project` and `environment`: the project ID (`prj_…`, not the name) and the Vercel
     environment, e.g. `production` or `preview`.

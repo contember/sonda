@@ -109,11 +109,11 @@ func (c *Client) CacheEngineVersions(ctx context.Context, engine string) ([]stri
 	}
 }
 
-// CacheUpdateActions returns the service updates of a bound replication group that are not
-// complete.
-func (c *Client) CacheUpdateActions(ctx context.Context, scope authz.ResourceScope, group string) ([]ectypes.UpdateAction, error) {
+// CacheUpdateActions returns up to maxResourceEvents service updates of a bound replication
+// group that are not complete, and reports whether more exist.
+func (c *Client) CacheUpdateActions(ctx context.Context, scope authz.ResourceScope, group string) ([]ectypes.UpdateAction, bool, error) {
 	if !scope.HasElastiCache(group) {
-		return nil, c.outsideScope()
+		return nil, false, c.outsideScope()
 	}
 	var (
 		actions []ectypes.UpdateAction
@@ -127,16 +127,19 @@ func (c *Client) CacheUpdateActions(ctx context.Context, scope authz.ResourceSco
 			Marker:              marker,
 		})
 		if err != nil {
-			return nil, c.apiError("DescribeUpdateActions", err)
+			return nil, false, c.apiError("DescribeUpdateActions", err)
 		}
 		for _, action := range out.UpdateActions {
 			if sdkaws.ToString(action.ReplicationGroupId) != group {
-				return nil, c.outsideScope()
+				return nil, false, c.outsideScope()
 			}
 		}
 		actions = append(actions, out.UpdateActions...)
-		if out.Marker == nil || len(actions) >= maxResourceEvents {
-			return actions, nil
+		if len(actions) >= maxResourceEvents {
+			return actions[:maxResourceEvents], len(actions) > maxResourceEvents || out.Marker != nil, nil
+		}
+		if out.Marker == nil {
+			return actions, false, nil
 		}
 		marker = out.Marker
 	}

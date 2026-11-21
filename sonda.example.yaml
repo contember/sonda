@@ -175,7 +175,7 @@ projects:
       #       logs: { source: aws-prod, log_groups: [/aws/rds/cluster/engine/postgresql] }
       #       metrics: { source: aws-prod, namespace: AWS/RDS, dimensions: { DBClusterIdentifier: engine } }
       #       # Versions, upgrades, maintenance, backups and expiry of the service's managed
-      #       # resources, by exact identifier (certificates by ARN), at most 20 per kind.
+      #       # resources, by exact identifier (certificates by ARN), at most 20 per kind (50 certificates).
       #       resources:
       #         source: aws-prod
       #         rds_clusters: [engine]

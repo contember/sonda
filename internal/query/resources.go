@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -39,6 +40,8 @@ var resourcesUntrusted = []string{
 	"data.databases[].pendingMaintenance[].description",
 	"data.databases[].members[].pendingMaintenance[].description",
 	"data.databases[].instance.pendingMaintenance[].description",
+	// Snapshot names are chosen by whoever takes a manual snapshot.
+	"data.databases[].snapshots[].identifier",
 	"data.functions[].stateReason",
 	"data.clusters[].health[].message",
 	"data.clusters[].addons[].health[].message",
@@ -46,7 +49,9 @@ var resourcesUntrusted = []string{
 }
 
 // resourceReader is the part of the AWS connector the resources use case reads through. Every
-// method checks its arguments against the scope and its results against the arguments.
+// method checks its arguments against the scope and its results against the arguments. The
+// member methods (a non-empty cluster) only check that the cluster is bound: the caller must
+// pass a member that RDSInstance returned for that cluster.
 type resourceReader interface {
 	RDSCluster(ctx context.Context, scope authz.ResourceScope, id string) (rdstypes.DBCluster, error)
 	RDSInstance(ctx context.Context, scope authz.ResourceScope, id, cluster string) (rdstypes.DBInstance, error)
@@ -59,11 +64,11 @@ type resourceReader interface {
 	ReplicationGroup(ctx context.Context, scope authz.ResourceScope, id string) (ectypes.ReplicationGroup, error)
 	CacheCluster(ctx context.Context, scope authz.ResourceScope, group, id string) (ectypes.CacheCluster, error)
 	CacheEngineVersions(ctx context.Context, engine string) ([]string, error)
-	CacheUpdateActions(ctx context.Context, scope authz.ResourceScope, group string) ([]ectypes.UpdateAction, error)
+	CacheUpdateActions(ctx context.Context, scope authz.ResourceScope, group string) ([]ectypes.UpdateAction, bool, error)
 	Certificate(ctx context.Context, scope authz.ResourceScope, arn string) (acmtypes.CertificateDetail, error)
 	Function(ctx context.Context, scope authz.ResourceScope, name string) (aws.FunctionConfig, error)
 	EKSCluster(ctx context.Context, scope authz.ResourceScope, name string) (ekstypes.Cluster, error)
-	EKSAddons(ctx context.Context, scope authz.ResourceScope, cluster string) ([]ekstypes.Addon, error)
+	EKSAddons(ctx context.Context, scope authz.ResourceScope, cluster string) ([]ekstypes.Addon, bool, error)
 	EKSAddonVersions(ctx context.Context, addon, kubernetesVersion string) ([]ekstypes.AddonVersionInfo, error)
 	EKSClusterVersion(ctx context.Context, version string) (ekstypes.ClusterVersionInformation, bool, error)
 }
@@ -510,10 +515,11 @@ func (b *resourceRead) cache(ctx context.Context, id string) (api.Cache, error) 
 		}
 		cache.NewerVersions = slices.Compact(newestFirst(cache.NewerVersions))
 	}
-	actions, err := b.reader.CacheUpdateActions(ctx, b.scope, id)
+	actions, cut, err := b.reader.CacheUpdateActions(ctx, b.scope, id)
 	if err != nil {
 		return api.Cache{}, err
 	}
+	b.markTruncated(cut)
 	for _, a := range actions {
 		cache.PendingUpdates = append(cache.PendingUpdates, api.MaintenanceItem{
 			Action:      sdkaws.ToString(a.ServiceUpdateName),
@@ -547,7 +553,7 @@ func (b *resourceRead) certificate(ctx context.Context, arn string) (api.Certifi
 		shaped.InUseBy = []string{}
 	}
 	if cert.NotAfter != nil {
-		days := int(cert.NotAfter.Sub(b.now) / oneDay)
+		days := int(math.Floor(float64(cert.NotAfter.Sub(b.now)) / float64(oneDay)))
 		shaped.DaysLeft = &days
 	}
 	if renewal := cert.RenewalSummary; renewal != nil {
@@ -616,10 +622,11 @@ func (b *resourceRead) kubernetes(ctx context.Context, name string) (api.Kuberne
 			shaped.StandardSupportEnd, shaped.ExtendedSupportEnd = info.EndOfStandardSupportDate, info.EndOfExtendedSupportDate
 		}
 	}
-	addons, err := b.reader.EKSAddons(ctx, b.scope, name)
+	addons, cut, err := b.reader.EKSAddons(ctx, b.scope, name)
 	if err != nil {
 		return api.KubernetesCluster{}, err
 	}
+	b.markTruncated(cut)
 	for _, addon := range addons {
 		shaped.Addons = append(shaped.Addons, api.Addon{
 			Name:          sdkaws.ToString(addon.AddonName),
