@@ -20,7 +20,7 @@ const (
 var workloadsUntrusted = []string{
 	"data.pods[].reason", "data.pods[].containers[].reason", "data.pods[].containers[].message",
 	"data.pods[].containers[].lastTermination.reason", "data.pods[].containers[].lastTermination.message",
-	"data.events[].reason", "data.events[].message",
+	"data.events[].reason", "data.events[].message", "data.nodes[].problems[]",
 }
 
 // workloadBackend reads the current workloads of one scope. Implementations bind the scope and
@@ -29,6 +29,14 @@ type workloadBackend interface {
 	// workloads returns the pods, all rollouts newest first and the events that overlap the
 	// range newest first; the caller cuts the lists.
 	workloads(ctx context.Context, r api.TimeRange) (workloadState, error)
+	// objects returns the configuration of the objects that run the service.
+	objects(ctx context.Context) (objectState, error)
+}
+
+type objectState struct {
+	data      api.WorkloadObjects
+	truncated bool
+	source    api.SourceRef
 }
 
 type workloadState struct {
@@ -41,6 +49,9 @@ type workloadState struct {
 func (s *Service) workloadBackend(scope authz.WorkloadScope) (workloadBackend, error) {
 	if k8s, ok := scope.Kubernetes(); ok {
 		return kubernetesWorkloads{s: s, scope: k8s, client: s.connectors.Kubernetes[k8s.Source().Name]}, nil
+	}
+	if nodes, ok := scope.Nodes(); ok {
+		return nodeWorkloads{s: s, scope: nodes, client: s.connectors.Kubernetes[nodes.Source().Name]}, nil
 	}
 	if tasks, ok := scope.ECS(); ok {
 		return ecsWorkloads{redactor: s.redactor, scope: tasks, client: s.connectors.AWS[tasks.Source().Name]}, nil
@@ -87,7 +98,15 @@ func (s *Service) WorkloadSummary(ctx context.Context, identity *authz.Identity,
 }
 
 func summarizeWorkloads(w api.Workloads, r api.TimeRange) *api.WorkloadSummary {
-	summary := &api.WorkloadSummary{Pods: len(w.Pods)}
+	summary := &api.WorkloadSummary{Pods: len(w.Pods), Nodes: len(w.Nodes)}
+	for _, node := range w.Nodes {
+		if node.Ready {
+			summary.NodesReady++
+		}
+		if len(node.Problems) > 0 {
+			summary.Problems = append(summary.Problems, node.Name+": "+strings.Join(node.Problems, "; "))
+		}
+	}
 	for _, pod := range w.Pods {
 		summary.Restarts += pod.Restarts
 		if pod.Ready {

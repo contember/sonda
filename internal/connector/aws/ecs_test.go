@@ -58,6 +58,15 @@ type fakeECS struct {
 	services     []ecstypes.Service
 	listInputs   []*ecs.ListTasksInput
 	describeArns [][]string
+	// taskDefinition answers DescribeTaskDefinition; nil fails the call.
+	taskDefinition *ecstypes.TaskDefinition
+}
+
+func (f *fakeECS) DescribeTaskDefinition(_ context.Context, in *ecs.DescribeTaskDefinitionInput, _ ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error) {
+	if f.taskDefinition == nil {
+		return nil, fmt.Errorf("unexpected input %+v", in)
+	}
+	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: f.taskDefinition}, nil
 }
 
 func (f *fakeECS) DescribeServices(_ context.Context, in *ecs.DescribeServicesInput, _ ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error) {
@@ -179,5 +188,57 @@ func TestECSService(t *testing.T) {
 	_, err = ecsClient(cfg, &fakeECS{services: []ecstypes.Service{other}}).ECSService(context.Background(), scope)
 	if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal {
 		t.Errorf("service of another cluster: error = %v", err)
+	}
+}
+
+const taskDefinitionARN = "arn:aws:ecs:eu-central-1:123456789012:task-definition/web:42"
+
+func TestECSTaskDefinitionDropsValues(t *testing.T) {
+	cfg, scope := ecsScope(t)
+	secretARN := "arn:aws:secretsmanager:eu-central-1:123456789012:secret:web/db-AbCdEf"
+	fake := &fakeECS{taskDefinition: &ecstypes.TaskDefinition{
+		TaskDefinitionArn: sdkaws.String(taskDefinitionARN),
+		Family:            sdkaws.String("web"),
+		Revision:          42,
+		TaskRoleArn:       sdkaws.String("arn:aws:iam::123456789012:role/web-task"),
+		ContainerDefinitions: []ecstypes.ContainerDefinition{{
+			Name:         sdkaws.String("app"),
+			Image:        sdkaws.String("123456789012.dkr.ecr.eu-central-1.amazonaws.com/web:1.2.3"),
+			Environment:  []ecstypes.KeyValuePair{{Name: sdkaws.String("PORT"), Value: sdkaws.String("8080")}, {Name: sdkaws.String("API_KEY"), Value: sdkaws.String("plain-s3cr3t")}},
+			Secrets:      []ecstypes.Secret{{Name: sdkaws.String("DATABASE_URL"), ValueFrom: sdkaws.String(secretARN)}},
+			Command:      []string{"serve", "--token=cmd-s3cr3t"},
+			DockerLabels: map[string]string{"auth": "label-s3cr3t"},
+			LogConfiguration: &ecstypes.LogConfiguration{LogDriver: ecstypes.LogDriverAwslogs, Options: map[string]string{
+				"awslogs-group": "/ecs/web", "awslogs-region": "eu-central-1", "token": "log-s3cr3t",
+			}},
+			PortMappings:          []ecstypes.PortMapping{{ContainerPort: sdkaws.Int32(8080), Protocol: ecstypes.TransportProtocolTcp}},
+			RepositoryCredentials: &ecstypes.RepositoryCredentials{CredentialsParameter: sdkaws.String(secretARN)},
+		}},
+	}}
+	td, err := ecsClient(cfg, fake).ECSTaskDefinition(context.Background(), scope, taskDefinitionARN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump := fmt.Sprintf("%+v", td)
+	for _, value := range []string{"s3cr3t", secretARN} {
+		if strings.Contains(dump, value) {
+			t.Errorf("task definition keeps %q: %s", value, dump)
+		}
+	}
+	c := td.Containers[0]
+	if fmt.Sprint(c.Env) != "[API_KEY PORT]" || fmt.Sprint(c.SecretEnv) != "[DATABASE_URL]" || c.LogGroup != "/ecs/web" || fmt.Sprint(c.Ports) != "[8080/TCP]" {
+		t.Errorf("container = %+v", c)
+	}
+	if td.Family != "web" || td.Revision != 42 || td.TaskRole != "web-task" {
+		t.Errorf("task definition = %+v", td)
+	}
+}
+
+func TestECSTaskDefinitionPostCheck(t *testing.T) {
+	cfg, scope := ecsScope(t)
+	fake := &fakeECS{taskDefinition: &ecstypes.TaskDefinition{TaskDefinitionArn: sdkaws.String("arn:aws:ecs:eu-central-1:123456789012:task-definition/admin:1")}}
+	_, err := ecsClient(cfg, fake).ECSTaskDefinition(context.Background(), scope, taskDefinitionARN)
+	if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal {
+		t.Errorf("another task definition: error = %v", err)
 	}
 }

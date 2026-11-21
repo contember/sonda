@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
@@ -155,4 +158,141 @@ func ecsSourceRef(scope authz.ECSScope, query string) api.SourceRef {
 		URL: fmt.Sprintf("https://%s.console.aws.amazon.com/ecs/v2/clusters/%s/services/%s/tasks?region=%s",
 			region, url.PathEscape(scope.Cluster()), url.PathEscape(scope.ECSService()), url.QueryEscape(region)),
 	}
+}
+
+// objects describes the ECS service and the task definitions of its deployments, with variable
+// names only.
+func (b ecsWorkloads) objects(ctx context.Context) (objectState, error) {
+	query := fmt.Sprintf("objects cluster=%s service=%s", b.scope.Cluster(), b.scope.ECSService())
+	recordQuery(ctx, b.scope.Target, query)
+	svc, err := b.client.ECSService(ctx, b.scope)
+	if err != nil {
+		return objectState{}, err
+	}
+	var arns []string
+	for _, d := range svc.Deployments {
+		if arn := sdkaws.ToString(d.TaskDefinition); arn != "" && !slices.Contains(arns, arn) {
+			arns = append(arns, arn)
+		}
+	}
+	defs := make([]api.TaskDefinition, len(arns))
+	errs := make([]error, len(arns))
+	var wg sync.WaitGroup
+	for i, arn := range arns {
+		wg.Go(func() {
+			td, err := b.client.ECSTaskDefinition(ctx, b.scope, arn)
+			defs[i], errs[i] = apiTaskDefinition(td), err
+		})
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return objectState{}, err
+		}
+	}
+	sort.SliceStable(defs, func(i, j int) bool { return defs[i].Revision > defs[j].Revision })
+	return objectState{
+		data:   api.WorkloadObjects{Controllers: []api.Controller{ecsController(svc)}, TaskDefinitions: defs},
+		source: ecsSourceRef(b.scope, query),
+	}, nil
+}
+
+func ecsController(svc ecstypes.Service) api.Controller {
+	desired := int(svc.DesiredCount)
+	c := api.Controller{
+		Kind:          "Service",
+		Name:          sdkaws.ToString(svc.ServiceName),
+		Replicas:      &desired,
+		ReadyReplicas: int(svc.RunningCount),
+		Details: map[string]string{
+			"status":         sdkaws.ToString(svc.Status),
+			"taskDefinition": aws.ARNName(sdkaws.ToString(svc.TaskDefinition)),
+			"pending":        strconv.Itoa(int(svc.PendingCount)),
+			"scheduling":     string(svc.SchedulingStrategy),
+			"executeCommand": strconv.FormatBool(svc.EnableExecuteCommand),
+		},
+	}
+	if svc.CreatedAt != nil {
+		c.Created = *svc.CreatedAt
+	}
+	if svc.LaunchType != "" {
+		c.Details["launchType"] = string(svc.LaunchType)
+	}
+	var providers []string
+	for _, p := range svc.CapacityProviderStrategy {
+		providers = append(providers, fmt.Sprintf("%s weight=%d base=%d", sdkaws.ToString(p.CapacityProvider), p.Weight, p.Base))
+	}
+	if len(providers) > 0 {
+		c.Details["capacityProviders"] = strings.Join(providers, "; ")
+	}
+	if v := sdkaws.ToString(svc.PlatformVersion); v != "" {
+		c.Details["platformVersion"] = v
+	}
+	if dc := svc.DeploymentConfiguration; dc != nil {
+		c.Strategy = fmt.Sprintf("minHealthy=%d%% max=%d%%", sdkaws.ToInt32(dc.MinimumHealthyPercent), sdkaws.ToInt32(dc.MaximumPercent))
+		if cb := dc.DeploymentCircuitBreaker; cb != nil && cb.Enable {
+			c.Strategy += " circuitBreaker"
+			if cb.Rollback {
+				c.Strategy += "+rollback"
+			}
+		}
+	}
+	var balancers []string
+	for _, lb := range svc.LoadBalancers {
+		balancers = append(balancers, fmt.Sprintf("%s → %s:%d", targetGroupName(sdkaws.ToString(lb.TargetGroupArn)), sdkaws.ToString(lb.ContainerName), sdkaws.ToInt32(lb.ContainerPort)))
+	}
+	if len(balancers) > 0 {
+		c.Details["loadBalancers"] = strings.Join(balancers, "; ")
+	}
+	if grace := sdkaws.ToInt32(svc.HealthCheckGracePeriodSeconds); grace > 0 {
+		c.Details["healthCheckGracePeriod"] = fmt.Sprintf("%ds", grace)
+	}
+	if nc := svc.NetworkConfiguration; nc != nil && nc.AwsvpcConfiguration != nil {
+		vpc := nc.AwsvpcConfiguration
+		c.Details["network"] = fmt.Sprintf("awsvpc subnets=%d securityGroups=%d publicIp=%s", len(vpc.Subnets), len(vpc.SecurityGroups), vpc.AssignPublicIp)
+	}
+	return c
+}
+
+// targetGroupName returns the name in arn:aws:elasticloadbalancing:…:targetgroup/<name>/<id>.
+func targetGroupName(arn string) string {
+	_, rest, ok := strings.Cut(arn, ":targetgroup/")
+	if !ok {
+		return arn
+	}
+	name, _, _ := strings.Cut(rest, "/")
+	return "targetgroup/" + name
+}
+
+func apiTaskDefinition(td aws.TaskDefinition) api.TaskDefinition {
+	result := api.TaskDefinition{
+		Family: td.Family, Revision: td.Revision, Status: td.Status, Registered: td.Registered,
+		CPU: td.CPU, Memory: td.Memory, NetworkMode: td.NetworkMode, Compatibility: td.Compatibilities,
+		TaskRole: td.TaskRole, ExecutionRole: td.ExecutionRole, Containers: []api.ContainerSpec{},
+	}
+	for _, c := range td.Containers {
+		spec := api.ContainerSpec{Name: c.Name, Image: c.Image, Env: c.Env, SecretEnv: c.SecretEnv, Ports: c.Ports, LogGroup: c.LogGroup}
+		requests := map[string]string{}
+		limits := map[string]string{}
+		if c.CPU > 0 {
+			requests["cpu"] = strconv.Itoa(c.CPU) + " units"
+		}
+		if c.MemoryReservation > 0 {
+			requests["memory"] = strconv.Itoa(c.MemoryReservation) + "MiB"
+		}
+		if c.Memory > 0 {
+			limits["memory"] = strconv.Itoa(c.Memory) + "MiB"
+		}
+		if len(requests) > 0 {
+			spec.Requests = requests
+		}
+		if len(limits) > 0 {
+			spec.Limits = limits
+		}
+		if c.HealthCheck {
+			spec.Probes = map[string]string{"health": "container health check"}
+		}
+		result.Containers = append(result.Containers, spec)
+	}
+	return result
 }

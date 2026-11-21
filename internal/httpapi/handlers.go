@@ -102,6 +102,11 @@ func (s *Server) workloads(r *http.Request) (any, error) {
 	return s.query.Workloads(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
 }
 
+// objects takes only env: it reads the current configuration.
+func (s *Server) objects(r *http.Request) (any, error) {
+	return s.query.Objects(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"))
+}
+
 // images and image take no range: they read the registry's current state.
 func (s *Server) images(r *http.Request) (any, error) {
 	req, err := imagesRequest(r)

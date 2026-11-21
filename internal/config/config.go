@@ -82,6 +82,8 @@ type Source struct {
 	AWS *AWSSource
 	// RootCAs verifies the server certificate instead of the system roots when set.
 	RootCAs *x509.CertPool
+	// ArgoCDNamespace is where a Kubernetes source reads Argo CD Applications; empty for none.
+	ArgoCDNamespace string
 }
 
 type AWSSource struct {
@@ -275,13 +277,15 @@ func (b *TraceBinding) Dialect() api.Dialect {
 	return ""
 }
 
-// WorkloadBinding scopes a workloads source to one service. Exactly one variant is set, by
-// source type: Namespace with Labels (kubernetes: the pods and ReplicaSets in Namespace that
-// carry all of Labels), Cluster with ECSService (aws: the tasks of one ECS service).
+// WorkloadBinding scopes a workloads source to one service. Exactly one variant is set:
+// Namespace with Labels (kubernetes: the pods and ReplicaSets in Namespace that carry all of
+// Labels), Nodes (kubernetes: the cluster's nodes), Cluster with ECSService (aws: the tasks of
+// one ECS service).
 type WorkloadBinding struct {
 	Source     *Source
 	Namespace  string
 	Labels     map[string]string
+	Nodes      bool
 	Cluster    string
 	ECSService string
 }

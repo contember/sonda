@@ -36,6 +36,11 @@ func (a *app) workloadsCmd() *cobra.Command {
 
 func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 	renderMeta(w, resp.Meta)
+	if len(resp.Data.Nodes) > 0 {
+		renderNodes(w, resp.Data.Nodes)
+		renderEvents(w, resp.Data.Events)
+		return
+	}
 	fmt.Fprintln(w, "\nPODS")
 	t := table(w)
 	for _, pod := range resp.Data.Pods {
@@ -43,7 +48,7 @@ func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 		if pod.Ready {
 			ready = "ready"
 		}
-		fmt.Fprintf(t, "  %s\t%s\t%s\trestarts=%d\t%s\n", pod.Name, pod.Phase, ready, pod.Restarts, podDetail(pod))
+		fmt.Fprintf(t, "  %s\t%s\t%s\trestarts=%d\t%s\t%s\n", pod.Name, pod.Phase, ready, pod.Restarts, podUsage(pod), podDetail(pod))
 	}
 	t.Flush()
 	if len(resp.Data.Pods) == 0 {
@@ -61,16 +66,58 @@ func renderWorkloads(w io.Writer, resp api.Response[api.Workloads]) {
 		fmt.Fprintf(t, "  %s\trev %s\t%s\t%d/%d ready\t%s\n", r.Name, valueOrDash(r.Revision), r.Created.Format(time.RFC3339), r.ReadyReplicas, r.Replicas, strings.TrimSpace(r.State+" "+strings.Join(r.Images, ",")))
 	}
 	t.Flush()
+	renderEvents(w, resp.Data.Events)
+}
 
+func renderEvents(w io.Writer, events []api.WorkloadEvent) {
 	fmt.Fprintln(w, "\nEVENTS")
-	if len(resp.Data.Events) == 0 {
+	if len(events) == 0 {
 		fmt.Fprintln(w, "  none in range")
 	}
-	for _, e := range resp.Data.Events {
+	for _, e := range events {
 		// ECS service events have no reason.
 		head := strings.Join(slices.DeleteFunc([]string{e.LastSeen.Format(time.RFC3339), e.Type, e.Reason, e.Object}, func(s string) bool { return s == "" }), " ")
 		fmt.Fprintf(w, "  %s ×%d: %s\n", head, e.Count, e.Message)
 	}
+}
+
+func renderNodes(w io.Writer, nodes []api.Node) {
+	fmt.Fprintln(w, "\nNODES")
+	t := table(w)
+	for _, n := range nodes {
+		state := "not ready"
+		if n.Ready {
+			state = "ready"
+		}
+		if n.Unschedulable {
+			state += ",cordoned"
+		}
+		usage := "-"
+		if n.Usage != nil {
+			usage = fmt.Sprintf("cpu %dm/%s mem %s/%s", n.Usage.CPUMillicores, valueOrDash(n.Allocatable["cpu"]), mebibytes(n.Usage.MemoryBytes), valueOrDash(n.Allocatable["memory"]))
+		}
+		fmt.Fprintf(t, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n", n.Name, state, valueOrDash(n.InstanceType), valueOrDash(n.NodeGroup), n.KubeletVersion, usage, strings.Join(n.Problems, "; "))
+	}
+	t.Flush()
+}
+
+// podUsage sums the usage of the pod's containers; "-" without metrics.
+func podUsage(pod api.Pod) string {
+	var cpu, memory int64
+	seen := false
+	for _, c := range pod.Containers {
+		if c.Usage != nil {
+			cpu, memory, seen = cpu+c.Usage.CPUMillicores, memory+c.Usage.MemoryBytes, true
+		}
+	}
+	if !seen {
+		return "-"
+	}
+	return fmt.Sprintf("cpu %dm mem %s", cpu, mebibytes(memory))
+}
+
+func mebibytes(bytes int64) string {
+	return fmt.Sprintf("%dMi", bytes>>20)
 }
 
 // runningImages lists each image and digest the containers run, with the number of containers
@@ -115,7 +162,11 @@ func podDetail(pod api.Pod) string {
 }
 
 func writeWorkloadSummary(w io.Writer, s *api.WorkloadSummary) {
-	fmt.Fprintf(w, "  pods %d/%d ready, %d restarts, %d warning events\n", s.Ready, s.Pods, s.Restarts, s.Warnings)
+	if s.Nodes > 0 {
+		fmt.Fprintf(w, "  nodes %d/%d ready, %d warning events\n", s.NodesReady, s.Nodes, s.Warnings)
+	} else {
+		fmt.Fprintf(w, "  pods %d/%d ready, %d restarts, %d warning events\n", s.Ready, s.Pods, s.Restarts, s.Warnings)
+	}
 	if s.Rollout != nil {
 		fmt.Fprintf(w, "  rollout %s rev %s (%s) %s\n", s.Rollout.Name, valueOrDash(s.Rollout.Revision), s.Rollout.Created.Format(time.RFC3339), strings.Join(s.Rollout.Images, ","))
 	}

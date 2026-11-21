@@ -103,7 +103,7 @@ func TestRenderWorkloads(t *testing.T) {
 	want := []string{
 		"",
 		"PODS",
-		"  engine-api-7d9f-x2k4p  Running  not ready  restarts=4  app: CrashLoopBackOff; app last exit: OOMKilled (137) at 2026-10-26T10:00:00Z",
+		"  engine-api-7d9f-x2k4p  Running  not ready  restarts=4  -  app: CrashLoopBackOff; app last exit: OOMKilled (137) at 2026-10-26T10:00:00Z",
 		"",
 		"IMAGES",
 		"  engine:1.4 sha256:abc  containers=1",
@@ -148,6 +148,41 @@ func TestRenderEmptyOverviewSaysWhy(t *testing.T) {
 	var out bytes.Buffer
 	renderOverview(&out, api.Response[api.Overview]{})
 	if !strings.Contains(out.String(), "nothing to summarize") {
+		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+func TestRenderObjects(t *testing.T) {
+	three := 3
+	resp := api.Response[api.WorkloadObjects]{Meta: api.Meta{Service: "engine-api", Environment: "production"}, Data: api.WorkloadObjects{
+		Controllers: []api.Controller{{Kind: "Deployment", Name: "engine-api", Replicas: &three, ReadyReplicas: 2, Strategy: "RollingUpdate",
+			Containers: []api.ContainerSpec{{Name: "app", Image: "engine:2", Env: []string{"PORT"}, SecretEnv: []string{"DB_PASSWORD"}}}}},
+		ConfigMaps:   []api.ConfigMap{{Name: "engine-env", Missing: true}},
+		Applications: []api.Application{{Name: "engine", Sync: "Synced", Health: "Healthy", Resources: []api.AppResource{{Object: "Deployment/engine-api", Sync: "Synced", Health: "Healthy"}}}},
+	}}
+	var out bytes.Buffer
+	renderObjects(&out, resp)
+	for _, want := range []string{
+		"Deployment/engine-api  2/3 ready, RollingUpdate",
+		"env PORT",
+		"env from secrets DB_PASSWORD",
+		"engine-env  MISSING",
+		"Deployment/engine-api sync=Synced health=Healthy",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRenderNodes(t *testing.T) {
+	resp := api.Response[api.Workloads]{Data: api.Workloads{Nodes: []api.Node{{
+		Name: "ip-10-0-1-1", Ready: true, InstanceType: "m6i.large", KubeletVersion: "v1.33.1",
+		Allocatable: map[string]string{"cpu": "1930m", "memory": "7Gi"}, Usage: &api.Usage{CPUMillicores: 500, MemoryBytes: 2 << 30},
+	}}}}
+	var out bytes.Buffer
+	renderWorkloads(&out, resp)
+	if !strings.Contains(out.String(), "cpu 500m/1930m mem 2048Mi/7Gi") || strings.Contains(out.String(), "PODS") {
 		t.Errorf("output:\n%s", out.String())
 	}
 }

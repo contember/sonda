@@ -2,8 +2,10 @@ package aws
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -19,6 +21,7 @@ type ecsAPI interface {
 	DescribeServices(ctx context.Context, in *ecs.DescribeServicesInput, opts ...func(*ecs.Options)) (*ecs.DescribeServicesOutput, error)
 	ListTasks(ctx context.Context, in *ecs.ListTasksInput, opts ...func(*ecs.Options)) (*ecs.ListTasksOutput, error)
 	DescribeTasks(ctx context.Context, in *ecs.DescribeTasksInput, opts ...func(*ecs.Options)) (*ecs.DescribeTasksOutput, error)
+	DescribeTaskDefinition(ctx context.Context, in *ecs.DescribeTaskDefinitionInput, opts ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error)
 }
 
 const (
@@ -108,4 +111,102 @@ func ARNName(arn string) string {
 // repository, so a resource outside them means AWS did not apply the parameter.
 func (c *Client) outsideScope() error {
 	return apierr.New(api.CodeInternal, "source %s returned data outside the scope", c.source.Name)
+}
+
+// TaskDefinition is the part of an ECS task definition Sonda returns. Values of environment
+// variables, secret references, commands, Docker labels, log driver options other than the log
+// group, and repository credentials are dropped here: a literal value can hold a secret, and
+// IAM cannot exclude them from DescribeTaskDefinition.
+type TaskDefinition struct {
+	ARN             string
+	Family          string
+	Revision        int
+	Status          string
+	Registered      *time.Time
+	CPU             string
+	Memory          string
+	NetworkMode     string
+	Compatibilities []string
+	TaskRole        string
+	ExecutionRole   string
+	Containers      []TaskContainer
+}
+
+type TaskContainer struct {
+	Name              string
+	Image             string
+	CPU               int
+	Memory            int
+	MemoryReservation int
+	Essential         bool
+	// Env and SecretEnv are variable names: plain variables and those taken from a secret store.
+	Env       []string
+	SecretEnv []string
+	Ports     []string
+	// LogGroup is the awslogs log group; other log drivers yield none.
+	LogGroup    string
+	HealthCheck bool
+}
+
+// ECSTaskDefinition describes a task definition a deployment of the scope's service runs. The
+// caller takes arn from the described service, so it is in the scope; the answer must be it.
+func (c *Client) ECSTaskDefinition(ctx context.Context, scope authz.ECSScope, arn string) (TaskDefinition, error) {
+	out, err := c.ecs.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: sdkaws.String(arn)})
+	if err != nil {
+		return TaskDefinition{}, c.apiError("DescribeTaskDefinition", err)
+	}
+	td := out.TaskDefinition
+	if td == nil || sdkaws.ToString(td.TaskDefinitionArn) != arn {
+		return TaskDefinition{}, c.outsideScope()
+	}
+	return taskDefinition(*td), nil
+}
+
+func taskDefinition(td ecstypes.TaskDefinition) TaskDefinition {
+	result := TaskDefinition{
+		ARN:           sdkaws.ToString(td.TaskDefinitionArn),
+		Family:        sdkaws.ToString(td.Family),
+		Revision:      int(td.Revision),
+		Status:        string(td.Status),
+		Registered:    td.RegisteredAt,
+		CPU:           sdkaws.ToString(td.Cpu),
+		Memory:        sdkaws.ToString(td.Memory),
+		NetworkMode:   string(td.NetworkMode),
+		TaskRole:      ARNName(sdkaws.ToString(td.TaskRoleArn)),
+		ExecutionRole: ARNName(sdkaws.ToString(td.ExecutionRoleArn)),
+	}
+	for _, c := range td.RequiresCompatibilities {
+		result.Compatibilities = append(result.Compatibilities, string(c))
+	}
+	for _, c := range td.ContainerDefinitions {
+		container := TaskContainer{
+			Name:              sdkaws.ToString(c.Name),
+			Image:             sdkaws.ToString(c.Image),
+			CPU:               int(c.Cpu),
+			Memory:            int(sdkaws.ToInt32(c.Memory)),
+			MemoryReservation: int(sdkaws.ToInt32(c.MemoryReservation)),
+			Essential:         sdkaws.ToBool(c.Essential),
+			HealthCheck:       c.HealthCheck != nil,
+		}
+		for _, e := range c.Environment {
+			container.Env = append(container.Env, sdkaws.ToString(e.Name))
+		}
+		for _, s := range c.Secrets {
+			container.SecretEnv = append(container.SecretEnv, sdkaws.ToString(s.Name))
+		}
+		for _, p := range c.PortMappings {
+			port := fmt.Sprintf("%d/%s", sdkaws.ToInt32(p.ContainerPort), strings.ToUpper(string(p.Protocol)))
+			if name := sdkaws.ToString(p.Name); name != "" {
+				port = name + " " + port
+			}
+			container.Ports = append(container.Ports, port)
+		}
+		if lc := c.LogConfiguration; lc != nil && lc.LogDriver == ecstypes.LogDriverAwslogs {
+			container.LogGroup = lc.Options["awslogs-group"]
+		}
+		slices.Sort(container.Env)
+		slices.Sort(container.SecretEnv)
+		result.Containers = append(result.Containers, container)
+	}
+	return result
 }

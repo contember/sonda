@@ -461,6 +461,8 @@ type Workloads struct {
 	Rollouts []Rollout `json:"rollouts"`
 	// Events are newest first; repeated events are counted, not listed.
 	Events []WorkloadEvent `json:"events"`
+	// Nodes are set only for a binding of a cluster's nodes; it has no pods or rollouts.
+	Nodes []Node `json:"nodes,omitempty"`
 }
 
 type Pod struct {
@@ -489,6 +491,35 @@ type Container struct {
 	Reason          string       `json:"reason,omitempty"`
 	Message         string       `json:"message,omitempty"`
 	LastTermination *Termination `json:"lastTermination,omitempty"`
+	// Usage is the current use reported by the cluster's metrics API; absent without one.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is the CPU and memory a container or node uses now.
+type Usage struct {
+	CPUMillicores int64 `json:"cpuMillicores"`
+	MemoryBytes   int64 `json:"memoryBytes"`
+}
+
+// Node is a node of a Kubernetes cluster.
+type Node struct {
+	Name          string    `json:"name"`
+	Ready         bool      `json:"ready"`
+	Unschedulable bool      `json:"unschedulable,omitempty"`
+	Created       time.Time `json:"created"`
+	// Problems are the conditions that are not in their healthy state, e.g. MemoryPressure or
+	// Ready=False, with their reason.
+	Problems         []string          `json:"problems,omitempty"`
+	InstanceType     string            `json:"instanceType,omitempty"`
+	Zone             string            `json:"zone,omitempty"`
+	NodeGroup        string            `json:"nodeGroup,omitempty"`
+	CapacityType     string            `json:"capacityType,omitempty"`
+	KubeletVersion   string            `json:"kubeletVersion"`
+	OSImage          string            `json:"osImage,omitempty"`
+	ContainerRuntime string            `json:"containerRuntime,omitempty"`
+	Allocatable      map[string]string `json:"allocatable,omitempty"`
+	Taints           []string          `json:"taints,omitempty"`
+	Usage            *Usage            `json:"usage,omitempty"`
 }
 
 type Termination struct {
@@ -530,6 +561,178 @@ type WorkloadSummary struct {
 	Warnings int      `json:"warnings"`
 	// Rollout is the newest ReplicaSet with replicas.
 	Rollout *Rollout `json:"rollout,omitempty"`
+	// Nodes and NodesReady are set for a binding of a cluster's nodes.
+	Nodes      int `json:"nodes,omitempty"`
+	NodesReady int `json:"nodesReady,omitempty"`
+}
+
+// WorkloadObjects is the configuration of the objects that run a service: on Kubernetes its
+// controllers and the objects that select its pods, on ECS the service and its task
+// definitions. Values of environment variables and ConfigMaps are never included.
+type WorkloadObjects struct {
+	Controllers       []Controller       `json:"controllers"`
+	Autoscalers       []Autoscaler       `json:"autoscalers,omitempty"`
+	DisruptionBudgets []DisruptionBudget `json:"disruptionBudgets,omitempty"`
+	Services          []NetworkService   `json:"services,omitempty"`
+	Ingresses         []Ingress          `json:"ingresses,omitempty"`
+	NetworkPolicies   []NetworkPolicy    `json:"networkPolicies,omitempty"`
+	ConfigMaps        []ConfigMap        `json:"configMaps,omitempty"`
+	Applications      []Application      `json:"applications,omitempty"`
+	TaskDefinitions   []TaskDefinition   `json:"taskDefinitions,omitempty"`
+}
+
+// Controller is a Deployment, StatefulSet, DaemonSet, Job or CronJob, or an ECS service.
+type Controller struct {
+	Kind    string    `json:"kind"`
+	Name    string    `json:"name"`
+	Created time.Time `json:"created"`
+	// Replicas is the desired count; nil for kinds without one.
+	Replicas          *int   `json:"replicas,omitempty"`
+	ReadyReplicas     int    `json:"readyReplicas,omitempty"`
+	UpdatedReplicas   int    `json:"updatedReplicas,omitempty"`
+	AvailableReplicas int    `json:"availableReplicas,omitempty"`
+	Strategy          string `json:"strategy,omitempty"`
+	Paused            bool   `json:"paused,omitempty"`
+	// Jobs and CronJobs.
+	Schedule     string     `json:"schedule,omitempty"`
+	Suspended    bool       `json:"suspended,omitempty"`
+	LastSchedule *time.Time `json:"lastSchedule,omitempty"`
+	LastSuccess  *time.Time `json:"lastSuccess,omitempty"`
+	Active       int        `json:"active,omitempty"`
+	Succeeded    int        `json:"succeeded,omitempty"`
+	Failed       int        `json:"failed,omitempty"`
+	Started      *time.Time `json:"started,omitempty"`
+	Completed    *time.Time `json:"completed,omitempty"`
+	// Details are platform settings as text, e.g. the launch type or the load balancers of an
+	// ECS service.
+	Details    map[string]string `json:"details,omitempty"`
+	Conditions []ObjectCondition `json:"conditions,omitempty"`
+	Containers []ContainerSpec   `json:"containers,omitempty"`
+}
+
+type ObjectCondition struct {
+	Type    string     `json:"type"`
+	Status  string     `json:"status"`
+	Reason  string     `json:"reason,omitempty"`
+	Message string     `json:"message,omitempty"`
+	Changed *time.Time `json:"changed,omitempty"`
+}
+
+// ContainerSpec is a container of a pod template or task definition. Env lists variable names
+// only: a literal value can hold a secret.
+type ContainerSpec struct {
+	Name     string            `json:"name"`
+	Image    string            `json:"image"`
+	Init     bool              `json:"init,omitempty"`
+	Requests map[string]string `json:"requests,omitempty"`
+	Limits   map[string]string `json:"limits,omitempty"`
+	Env      []string          `json:"env,omitempty"`
+	// SecretEnv names the variables whose value comes from a secret store.
+	SecretEnv []string `json:"secretEnv,omitempty"`
+	// EnvFrom names the objects whose keys become variables, e.g. ConfigMap/engine-config.
+	EnvFrom  []string          `json:"envFrom,omitempty"`
+	Ports    []string          `json:"ports,omitempty"`
+	Probes   map[string]string `json:"probes,omitempty"`
+	LogGroup string            `json:"logGroup,omitempty"`
+}
+
+// Autoscaler is a HorizontalPodAutoscaler of one of the service's controllers.
+type Autoscaler struct {
+	Name            string            `json:"name"`
+	Target          string            `json:"target"`
+	MinReplicas     int               `json:"minReplicas"`
+	MaxReplicas     int               `json:"maxReplicas"`
+	CurrentReplicas int               `json:"currentReplicas"`
+	DesiredReplicas int               `json:"desiredReplicas"`
+	Metrics         []string          `json:"metrics,omitempty"`
+	LastScale       *time.Time        `json:"lastScale,omitempty"`
+	Conditions      []ObjectCondition `json:"conditions,omitempty"`
+}
+
+// DisruptionBudget is a PodDisruptionBudget that selects the service's pods.
+type DisruptionBudget struct {
+	Name               string `json:"name"`
+	MinAvailable       string `json:"minAvailable,omitempty"`
+	MaxUnavailable     string `json:"maxUnavailable,omitempty"`
+	CurrentHealthy     int    `json:"currentHealthy"`
+	DesiredHealthy     int    `json:"desiredHealthy"`
+	ExpectedPods       int    `json:"expectedPods"`
+	DisruptionsAllowed int    `json:"disruptionsAllowed"`
+}
+
+// NetworkService is a Kubernetes Service that selects the service's pods.
+type NetworkService struct {
+	Name              string            `json:"name"`
+	Type              string            `json:"type"`
+	Selector          map[string]string `json:"selector"`
+	Ports             []string          `json:"ports"`
+	ReadyEndpoints    int               `json:"readyEndpoints"`
+	NotReadyEndpoints int               `json:"notReadyEndpoints"`
+	LoadBalancer      []string          `json:"loadBalancer,omitempty"`
+}
+
+// Ingress keeps only the rules that route to the service's Services.
+type Ingress struct {
+	Name      string   `json:"name"`
+	Class     string   `json:"class,omitempty"`
+	Rules     []string `json:"rules"`
+	TLSHosts  []string `json:"tlsHosts,omitempty"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+// NetworkPolicy is a policy whose pod selector matches the service's pods, its rules as text.
+type NetworkPolicy struct {
+	Name        string   `json:"name"`
+	PolicyTypes []string `json:"policyTypes"`
+	Ingress     []string `json:"ingress,omitempty"`
+	Egress      []string `json:"egress,omitempty"`
+}
+
+// ConfigMap is a ConfigMap the service's pods reference, with its keys and no values.
+type ConfigMap struct {
+	Name    string     `json:"name"`
+	Keys    []string   `json:"keys,omitempty"`
+	Created *time.Time `json:"created,omitempty"`
+	// Missing is true when a pod template references a ConfigMap that does not exist.
+	Missing bool `json:"missing,omitempty"`
+}
+
+// Application is the status of an Argo CD Application that manages the service's
+// controllers. Resources lists only the service's own objects.
+type Application struct {
+	Name            string            `json:"name"`
+	Project         string            `json:"project,omitempty"`
+	Sync            string            `json:"sync"`
+	Revision        string            `json:"revision,omitempty"`
+	Health          string            `json:"health"`
+	HealthMessage   string            `json:"healthMessage,omitempty"`
+	Operation       string            `json:"operation,omitempty"`
+	OperationDetail string            `json:"operationDetail,omitempty"`
+	OperationEnded  *time.Time        `json:"operationEnded,omitempty"`
+	Reconciled      *time.Time        `json:"reconciled,omitempty"`
+	Conditions      []ObjectCondition `json:"conditions,omitempty"`
+	Resources       []AppResource     `json:"resources"`
+}
+
+type AppResource struct {
+	Object string `json:"object"` // e.g. Deployment/engine-api
+	Sync   string `json:"sync,omitempty"`
+	Health string `json:"health,omitempty"`
+}
+
+// TaskDefinition is an ECS task definition a deployment of the service runs.
+type TaskDefinition struct {
+	Family        string          `json:"family"`
+	Revision      int             `json:"revision"`
+	Status        string          `json:"status"`
+	Registered    *time.Time      `json:"registered,omitempty"`
+	CPU           string          `json:"cpu,omitempty"`
+	Memory        string          `json:"memory,omitempty"`
+	NetworkMode   string          `json:"networkMode,omitempty"`
+	Compatibility []string        `json:"compatibility,omitempty"`
+	TaskRole      string          `json:"taskRole,omitempty"`
+	ExecutionRole string          `json:"executionRole,omitempty"`
+	Containers    []ContainerSpec `json:"containers"`
 }
 
 // ImagesRequest selects images of a service: those with Digests, or the newest Limit. An empty

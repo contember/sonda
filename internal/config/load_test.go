@@ -722,6 +722,22 @@ func TestParseKubernetes(t *testing.T) {
 	}
 }
 
+func TestParseKubernetesNodesAndArgoCD(t *testing.T) {
+	input := strings.Replace(kubernetesConfig, "CA_FILE", writeCA(t), 1)
+	input = strings.Replace(input, "type: kubernetes\n", "type: kubernetes\n    argocd_namespace: argocd\n", 1)
+	input = strings.Replace(input, "{ source: k8s, namespace: engine, labels: { app.kubernetes.io/name: engine-api } }", "{ source: k8s, nodes: true }", 1)
+	cfg, err := Parse([]byte(input), env(map[string]string{"K8S_TOKEN": "k8s-secret"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sources["k8s"].ArgoCDNamespace != "argocd" {
+		t.Errorf("argocd namespace = %q", cfg.Sources["k8s"].ArgoCDNamespace)
+	}
+	if w := cfg.Services["engine"].Environments["production"].Workloads; !w.Nodes || w.Namespace != "" || w.Labels != nil {
+		t.Errorf("workloads = %+v", w)
+	}
+}
+
 func TestParseCAFileOnHTTPSource(t *testing.T) {
 	input := fmt.Sprintf(`
 sources:
@@ -775,6 +791,9 @@ func TestParseKubernetesErrors(t *testing.T) {
 		{"selector syntax in value", [2]string{"engine-api }", `"a,b!=c" }`}, nil, `must be a non-empty label value`},
 		{"invalid label key", [2]string{"app.kubernetes.io/name:", `"app name":`}, nil, `"app name" is not a valid label key`},
 		{"ecs fields on kubernetes", [2]string{"namespace: engine,", "cluster: shop, namespace: engine,"}, nil, "cluster and service are not allowed for kubernetes sources"},
+		{"nodes with a namespace", [2]string{"namespace: engine,", "nodes: true, namespace: engine,"}, nil, "namespace and labels are not allowed with it"},
+		{"invalid argocd namespace", [2]string{"type: kubernetes\n", "type: kubernetes\n    argocd_namespace: Argo_CD\n"}, nil, `argocd_namespace "Argo_CD" must be a Kubernetes namespace name`},
+		{"argocd namespace on another source", [2]string{"type: kubernetes\n    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca, "type: tempo\n    argocd_namespace: argocd\n    url: https://k8s.example:6443"}, nil, "argocd_namespace is allowed only for kubernetes sources"},
 		{"workloads on another source", [2]string{"type: kubernetes\n    url: https://k8s.example:6443\n    auth: { type: bearer, token: \"${K8S_TOKEN}\" }\n    ca_file: " + ca, "type: tempo\n    url: https://k8s.example:6443"}, nil, "expected kubernetes"},
 	}
 	for _, tt := range tests {
@@ -825,7 +844,7 @@ func TestParseECSWorkloadsErrors(t *testing.T) {
 		{"no cluster", [2]string{"cluster: shop-prod, ", ""}, `cluster "" must be an ECS cluster name`},
 		{"cluster ARN", [2]string{"cluster: shop-prod", "cluster: 'arn:aws:ecs:eu-central-1:123456789012:cluster/shop-prod'"}, "must be an ECS cluster name (not an ARN)"},
 		{"no service", [2]string{", service: web", ""}, `service "" must be an ECS service name`},
-		{"kubernetes fields", [2]string{"service: web", "service: web, namespace: shop"}, "namespace and labels are not allowed for aws sources"},
+		{"kubernetes fields", [2]string{"service: web", "service: web, namespace: shop"}, "namespace, labels and nodes are not allowed for aws sources"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
