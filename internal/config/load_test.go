@@ -614,7 +614,7 @@ func TestParseExistingSourceRules(t *testing.T) {
 		{"prometheus with account", [2]string{"type: prometheus\n", "type: prometheus\n    account_id: acc\n"}, "sources.prom.account_id is allowed only for cloudflare sources"},
 		{"loki with region", [2]string{"type: loki\n", "type: loki\n    region: eu-west-1\n"}, "sources.loki.region is allowed only for aws sources"},
 		{"loki logs with script", [2]string{`logs: { source: loki, selector: '{app="api"}' }`, `logs: { source: loki, selector: '{app="api"}', script: w }`}, "logs.script is not allowed for loki sources"},
-		{"empty environment", [2]string{"            errors: { source: sentry, project: api, environment: production }\n            logs: { source: loki, selector: '{app=\"api\"}' }\n            metrics: { source: prom, selector: '{job=\"api\"}' }\n", "            {}\n"}, "at least one of errors, logs, metrics, traces, workloads, images, alerts or data is required"},
+		{"empty environment", [2]string{"            errors: { source: sentry, project: api, environment: production }\n            logs: { source: loki, selector: '{app=\"api\"}' }\n            metrics: { source: prom, selector: '{job=\"api\"}' }\n", "            {}\n"}, "at least one of errors, logs, metrics, traces, workloads, images, resources, alerts or data is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -908,6 +908,102 @@ func TestParseImagesErrors(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+const resourcesConfig = `
+sources:
+  aws: { type: aws, region: eu-central-1 }
+projects:
+  shop:
+    services:
+      db:
+        environments:
+          production:
+            resources:
+              source: aws
+              rds_clusters: [shop-db]
+              rds_instances: [shop-legacy]
+              elasticache: [shop-cache]
+              certificates: [arn:aws:acm:eu-central-1:123456789012:certificate/0f6a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b]
+              lambdas: [shop-resize]
+              eks_clusters: [shop-prod]
+`
+
+func TestParseResources(t *testing.T) {
+	cfg, err := Parse([]byte(resourcesConfig), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := cfg.Services["db"].Environments["production"]
+	if got := env.Capabilities(); len(got) != 1 || got[0] != api.CapabilityResources {
+		t.Errorf("capabilities = %v", got)
+	}
+	b := env.Resources
+	if !slices.Equal(b.RDSClusters, []string{"shop-db"}) || !slices.Equal(b.RDSInstances, []string{"shop-legacy"}) ||
+		!slices.Equal(b.ElastiCache, []string{"shop-cache"}) || len(b.Certificates) != 1 ||
+		!slices.Equal(b.Lambdas, []string{"shop-resize"}) || !slices.Equal(b.EKSClusters, []string{"shop-prod"}) {
+		t.Errorf("binding = %+v", b)
+	}
+}
+
+func TestParseResourcesErrors(t *testing.T) {
+	certificate := "arn:aws:acm:eu-central-1:123456789012:certificate/0f6a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b"
+	tests := []struct {
+		name    string
+		replace [2]string
+		want    string
+	}{
+		{"cluster ARN", [2]string{"[shop-db]", "[arn:aws:rds:eu-central-1:123456789012:cluster:shop-db]"}, "must be a DB cluster identifier (not an ARN)"},
+		{"duplicate instance", [2]string{"[shop-legacy]", "[shop-legacy, shop-legacy]"}, `"shop-legacy" is listed twice`},
+		{"cache pattern", [2]string{"[shop-cache]", "['shop-*']"}, "must be an ElastiCache replication group ID"},
+		{"certificate ID", [2]string{certificate, "0f6a2b1c-3d4e-4f50-8a6b-7c8d9e0f1a2b"}, "must be an ACM certificate ARN"},
+		{"certificate region", [2]string{"acm:eu-central-1", "acm:us-east-1"}, "is not in the region of source aws (eu-central-1)"},
+		{"lambda ARN", [2]string{"[shop-resize]", "[arn:aws:lambda:eu-central-1:123456789012:function:shop-resize]"}, "must be a Lambda function name"},
+		{"lambda alias", [2]string{"[shop-resize]", "['shop-resize:live']"}, "must be a Lambda function name"},
+		{"eks ARN", [2]string{"[shop-prod]", "[arn:aws:eks:eu-central-1:123456789012:cluster/shop-prod]"}, "must be an EKS cluster name"},
+		{"another source type", [2]string{"aws: { type: aws, region: eu-central-1 }", "aws: { type: tempo, url: https://tempo.example }"}, "expected aws"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(resourcesConfig, tt.replace[0]) {
+				t.Fatalf("replacement %q not found", tt.replace[0])
+			}
+			_, err := Parse([]byte(strings.Replace(resourcesConfig, tt.replace[0], tt.replace[1], 1)), env(nil))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseResourcesEmpty(t *testing.T) {
+	config := `
+sources:
+  aws: { type: aws, region: eu-central-1 }
+projects:
+  shop:
+    services:
+      db:
+        environments:
+          production:
+            resources: { source: aws }
+`
+	_, err := Parse([]byte(config), env(nil))
+	if err == nil || !strings.Contains(err.Error(), "at least one of rds_clusters, rds_instances, elasticache, certificates, lambdas or eks_clusters is required") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseResourcesTooMany(t *testing.T) {
+	names := make([]string, 21)
+	for i := range names {
+		names[i] = fmt.Sprintf("fn-%d", i)
+	}
+	config := strings.Replace(resourcesConfig, "[shop-resize]", "["+strings.Join(names, ", ")+"]", 1)
+	_, err := Parse([]byte(config), env(nil))
+	if err == nil || !strings.Contains(err.Error(), "lambdas must list at most 20 entries") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

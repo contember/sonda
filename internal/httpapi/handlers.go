@@ -134,6 +134,15 @@ func imagesRequest(r *http.Request) (api.ImagesRequest, error) {
 	return api.ImagesRequest{Environment: params.Get("env"), Repository: params.Get("repository"), Limit: limit}, nil
 }
 
+// resources reads the current configuration state; the range selects only the events.
+func (s *Server) resources(r *http.Request) (any, error) {
+	w, err := windowFromQuery(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.query.Resources(r.Context(), identityFrom(r.Context()), r.PathValue("service"), w)
+}
+
 // alerts takes only env: alerts are current state.
 func (s *Server) alerts(r *http.Request) (any, error) {
 	return s.query.Alerts(r.Context(), identityFrom(r.Context()), r.PathValue("service"), r.URL.Query().Get("env"))

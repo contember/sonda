@@ -102,6 +102,7 @@ type rawEnvironment struct {
 	Traces    *rawBinding         `yaml:"traces"`
 	Workloads *rawWorkloadBinding `yaml:"workloads"`
 	Images    *rawImageBinding    `yaml:"images"`
+	Resources *rawResourceBinding `yaml:"resources"`
 	Alerts    *rawBinding         `yaml:"alerts"`
 	Data      *rawDataBinding     `yaml:"data"`
 }
@@ -118,6 +119,16 @@ type rawWorkloadBinding struct {
 type rawImageBinding struct {
 	Source       string   `yaml:"source"`
 	Repositories []string `yaml:"repositories"`
+}
+
+type rawResourceBinding struct {
+	Source       string   `yaml:"source"`
+	RDSClusters  []string `yaml:"rds_clusters"`
+	RDSInstances []string `yaml:"rds_instances"`
+	ElastiCache  []string `yaml:"elasticache"`
+	Certificates []string `yaml:"certificates"`
+	Lambdas      []string `yaml:"lambdas"`
+	EKSClusters  []string `yaml:"eks_clusters"`
 }
 
 type rawDataBinding struct {
@@ -595,6 +606,9 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 		if re.Images != nil {
 			env.Images = v.imageBinding(envPath+".images", *re.Images, sources)
 		}
+		if re.Resources != nil {
+			env.Resources = v.resourceBinding(envPath+".resources", *re.Resources, sources)
+		}
 		if re.Alerts != nil {
 			env.Alerts = v.alertBinding(envPath+".alerts", *re.Alerts, sources)
 		}
@@ -602,7 +616,7 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 			env.Data = v.dataBinding(envPath+".data", *re.Data, sources)
 		}
 		if len(env.Capabilities()) == 0 {
-			v.fail("%s: at least one of errors, logs, metrics, traces, workloads, images, alerts or data is required", envPath)
+			v.fail("%s: at least one of errors, logs, metrics, traces, workloads, images, resources, alerts or data is required", envPath)
 		}
 		svc.Environments[envName] = env
 	}
@@ -916,6 +930,75 @@ func (v *validator) imageBinding(path string, raw rawImageBinding, sources map[s
 		seen[repo] = true
 	}
 	return &ImageBinding{Source: src, Repositories: raw.Repositories}
+}
+
+const maxBoundResources = 20
+
+var (
+	// rdsIdentifier is a DB cluster or instance identifier: a letter, then letters, numbers and hyphens.
+	rdsIdentifier = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,62}$`)
+	// elastiCacheID is a replication group ID: a letter, then letters, numbers and hyphens.
+	elastiCacheID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,39}$`)
+	// lambdaName is an unqualified function name, not an ARN or a name with a version or alias.
+	lambdaName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	eksName    = regexp.MustCompile(`^[0-9A-Za-z][A-Za-z0-9_-]{0,99}$`)
+	acmARN     = regexp.MustCompile(`^arn:aws[a-z-]*:acm:([a-z0-9-]+):[0-9]{12}:certificate/[A-Za-z0-9-]+$`)
+)
+
+// resourceBinding requires at least one resource, each list unique and at most 20 entries long,
+// with exact identifiers (no ARNs or patterns), except certificates, which ACM addresses by ARN
+// only; their region must be the source's.
+func (v *validator) resourceBinding(path string, raw rawResourceBinding, sources map[string]*Source) *ResourceBinding {
+	src := v.sourceRef(path+".source", raw.Source, sources, SourceAWS)
+	lists := []struct {
+		field  string
+		values []string
+		valid  func(string) bool
+		what   string
+	}{
+		{"rds_clusters", raw.RDSClusters, rdsIdentifier.MatchString, "a DB cluster identifier (not an ARN)"},
+		{"rds_instances", raw.RDSInstances, rdsIdentifier.MatchString, "a DB instance identifier (not an ARN)"},
+		{"elasticache", raw.ElastiCache, elastiCacheID.MatchString, "an ElastiCache replication group ID (not an ARN)"},
+		{"certificates", raw.Certificates, acmARN.MatchString, "an ACM certificate ARN"},
+		{"lambdas", raw.Lambdas, lambdaName.MatchString, "a Lambda function name (not an ARN, version or alias)"},
+		{"eks_clusters", raw.EKSClusters, eksName.MatchString, "an EKS cluster name (not an ARN)"},
+	}
+	total := 0
+	for _, list := range lists {
+		total += len(list.values)
+		if len(list.values) > maxBoundResources {
+			v.fail("%s.%s must list at most %d entries", path, list.field, maxBoundResources)
+		}
+		seen := map[string]bool{}
+		for _, value := range list.values {
+			if !list.valid(value) {
+				v.fail("%s.%s: %q must be %s", path, list.field, value, list.what)
+			}
+			if seen[value] {
+				v.fail("%s.%s: %q is listed twice", path, list.field, value)
+			}
+			seen[value] = true
+		}
+	}
+	if total == 0 {
+		v.fail("%s: at least one of rds_clusters, rds_instances, elasticache, certificates, lambdas or eks_clusters is required", path)
+	}
+	if src != nil && src.AWS != nil {
+		for _, arn := range raw.Certificates {
+			if m := acmARN.FindStringSubmatch(arn); m != nil && m[1] != src.AWS.Region {
+				v.fail("%s.certificates: %q is not in the region of source %s (%s)", path, arn, src.Name, src.AWS.Region)
+			}
+		}
+	}
+	return &ResourceBinding{
+		Source:       src,
+		RDSClusters:  raw.RDSClusters,
+		RDSInstances: raw.RDSInstances,
+		ElastiCache:  raw.ElastiCache,
+		Certificates: raw.Certificates,
+		Lambdas:      raw.Lambdas,
+		EKSClusters:  raw.EKSClusters,
+	}
 }
 
 var (
