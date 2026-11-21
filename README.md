@@ -266,6 +266,14 @@ sources:
 - In the cluster: an access entry for the role in a Kubernetes group, and a Role in the
   backend's namespace with `get` on `services/proxy` for `resourceNames: ["http:loki:3100"]`
   (`get` and `create` for Prometheus).
+- The proxy forwards every path, and Loki also answers `GET` on `/flush` and
+  `/ingester/shutdown`. To keep the role read-only, put a reverse proxy in front that passes
+  `GET` on `/loki/api/v1/query_range`, `query`, `series` and `detected_fields` only, and grant
+  `services/proxy` on that one instead.
+- On EKS the control plane reaches a pod only on the ports the node security group opens to
+  it. The recommended node security group rules of the `terraform-aws-eks` module open 443,
+  10250 and the webhook ports 4443, 6443, 8443, 9443 and 10251. A proxy call to a backend on
+  another port times out; listen on one of them or open the port.
 - The signing key lives in Sonda's database and the issuer URL is the trust anchor; see
   Security in `docs/design.md`. Rotate it on the admin page Signing keys.
 

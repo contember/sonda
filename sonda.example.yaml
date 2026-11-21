@@ -81,7 +81,8 @@ sources:
   #
   # On EKS, eks auth signs tokens with the credentials of an aws source instead of a stored
   # token, and the API server's service proxy reaches a Loki, Prometheus or Tempo inside the
-  # cluster. The role needs get on services/proxy for the one service.
+  # cluster. The role needs get on services/proxy for the one service. Loki answers GET on
+  # /flush and /ingester/shutdown too; see README.md for a read-only proxy in front of it.
   # loki-eks:
   #   type: loki
   #   url: https://ABC123.gr7.eu-west-1.eks.amazonaws.com/api/v1/namespaces/logging/services/http:loki:3100/proxy
