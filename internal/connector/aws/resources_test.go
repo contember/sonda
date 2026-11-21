@@ -79,6 +79,7 @@ type fakeResources struct {
 	clusterSnaps   []rdstypes.DBClusterSnapshot
 	instanceSnaps  []rdstypes.DBSnapshot
 	updateActions  []ectypes.UpdateAction
+	versions       []ekstypes.ClusterVersionInformation
 	majorCalls     int
 }
 
@@ -162,8 +163,24 @@ func (f *fakeResources) DescribeAddonVersions(context.Context, *eks.DescribeAddo
 	return &eks.DescribeAddonVersionsOutput{}, nil
 }
 
-func (f *fakeResources) DescribeClusterVersions(context.Context, *eks.DescribeClusterVersionsInput, ...func(*eks.Options)) (*eks.DescribeClusterVersionsOutput, error) {
-	return &eks.DescribeClusterVersionsOutput{}, nil
+// DescribeClusterVersions accepts one filter at a time, as EKS does.
+func (f *fakeResources) DescribeClusterVersions(_ context.Context, in *eks.DescribeClusterVersionsInput, _ ...func(*eks.Options)) (*eks.DescribeClusterVersionsOutput, error) {
+	filters := 0
+	for _, set := range []bool{sdkaws.ToBool(in.DefaultOnly), len(in.ClusterVersions) > 0, sdkaws.ToBool(in.IncludeAll), in.Status != "", in.VersionStatus != ""} {
+		if set {
+			filters++
+		}
+	}
+	if filters > 1 {
+		return nil, &ekstypes.InvalidParameterException{Message: sdkaws.String("Only one of the defaultOnly, clusterVersions, includeAll or status request parameters is accepted at a time.")}
+	}
+	out := &eks.DescribeClusterVersionsOutput{}
+	for _, v := range f.versions {
+		if len(in.ClusterVersions) == 0 || slices.Contains(in.ClusterVersions, sdkaws.ToString(v.ClusterVersion)) {
+			out.ClusterVersions = append(out.ClusterVersions, v)
+		}
+	}
+	return out, nil
 }
 
 func resourceClient(cfg *config.Config, fake *fakeResources) *Client {
@@ -326,6 +343,21 @@ func TestEKSAddonsScope(t *testing.T) {
 	wantCode(t, "another cluster returned", err, api.CodeInternal)
 	_, err = resourceClient(cfg, &fakeResources{}).EKSCluster(context.Background(), scope, "shop-prod")
 	wantCode(t, "missing cluster", err, api.CodeUpstreamError)
+}
+
+func TestEKSClusterVersion(t *testing.T) {
+	cfg, _ := resourceScope(t)
+	fake := &fakeResources{versions: []ekstypes.ClusterVersionInformation{
+		{ClusterVersion: sdkaws.String("1.33"), VersionStatus: ekstypes.VersionStatusExtendedSupport},
+		{ClusterVersion: sdkaws.String("1.29"), VersionStatus: ekstypes.VersionStatusUnsupported},
+	}}
+	info, ok, err := resourceClient(cfg, fake).EKSClusterVersion(context.Background(), "1.29")
+	if err != nil || !ok || info.VersionStatus != ekstypes.VersionStatusUnsupported {
+		t.Errorf("1.29: info = %+v, ok = %v, err = %v", info, ok, err)
+	}
+	if _, ok, err := resourceClient(cfg, fake).EKSClusterVersion(context.Background(), "1.10"); err != nil || ok {
+		t.Errorf("unlisted version: ok = %v, err = %v", ok, err)
+	}
 }
 
 func TestRDSSnapshotsScope(t *testing.T) {
