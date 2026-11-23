@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
@@ -194,7 +195,7 @@ const (
 
 // recordedIndexRegistry replays responses recorded from ECR for an image buildx pushed with
 // attestations: an OCI index listing one linux/arm64 image manifest, scanned on push with no
-// findings, and an attestation manifest. Neither the index nor the attestation has a scan.
+// findings, and an attestation manifest, whose scan failed as unsupported. The index has no scan.
 func recordedIndexRegistry(t *testing.T) (*httptest.Server, *[]string) {
 	t.Helper()
 	fixture := func(name string) []byte {
@@ -204,7 +205,15 @@ func recordedIndexRegistry(t *testing.T) (*httptest.Server, *[]string) {
 		}
 		return body
 	}
-	var calls []string
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	record := func(call string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, call)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ImageIds []struct {
@@ -223,7 +232,7 @@ func recordedIndexRegistry(t *testing.T) (*httptest.Server, *[]string) {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 		switch {
 		case strings.HasSuffix(target, ".DescribeImages") && len(in.ImageIds) > 0:
-			calls = append(calls, "DescribeImages "+in.ImageIds[0].ImageDigest)
+			record("DescribeImages " + in.ImageIds[0].ImageDigest)
 			var all struct {
 				ImageDetails []map[string]any `json:"imageDetails"`
 			}
@@ -241,15 +250,19 @@ func recordedIndexRegistry(t *testing.T) (*httptest.Server, *[]string) {
 		case strings.HasSuffix(target, ".DescribeImages"):
 			w.Write(fixture("describe-images.json"))
 		case strings.HasSuffix(target, ".BatchGetImage"):
-			calls = append(calls, "BatchGetImage "+in.ImageIds[0].ImageDigest)
+			record("BatchGetImage " + in.ImageIds[0].ImageDigest)
 			if !slices.Contains(in.AcceptedMediaTypes, "application/vnd.oci.image.index.v1+json") {
 				t.Errorf("accepted media types = %v", in.AcceptedMediaTypes)
 			}
 			w.Write(fixture("batch-get-image.json"))
 		case strings.HasSuffix(target, ".DescribeImageScanFindings"):
-			calls = append(calls, "DescribeImageScanFindings "+in.ImageID.ImageDigest)
-			if in.ImageID.ImageDigest == platformDigest {
+			record("DescribeImageScanFindings " + in.ImageID.ImageDigest)
+			switch in.ImageID.ImageDigest {
+			case platformDigest:
 				w.Write(fixture("scan-findings-platform.json"))
+				return
+			case attestationDigest:
+				w.Write(fixture("scan-failed-attestation.json"))
 				return
 			}
 			w.WriteHeader(http.StatusBadRequest)
@@ -292,8 +305,16 @@ func TestImagesResolveIndexToPlatformScans(t *testing.T) {
 	if scan := byDigest[platformDigest].Scan; scan == nil || scan.Status != "COMPLETE" || scan.Counts == nil {
 		t.Errorf("platform manifest listed on its own: scan = %+v", scan)
 	}
-	if attestation := byDigest[attestationDigest]; attestation.Scan != nil || attestation.Platforms != nil {
+	// A failed scan has no result, so no counts: neither "0 findings" nor "not scanned".
+	if attestation := byDigest[attestationDigest]; attestation.Scan == nil || attestation.Scan.Status != "FAILED" || attestation.Scan.Counts != nil || attestation.Platforms != nil {
 		t.Errorf("attestation = %+v", attestation)
+	}
+	wire, err := json.Marshal(resp.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(wire); strings.Count(got, `"counts":{}`) != 2 || strings.Contains(got, `"counts":null`) {
+		t.Errorf("JSON = %s, want counts {} for the two clean scans and none for the failed one", got)
 	}
 }
 

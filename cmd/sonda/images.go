@@ -100,7 +100,7 @@ func renderImage(w io.Writer, resp api.Response[api.ImageDetail]) {
 	fmt.Fprintf(w, "# %s/%s now\n", resp.Meta.Service, resp.Meta.Environment)
 	renderMeta(w, resp.Meta)
 	fmt.Fprintf(w, "%s@%s  tags=%s  pushed=%s\n", image.Repository, image.Digest, valueOrDash(strings.Join(image.Tags, ",")), formatTime(image.PushedAt))
-	if len(image.Platforms) == 0 {
+	if image.Platforms == nil {
 		fmt.Fprintf(w, "scan: %s\n", scanDetail(image.Scan))
 	} else {
 		fmt.Fprintf(w, "index of %d platform image(s), each scanned on its own:\n", len(image.Platforms))
@@ -132,8 +132,11 @@ func renderImage(w io.Writer, resp api.Response[api.ImageDetail]) {
 
 // imageScanSummary summarizes the scan of an image, or the scans of the platforms of an index.
 func imageScanSummary(image api.Image) string {
-	if len(image.Platforms) == 0 {
+	if image.Platforms == nil {
 		return scanSummary(image.Scan)
+	}
+	if len(image.Platforms) == 0 {
+		return "index without image manifests"
 	}
 	parts := make([]string, 0, len(image.Platforms))
 	for _, p := range image.Platforms {

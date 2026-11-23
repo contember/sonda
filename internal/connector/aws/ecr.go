@@ -41,12 +41,15 @@ var (
 	// imageMediaTypes are the manifests of one image, which the registry scans.
 	imageMediaTypes = []string{"application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"}
 	digestFormat    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	// platformPart bounds the os, architecture and variant the pusher wrote, e.g. linux, arm64, v8.
+	platformPart = regexp.MustCompile(`^[a-z0-9._-]{1,32}$`)
 )
 
 // PlatformManifest is the image manifest an index lists for one platform.
 type PlatformManifest struct {
 	Digest string
-	// Platform is os/architecture[/variant] as the index states it, e.g. linux/arm64.
+	// Platform is os/architecture[/variant] as the index states it, e.g. linux/arm64; empty
+	// when the index states none or a part is not a plain lowercase name.
 	Platform string
 }
 
@@ -165,7 +168,7 @@ func (c *Client) parseIndex(manifest string) ([]PlatformManifest, bool, error) {
 		} `json:"manifests"`
 	}
 	if err := json.Unmarshal([]byte(manifest), &index); err != nil {
-		return nil, false, apierr.Upstream("source %s: the index manifest is not valid JSON: %v", c.source.Name, err)
+		return nil, false, apierr.Upstream("source %s: the index manifest is not valid JSON", c.source.Name)
 	}
 	result := []PlatformManifest{}
 	for _, m := range index.Manifests {
@@ -178,11 +181,24 @@ func (c *Client) parseIndex(manifest string) ([]PlatformManifest, bool, error) {
 		if len(result) == maxPlatformManifests {
 			return result, true, nil
 		}
-		parts := []string{m.Platform.OS, m.Platform.Architecture, m.Platform.Variant}
-		platform := strings.Join(slices.DeleteFunc(parts, func(part string) bool { return part == "" }), "/")
-		result = append(result, PlatformManifest{Digest: m.Digest, Platform: platform})
+		result = append(result, PlatformManifest{Digest: m.Digest, Platform: platformName(m.Platform.OS, m.Platform.Architecture, m.Platform.Variant)})
 	}
 	return result, false, nil
+}
+
+// platformName joins os/architecture[/variant], or returns "" when os or architecture is missing
+// or any part is not a plain lowercase name.
+func platformName(os, architecture, variant string) string {
+	parts := []string{os, architecture}
+	if variant != "" {
+		parts = append(parts, variant)
+	}
+	for _, part := range parts {
+		if !platformPart.MatchString(part) {
+			return ""
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 // Scan reads the status and the counts per severity of the latest scan of the image, without its

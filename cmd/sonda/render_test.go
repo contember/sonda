@@ -240,7 +240,9 @@ func TestRenderImagesTellsNoScanFromNoFindings(t *testing.T) {
 		{"repository": "shop", "digest": "sha256:a1", "tags": ["v1"], "platforms": [
 			{"digest": "sha256:b2", "platform": "linux/arm64", "scan": {"status": "COMPLETE", "counts": {}}}]},
 		{"repository": "shop", "digest": "sha256:c3", "tags": []},
-		{"repository": "shop", "digest": "sha256:d4", "tags": ["v0"], "scan": {"status": "COMPLETE", "counts": {"HIGH": 2, "CRITICAL": 1}}}
+		{"repository": "shop", "digest": "sha256:d4", "tags": ["v0"], "scan": {"status": "COMPLETE", "counts": {"HIGH": 2, "CRITICAL": 1}}},
+		{"repository": "shop", "digest": "sha256:e5", "tags": [], "scan": {"status": "FAILED"}},
+		{"repository": "shop", "digest": "sha256:f6", "tags": ["v2"], "platforms": []}
 	], "meta": {"service": "web", "environment": "production"}}`), &resp); err != nil {
 		t.Fatal(err)
 	}
@@ -249,6 +251,8 @@ func TestRenderImagesTellsNoScanFromNoFindings(t *testing.T) {
 		"  shop  sha256:a1  v1  -  linux/arm64: complete 0 findings",
 		"  shop  sha256:c3  -   -  not scanned",
 		"  shop  sha256:d4  v0  -  complete critical=1 high=2",
+		"  shop  sha256:e5  -   -  failed",
+		"  shop  sha256:f6  v2  -  index without image manifests",
 	}
 	var out bytes.Buffer
 	renderImages(&out, resp)

@@ -255,11 +255,14 @@ func TestPlatformManifestsLeaveOutAttestations(t *testing.T) {
 	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("c") + `", "size": 838,
 	     "annotations": {"vnd.docker.reference.digest": "` + digest("a") + `", "vnd.docker.reference.type": "attestation-manifest"},
 	     "platform": {"architecture": "unknown", "os": "unknown"}},
-	    {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "` + digest("d") + `", "size": 500}
+	    {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "` + digest("d") + `", "size": 500},
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("e") + `", "platform": {"architecture": "amd64\u001b[2J", "os": "linux"}},
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("f") + `"}
 	  ]
 	}`
 	manifests, truncated, err := ecrClient(cfg, &fakeECR{index: index}).PlatformManifests(context.Background(), scope, "shop", testDigest)
-	want := []PlatformManifest{{Digest: digest("a"), Platform: "linux/amd64"}, {Digest: digest("b"), Platform: "linux/arm/v7"}}
+	// A platform that is not plain lowercase names, or none, is left empty.
+	want := []PlatformManifest{{Digest: digest("a"), Platform: "linux/amd64"}, {Digest: digest("b"), Platform: "linux/arm/v7"}, {Digest: digest("e")}, {Digest: digest("f")}}
 	if err != nil || truncated || !slices.Equal(manifests, want) {
 		t.Errorf("manifests = %+v, truncated = %v, err = %v", manifests, truncated, err)
 	}

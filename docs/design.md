@@ -541,14 +541,16 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   package name and version; enhanced scanning (Amazon Inspector) one per vulnerable package,
   with the fixed version; an enhanced finding that is not about a package keeps its title as
   the ID, so the list matches the counts. An image that was never scanned has no `scan` and
-  no findings; a scan that found nothing has `counts: {}`.
+  no findings; a scan that found nothing has `counts: {}`, and one without a result (in
+  progress, failed) has no `counts`.
 - **An index is not scanned.** An image pushed for several platforms, or by buildx with
   attestations (provenance, SBOM), is an OCI index or a Docker manifest list; ECR scans the
   image manifests it lists and answers `ScanNotFoundException` for the index. For an index
   (`imageManifestMediaType`), Sonda reads its manifest with `BatchGetImage`, leaves out
   attestation manifests (`vnd.docker.reference.type: attestation-manifest`) and nested indexes,
   and returns up to 16 image manifests as `platforms`, each with its digest, `os/arch[/variant]`
-  and scan; more make the response `truncated`. The image detail of an index merges the
+  (empty unless every part is a plain lowercase name) and scan; more make the response
+  `truncated`. An index that lists no image manifest has `platforms: []`. The image detail of an index merges the
   findings of its platforms, each marked with its platform. The platform manifests and
   attestation manifests also appear in the list as untagged images of their own.
 - A bound repository that does not exist fails the request with `upstream_error`, also when
@@ -558,7 +560,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   completion time, the update time of the vulnerability database and counts per severity.
   Under registry-level scanning `DescribeImages` leaves the scan status out, so the summary of
   each listed image is read with `DescribeImageScanFindings` (one finding per page, the counts
-  come with it), at most 8 images at once.
+  come with it), at most 8 images at once. A list of `limit` images thus makes up to `limit`
+  such calls, plus one `BatchGetImage` and a call per platform for each index; any failed call
+  fails the request.
   **A basic scan runs once, at push** (unless the repository rescans), so its findings are as
   old as `sourceUpdatedAt` and newer vulnerabilities do not appear. Matching image contents
   against current advisories is outside Sonda.
@@ -1313,8 +1317,11 @@ Rules:
   `Resource: "*"` and reads every task definition of the account); for images
   `ecr:DescribeImages`, `ecr:DescribeImageScanFindings`, `ecr:BatchGetImage`. `BatchGetImage`
   returns manifests, not layers; Sonda reads only the manifest of an index, to find the image
-  manifests the registry scanned. No `ecr:GetDownloadUrlForLayer`: Sonda never reads image
-  contents.
+  manifests the registry scanned, but IAM cannot limit the action by media type, so the role
+  can read every manifest of the bound repositories. ECR treats `BatchGetImage` as the first
+  step of a pull, so a read may refresh the index's `lastRecordedPullTime` and keep it alive
+  under lifecycle rules on time since the last pull. No `ecr:GetDownloadUrlForLayer`: Sonda
+  never reads image contents.
   The ECR actions can be limited to the ARNs of the bound repositories, the ECS describe
   actions to the bound clusters, services and their tasks, and `ecs:ListTasks` with the
   `ecs:cluster` condition key. `sts:GetCallerIdentity` needs no
