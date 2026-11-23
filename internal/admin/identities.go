@@ -265,7 +265,7 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 					grant := identities.Grant{Service: svcName, Environment: envName, Capability: capability}
 					available := slices.Contains(svc.Environments[envName].Capabilities(), capability)
 					offered = offered || available
-					row.Cells = append(row.Cells, matrixCell{Available: available, Checked: slices.Contains(grants, grant), Value: grantValue(grant), Label: grantName(grant)})
+					row.Cells = append(row.Cells, matrixCell{Available: available, Checked: slices.Contains(grants, grant), Value: grantValue(grant), Label: grantLabel(grant)})
 				}
 				if offered {
 					form.ServiceMatrix = append(form.ServiceMatrix, row)
@@ -302,12 +302,12 @@ func (h *Handler) matrixRow(project, env string, services []string, capabilities
 			Available: grant.HasWildcard() || h.cfg.Projects[project].Offers(env, capability),
 			Checked:   slices.Contains(grants, grant),
 			Value:     grantValue(grant),
-			Label:     grantName(grant),
+			Label:     grantLabel(grant),
 		}
 		if !cell.Checked {
 			for _, g := range grants {
 				if g.HasWildcard() && g.Covers(project, "", env, capability) {
-					cell.CoveredBy = grantName(g)
+					cell.CoveredBy = grantLabel(g)
 					break
 				}
 			}
@@ -412,6 +412,17 @@ func grantTarget(g identities.Grant) string {
 // grantName shows a grant as target / environment / capability, e.g. "shop / * / metrics".
 func grantName(g identities.Grant) string {
 	return grantTarget(g) + " / " + g.Environment + " / " + string(g.Capability)
+}
+
+// grantLabel spells out the wildcards of grantName, because screen readers often skip "*".
+func grantLabel(g identities.Grant) string {
+	spell := func(value, words string) string {
+		if value == identities.Wildcard {
+			return words
+		}
+		return value
+	}
+	return spell(grantTarget(g), "every project") + " / " + spell(g.Environment, "every environment") + " / " + spell(string(g.Capability), "every capability")
 }
 
 // grantValue encodes a grant as a checkbox value. Names come from the config and may contain

@@ -327,6 +327,10 @@ can contain personal data; treat the audit log accordingly.
 that table, so a rollback needs no cleanup: identities keep their other grants, and the `data`
 grants apply again after the upgrade. Grants with a wildcard are stored the same way, in
 `identity_wildcard_grants`: an older Sonda ignores them instead of failing on the `*` capability.
+An older Sonda also does not delete them when it saves the identity, so a wildcard grant comes
+back after the upgrade even if the identity was narrowed in between. To revoke one while an older
+Sonda runs (including old replicas during a rolling deploy), delete the identity: its grants of
+every kind go with it.
 
 ## Admin UI
 

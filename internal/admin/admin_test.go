@@ -481,7 +481,8 @@ func TestWildcardGrant(t *testing.T) {
 		`<code>* / production / *</code>`,
 		`api / production</span> <span class="pills pills-inline"><span class="pill pill-accent">logs</span></span>`,
 		`worker / production</span> <span class="pills pills-inline"><span class="pill pill-accent">alerts</span></span>`,
-		`aria-label="api / production / logs (covered by * / production / *)"`,
+		`aria-label="api / production / logs (covered by every project / production / every capability)"`,
+		`aria-label="api / every environment / metrics"`,
 	} {
 		if !strings.Contains(edit, want) {
 			t.Errorf("edit page lacks %q", want)

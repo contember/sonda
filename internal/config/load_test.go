@@ -680,6 +680,14 @@ projects:
     services:
       web: { environments: { "*": { logs: { source: loki, selector: '{app="a"}' } } } }
 `, `projects.a.services.web.environments.*: "*" is reserved`},
+		{"wildcard service name", `
+sources:
+  loki: { type: loki, url: http://loki:3100 }
+projects:
+  a:
+    services:
+      "*": { environments: { production: { logs: { source: loki, selector: '{app="a"}' } } } }
+`, `projects.a.services.*: "*" is reserved`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
