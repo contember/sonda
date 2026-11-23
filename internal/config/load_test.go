@@ -339,6 +339,7 @@ func TestParseAdminOAuth(t *testing.T) {
 		"no url":         "{ issuer: \"https://iam.example.com\" }",
 		"query":          "{ issuer: \"https://iam.example.com?tenant=a\", url: \"https://sonda.example.com\" }",
 		"credentials":    "{ issuer: \"https://iam.example.com\", url: \"https://user:pw@sonda.example.com\" }",
+		"url with path":  "{ issuer: \"https://iam.example.com\", url: \"https://example.com/sonda\" }",
 		"no token, none": "",
 	} {
 		t.Run(name, func(t *testing.T) {

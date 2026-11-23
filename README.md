@@ -359,7 +359,11 @@ served.
 - **Break-glass.** `admin.token` still signs in, as a full administrator. Every attempt and every
   request of such a session, reads included, is in the audit log as `(break-glass)`. Changing the
   token ends those sessions. Bootstrap the first administrator with it: sign in with the token,
-  link your subject, then sign in through the authorization server.
+  link your subject, then sign in through the authorization server. Without `admin.token`, nobody
+  can link the first administrator on an empty database.
+- `admin.oauth.url` is an origin without a path: the UI and its cookies live at `/admin`.
+- The audit log is written after each request, as for agent requests; a failed write is logged,
+  not retried.
 
 ```yaml
 admin:

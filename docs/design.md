@@ -1269,10 +1269,11 @@ Rules:
   cross-site navigation would not carry a Strict cookie. `http.CrossOriginProtection` rejects
   cross-origin form posts.
 - The audit log records every state-changing admin request under `person:<identity>`, every
-  sign-in (`person:<identity>`, `(refused) <subject>`, `(refused)` for a token that fails
-  verification), and every attempt and every request, reads included, of a break-glass session
+  sign-in (`person:<identity>`, `(refused) <subject>`, `(refused)` for a callback without its
+  attempt, with a server error, or with a token that fails verification), and every attempt and every request, reads included, of a break-glass session
   under `(break-glass)`. Records written before people signed in carry `(admin)`. Identity names
-  cannot contain parentheses or `:`.
+  cannot contain parentheses or `:`. Rows are written after the request; a failed write is
+  logged, as for agent requests.
 - Sources and services are read-only here. They change only in the YAML file, with a restart.
 
 ## 12. Security

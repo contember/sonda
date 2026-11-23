@@ -191,6 +191,9 @@ func TestCallbackNeedsTheAttemptOfThisBrowser(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("callback without the attempt cookie: status %d", resp.StatusCode)
 	}
+	if got := env.auditIdentities(t); len(got) != 1 || got[0] != "(refused) GET /admin/oauth/callback" {
+		t.Errorf("audit: %q", got)
+	}
 }
 
 func TestUnlinkingEndsTheSession(t *testing.T) {

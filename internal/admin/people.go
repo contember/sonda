@@ -57,10 +57,12 @@ func (h *Handler) signInCallback(w http.ResponseWriter, r *http.Request) {
 		attempt.State, attempt.Verifier, _ = strings.Cut(cookie.Value, ".")
 	}
 	if !attempt.Matches(query.Get("state")) || attempt.Verifier == "" {
+		noteAudit(r, strings.TrimSpace(refusedIdentity), true)
 		h.renderLogin(w, r, http.StatusBadRequest, "The sign-in expired or was started in another browser. Sign in again.")
 		return
 	}
 	if code := query.Get("error"); code != "" {
+		noteAudit(r, strings.TrimSpace(refusedIdentity), true)
 		h.renderLogin(w, r, http.StatusUnauthorized, "The sign-in service did not sign you in ("+code+").")
 		return
 	}

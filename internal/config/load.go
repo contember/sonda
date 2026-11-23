@@ -297,6 +297,10 @@ func (v *validator) admin(raw rawAdmin) *Admin {
 			Issuer: v.oauthURL("admin.oauth.issuer", raw.OAuth.Issuer),
 			URL:    v.oauthURL("admin.oauth.url", raw.OAuth.URL),
 		}
+		// The admin UI's routes and cookies live at /admin of the origin, not under a prefix.
+		if u, err := url.Parse(admin.OAuth.URL); err == nil && u.Path != "" {
+			v.fail("admin.oauth.url must be an origin without a path, got %q", raw.OAuth.URL)
+		}
 	}
 	if raw.Token == "" && admin.OAuth != nil {
 		return admin
@@ -308,7 +312,7 @@ func (v *validator) admin(raw rawAdmin) *Admin {
 	return admin
 }
 
-// oauthURL checks an origin with an optional path, without a trailing slash. Plain http is
+// oauthURL checks an https URL and drops a trailing slash. Plain http is
 // accepted only on loopback, for local development.
 func (v *validator) oauthURL(path, raw string) string {
 	value := strings.TrimSuffix(v.expand(path, raw), "/")
