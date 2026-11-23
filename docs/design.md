@@ -27,6 +27,7 @@ authorization, and returns compact, evidence-carrying responses.
 | Cloudflare metrics | Fixed catalog over GraphQL Analytics datasets of Workers, Durable Objects, D1, Queues and R2, query built by the server | Agent-written GraphQL | GraphQL can name any script, resource or account. The server sets `accountTag`, the bound script or resource IDs and the range as variables. |
 | Data queries | Agent-written GraphQL for the Contember Content API, checked by `internal/gqlguard` against the API key's own schema | A fixed catalog of queries; plain passthrough | Questions about data are open-ended. Unlike Cloudflare GraphQL, the scope is not in the query: the server sets the project and stage in the URL, and the key's role decides what exists. The guard adds limits and field rules on top. |
 | Data grant scope | Per service environment, stored in `identity_service_grants` | Per project environment, like the other capabilities | Data is the most sensitive capability; a project can hold services whose data an agent must not read. A separate table needs no migration, and an older Sonda ignores it. |
+| Wildcard grants | `*` as a whole project, environment or capability of a project grant, matched on each request; never for `data`; stored in `identity_wildcard_grants` | Patterns like `eng*`; expanding `*` into exact grants when saved; `*` for data | Granting a whole project or one capability everywhere should not take a click per cell, and it should keep working as projects are added. Whole-position matching keeps each grant's reach readable. Data stays named per service. A separate table needs no migration, and an older Sonda ignores it instead of failing on the `*` capability. |
 | Write protection for data | A read-only Contember role, plus Sonda refusing any key whose schema can write | Trust the configuration | Two independent layers. A key with write rights would make every guard bug a write bug. |
 | Code structure | Small backend interfaces per capability in `query` (`logBackend`, `metricBackend`, `traceBackend`) | Use cases calling concrete clients directly | Each capability has several backends. The use cases stay shared; each backend binds its typed scope and client. |
 | Sentry traces | The spans dataset of the organization events endpoint, with the project and environment as parameters and a post-check of every span | Project-scoped endpoints | Sentry has no project-scoped span search. The parameters are ANDed with the query text, and the post-check catches a filter that Sentry did not apply. |
@@ -140,6 +141,11 @@ Identity ──< Grant (projects × environments × capabilities)
   that signal type. A `traces` grant also makes the project's spans visible in full inside
   traces fetched through other services (section 8). A grant for a project or capability that
   is no longer configured has no effect.
+- **Wildcard grant**: `*` as the project, environment or capability of a project grant matches
+  every value in that position, matched on each request, so it also covers projects,
+  environments and capabilities configured later. Positions match independently: a wildcard
+  never widens another position. It never covers `data`, and a `data` grant takes no
+  wildcard. `*` is reserved as a project and environment name.
 - **Limits**: server defaults from the config plus per-identity overrides from the store. The
   data limits (`data_max_rows`, `data_max_depth`, `data_max_fields`, `data_max_query_bytes`)
   have no overrides yet: an override is a column in the identity store, and the store has no
@@ -1192,7 +1198,9 @@ Served under `/admin` only when `admin.token` is set. Pages:
 
 - **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
   Grants are a matrix of project environments × capabilities, with the services each row
-  covers; a cell no service of the project configures cannot be selected. `data` has its own
+  covers; a cell no service of the project configures cannot be selected. Wildcard rows
+  (`project / *`, `* / environment`, `* / *`) and a `*` capability column can always be
+  selected; the edit page lists what each saved wildcard grant covers today. `data` has its own
   matrix of service environments with a data binding. A new or rotated token is shown once; only its SHA-256 is stored.
 - **Services**: the configured projects, services, environments and capabilities with the
   source and scope each reads, how many identities hold a grant there, and the sources with

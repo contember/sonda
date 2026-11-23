@@ -549,16 +549,26 @@ func (v *validator) auth(path string, raw rawAuth) Auth {
 	return auth
 }
 
+// grantWildcard matches every value of its position in a grant (identities.Wildcard), so it
+// cannot name a project, service or environment.
+const grantWildcard = "*"
+
 // project adds the project's services to cfg.Services. Service names are global, because
 // queries, audit records and result handles address a service by name alone.
 func (v *validator) project(name string, raw rawProject, cfg *Config) *Project {
 	path := "projects." + name
 	project := &Project{Name: name, Description: raw.Description, Services: map[string]*Service{}}
+	if name == grantWildcard {
+		v.fail("%s: %q is reserved: it is the grant wildcard", path, name)
+	}
 	if len(raw.Services) == 0 {
 		v.fail("%s.services: at least one service is required", path)
 	}
 	for _, svcName := range slices.Sorted(maps.Keys(raw.Services)) {
 		svcPath := path + ".services." + svcName
+		if svcName == grantWildcard {
+			v.fail("%s: %q is reserved: it is the grant wildcard", svcPath, svcName)
+		}
 		if other, ok := cfg.Services[svcName]; ok {
 			v.fail("%s: service name is already used in project %s", svcPath, other.Project.Name)
 			continue
@@ -587,6 +597,9 @@ func (v *validator) service(path, name string, raw rawService, sources map[strin
 	}
 	for envName, re := range raw.Environments {
 		envPath := path + ".environments." + envName
+		if envName == grantWildcard {
+			v.fail("%s: %q is reserved: it is the grant wildcard", envPath, envName)
+		}
 		env := &Environment{Name: envName}
 		if re.Errors != nil {
 			env.Errors = v.errorBinding(envPath+".errors", *re.Errors, sources)

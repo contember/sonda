@@ -38,6 +38,22 @@ type Grant struct {
 	Capability  api.Capability
 }
 
+// Wildcard in the project, environment or capability of a project grant matches every value,
+// including projects, environments and capabilities configured later. Per-service grants never
+// take it, and a wildcard capability never covers a per-service capability.
+const Wildcard = "*"
+
+// AnyCapability is the wildcard in a grant's capability.
+const AnyCapability api.Capability = Wildcard
+
+// ParseCapability parses a stored or submitted grant capability: a capability or AnyCapability.
+func ParseCapability(s string) (api.Capability, error) {
+	if s == Wildcard {
+		return AnyCapability, nil
+	}
+	return api.ParseCapability(s)
+}
+
 // PerService reports whether the capability is granted per service instead of per project.
 // Data is the most sensitive capability, so a grant opens the data of one named service only.
 func PerService(capability api.Capability) bool {
@@ -45,11 +61,33 @@ func PerService(capability api.Capability) bool {
 }
 
 // Valid reports whether the grant names a project or a service as its capability requires.
+// A per-service grant names its service and environment exactly.
 func (g Grant) Valid() bool {
 	if PerService(g.Capability) {
-		return g.Service != "" && g.Project == ""
+		return g.Service != "" && g.Service != Wildcard && g.Environment != Wildcard && g.Project == ""
 	}
 	return g.Project != "" && g.Service == ""
+}
+
+// HasWildcard reports whether any position of the grant is a wildcard.
+func (g Grant) HasWildcard() bool {
+	return g.Project == Wildcard || g.Environment == Wildcard || g.Capability == AnyCapability
+}
+
+// Covers reports whether the grant opens the capability in the environment of the service,
+// which belongs to the project. Each position must match; a wildcard matches only its own.
+func (g Grant) Covers(project, service, environment string, capability api.Capability) bool {
+	if PerService(capability) {
+		return g == Grant{Service: service, Environment: environment, Capability: capability}
+	}
+	return g.Service == "" &&
+		matches(g.Project, project) &&
+		matches(g.Environment, environment) &&
+		(g.Capability == AnyCapability || g.Capability == capability)
+}
+
+func matches(pattern, value string) bool {
+	return pattern == Wildcard || pattern == value
 }
 
 // LimitOverrides replace the server limits where set.

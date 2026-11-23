@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/config"
 	"github.com/contember/sonda/internal/identities"
 )
@@ -65,17 +66,6 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
-	// A project grant reaches a service environment only for the capabilities it configures.
-	granted := map[identities.Grant]map[string]bool{}
-	for _, identity := range list {
-		for _, g := range identity.Grants {
-			if granted[g] == nil {
-				granted[g] = map[string]bool{}
-			}
-			granted[g][identity.Name] = true
-		}
-	}
-
 	page := servicesPage{}
 	usedBy := map[string][]string{}
 	for _, projectName := range sortedKeys(h.cfg.Projects) {
@@ -86,17 +76,18 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 			sv := serviceView{Name: svcName, Description: svc.Description, Repository: svc.Repository, RepositoryURL: repositoryURL(svc.Repository), Signals: sortedKeys(svc.Signals)}
 			for _, envName := range sortedKeys(svc.Environments) {
 				env := svc.Environments[envName]
-				holders := map[string]bool{}
-				for _, capability := range env.Capabilities() {
-					grant := identities.Grant{Project: projectName, Environment: envName, Capability: capability}
-					if identities.PerService(capability) {
-						grant = identities.Grant{Service: svcName, Environment: envName, Capability: capability}
-					}
-					for name := range granted[grant] {
-						holders[name] = true
+				// A grant reaches a service environment only for the capabilities it configures.
+				holders := 0
+				for _, identity := range list {
+					if slices.ContainsFunc(env.Capabilities(), func(capability api.Capability) bool {
+						return slices.ContainsFunc(identity.Grants, func(g identities.Grant) bool {
+							return g.Covers(projectName, svcName, envName, capability)
+						})
+					}) {
+						holders++
 					}
 				}
-				ev := environmentView{Name: envName, Bindings: bindings(env), Identities: len(holders)}
+				ev := environmentView{Name: envName, Bindings: bindings(env), Identities: holders}
 				for _, b := range ev.Bindings {
 					target := svcName + " / " + envName
 					if !slices.Contains(usedBy[b.Source], target) {

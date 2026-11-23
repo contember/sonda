@@ -13,7 +13,7 @@
       <td>
         <div class="stack">
         {{range .Grants}}
-          <div><span class="muted nowrap">{{.Target}}</span> <span class="pills pills-inline">{{range .Capabilities}}<span class="pill pill-accent">{{.}}</span>{{end}}</span></div>
+          <div><span class="muted nowrap">{{.Target}}</span> <span class="pills pills-inline">{{range .Capabilities}}<span class="pill pill-accent">{{.}}</span>{{end}}</span>{{if .Wildcard}} <span class="subtle nowrap">covers {{.Covers}} service {{if eq .Covers 1}}environment{{else}}environments{{end}} today</span>{{end}}</div>
         {{else}}<span class="subtle">none</span>{{end}}
         </div>
       </td>

@@ -525,3 +525,152 @@ func TestDataScope(t *testing.T) {
 		t.Errorf("data backend = %+v", backends[api.CapabilityData])
 	}
 }
+
+const wildcardConfig = `
+sources:
+  loki: { type: loki, url: "http://loki:3100" }
+  prom: { type: prometheus, url: "http://prom:9090" }
+  content: { type: contember, url: "http://engine", auth: { type: bearer, token: t } }
+projects:
+  crm:
+    services:
+      crm-api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="crm-api", env="prod"}' }
+            metrics: { source: prom, selector: '{job="crm-api", env="prod"}' }
+            data: { source: content, project: crm }
+          staging:
+            logs: { source: loki, selector: '{app="crm-api", env="staging"}' }
+            metrics: { source: prom, selector: '{job="crm-api", env="staging"}' }
+      crm-web:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="crm-web"}' }
+  shop:
+    services:
+      shop-api:
+        environments:
+          production:
+            logs: { source: loki, selector: '{app="shop-api", env="prod"}' }
+            metrics: { source: prom, selector: '{job="shop-api", env="prod"}' }
+          staging:
+            logs: { source: loki, selector: '{app="shop-api", env="staging"}' }
+`
+
+// access is one service environment capability and whether the grants under test open it.
+type access struct {
+	service, environment string
+	capability           api.Capability
+	want                 bool
+}
+
+func TestWildcardGrants(t *testing.T) {
+	cfg, err := config.Parse([]byte(wildcardConfig), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, nil)
+	tests := []struct {
+		name   string
+		grant  identities.Grant
+		access []access
+	}{
+		{"every environment and capability of one project", identities.Grant{Project: "crm", Environment: "*", Capability: "*"}, []access{
+			{"crm-api", "production", api.CapabilityLogs, true},
+			{"crm-api", "staging", api.CapabilityMetrics, true},
+			{"crm-web", "production", api.CapabilityLogs, true},
+			{"shop-api", "production", api.CapabilityLogs, false},
+			{"shop-api", "staging", api.CapabilityLogs, false},
+			{"crm-api", "production", api.CapabilityData, false},
+		}},
+		{"one capability in every project and environment", identities.Grant{Project: "*", Environment: "*", Capability: api.CapabilityMetrics}, []access{
+			{"crm-api", "production", api.CapabilityMetrics, true},
+			{"crm-api", "staging", api.CapabilityMetrics, true},
+			{"shop-api", "production", api.CapabilityMetrics, true},
+			{"crm-api", "production", api.CapabilityLogs, false},
+			{"shop-api", "staging", api.CapabilityLogs, false},
+		}},
+		{"every capability in one environment of every project", identities.Grant{Project: "*", Environment: "production", Capability: "*"}, []access{
+			{"crm-api", "production", api.CapabilityLogs, true},
+			{"shop-api", "production", api.CapabilityMetrics, true},
+			{"crm-api", "staging", api.CapabilityLogs, false},
+			{"shop-api", "staging", api.CapabilityLogs, false},
+		}},
+		{"every environment of one project for one capability", identities.Grant{Project: "shop", Environment: "*", Capability: api.CapabilityLogs}, []access{
+			{"shop-api", "production", api.CapabilityLogs, true},
+			{"shop-api", "staging", api.CapabilityLogs, true},
+			{"shop-api", "production", api.CapabilityMetrics, false},
+			{"crm-api", "production", api.CapabilityLogs, false},
+		}},
+		{"everything except data", identities.Grant{Project: "*", Environment: "*", Capability: "*"}, []access{
+			{"crm-api", "staging", api.CapabilityMetrics, true},
+			{"shop-api", "staging", api.CapabilityLogs, true},
+			{"crm-api", "production", api.CapabilityData, false},
+		}},
+		{"a wildcard data grant opens nothing", identities.Grant{Project: "*", Environment: "*", Capability: api.CapabilityData}, []access{
+			{"crm-api", "production", api.CapabilityData, false},
+			{"crm-api", "production", api.CapabilityLogs, false},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			identity := &Identity{Name: "agent", Grants: []identities.Grant{tt.grant}}
+			for _, c := range tt.access {
+				_, _, err := a.resolve(identity, c.service, c.environment, c.capability)
+				if got := err == nil; got != c.want {
+					t.Errorf("%s / %s / %s: allowed = %v, want %v (%v)", c.service, c.environment, c.capability, got, c.want, err)
+				}
+				if !c.want && err != nil && !hasCode(err, api.CodeNotFound) {
+					t.Errorf("%s / %s / %s: %v, want not found", c.service, c.environment, c.capability, err)
+				}
+			}
+		})
+	}
+}
+
+// A wildcard is matched on every request, so it covers what the configuration adds later.
+func TestWildcardGrantCoversLaterAdditions(t *testing.T) {
+	identity := &Identity{Name: "agent", Grants: []identities.Grant{
+		{Project: "*", Environment: "*", Capability: api.CapabilityMetrics},
+		{Project: "crm", Environment: "*", Capability: "*"},
+	}}
+	later := wildcardConfig + `
+  billing:
+    services:
+      billing:
+        environments:
+          production:
+            metrics: { source: prom, selector: '{job="billing"}' }
+            logs: { source: loki, selector: '{app="billing"}' }
+`
+	later = strings.Replace(later, `      crm-web:
+        environments:
+          production:`, `      crm-web:
+        environments:
+          preview:
+            alerts: { source: prom, selector: '{app="crm-web"}' }
+          production:`, 1)
+	cfg, err := config.Parse([]byte(later), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, nil)
+	for _, c := range []access{
+		{"billing", "production", api.CapabilityMetrics, true},
+		{"billing", "production", api.CapabilityLogs, false},
+		{"crm-web", "preview", api.CapabilityAlerts, true},
+	} {
+		_, _, err := a.resolve(identity, c.service, c.environment, c.capability)
+		if got := err == nil; got != c.want {
+			t.Errorf("%s / %s / %s: allowed = %v, want %v (%v)", c.service, c.environment, c.capability, got, c.want, err)
+		}
+	}
+	var names []string
+	for _, svc := range a.Services(identity) {
+		names = append(names, svc.Name)
+	}
+	if strings.Join(names, ",") != "billing,crm-api,crm-web,shop-api" {
+		t.Errorf("services = %v", names)
+	}
+}

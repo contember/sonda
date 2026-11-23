@@ -151,6 +151,12 @@ parts that matter for security:
   implied by the others. Anything else is not found. A `traces` grant also decides which spans of a
   trace an identity sees in full; spans of other services are reduced to service, timing and
   status.
+- **Wildcard grants**: `*` in the project, the environment or the capability of a grant matches
+  every value in that position, e.g. `engine / * / *` (everything of project `engine`) or
+  `* / * / metrics` (metrics everywhere). It also matches projects, environments and capabilities
+  added later. The other positions still match exactly, so `engine / * / *` opens nothing of
+  another project. `*` is whole-position only (no `eng*`), and no wildcard covers `data`: data
+  grants name their service and environment. `*` cannot name a project or an environment.
 - **Provider credentials** come from environment variables or, for AWS, the default credential
   chain or Sonda's own identity (below). `${NAME}` reads the variable `NAME`; when it is unset
   or empty and `NAME_FILE` is set, the value is read from that file (Docker and Kubernetes
@@ -319,14 +325,21 @@ can contain personal data; treat the audit log accordingly.
 
 `data` grants are stored in their own table, `identity_service_grants`. An older Sonda ignores
 that table, so a rollback needs no cleanup: identities keep their other grants, and the `data`
-grants apply again after the upgrade.
+grants apply again after the upgrade. Grants with a wildcard are stored the same way, in
+`identity_wildcard_grants`: an older Sonda ignores them instead of failing on the `*` capability.
+An older Sonda also does not delete them when it saves the identity, so a wildcard grant comes
+back after the upgrade even if the identity was narrowed in between. To revoke one while an older
+Sonda runs (including old replicas during a rolling deploy), delete the identity: its grants of
+every kind go with it.
 
 ## Admin UI
 
 Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.
 
 - **Identities**: create an identity, select its grants in a project environment × capability matrix,
-  and `data` in a separate service environment matrix, override limits, rotate or revoke its token. Changes apply to the next request; no restart.
+  including wildcard rows (`project / *`, `* / environment`, `* / *`) and a `*` capability column,
+  and `data` in a separate service environment matrix. The edit page lists what each saved
+  wildcard grant covers today, and marks the cells it already covers; override limits, rotate or revoke its token. Changes apply to the next request; no restart.
   A token is shown once; Sonda stores only its SHA-256.
 - **Services**: a read-only view of the configuration: projects, their services and
   environments, what each capability reads, and the sources. It shows no credentials.
