@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -134,18 +135,7 @@ func TestEKSToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, ok := strings.CutPrefix(token, "k8s-aws-v1.")
-	if !ok {
-		t.Fatalf("token %q lacks the k8s-aws-v1. prefix", token)
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	presigned, err := url.Parse(string(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
+	presigned := presignedURL(t, token)
 	query := presigned.Query()
 	if presigned.Host != "sts.eu-west-1.amazonaws.com" || query.Get("Action") != "GetCallerIdentity" {
 		t.Errorf("presigned URL = %s", presigned)
@@ -166,5 +156,128 @@ func TestEKSToken(t *testing.T) {
 	renewed, err := tokens.Token(context.Background())
 	if err != nil || renewed == token {
 		t.Errorf("token after the reuse window was not renewed: %v", err)
+	}
+}
+
+func presignedURL(t *testing.T, token string) *url.URL {
+	t.Helper()
+	encoded, ok := strings.CutPrefix(token, "k8s-aws-v1.")
+	if !ok {
+		t.Fatalf("token %q lacks the k8s-aws-v1. prefix", token)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presigned, err := url.Parse(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return presigned
+}
+
+// signingKey returns the access key ID a token was signed with.
+func signingKey(t *testing.T, token string) string {
+	t.Helper()
+	key, _, _ := strings.Cut(presignedURL(t, token).Query().Get("X-Amz-Credential"), "/")
+	return key
+}
+
+func TestEKSTokenNotReusedPastCredentialsExpiry(t *testing.T) {
+	start := time.Now()
+	now := start
+	// The first credentials until they are near expiry, then new ones.
+	provider := sdkaws.CredentialsProviderFunc(func(context.Context) (sdkaws.Credentials, error) {
+		if now.Before(start.Add(5 * time.Minute)) {
+			return sdkaws.Credentials{AccessKeyID: "AKIDFIRST", SecretAccessKey: "secret", CanExpire: true, Expires: start.Add(8 * time.Minute)}, nil
+		}
+		return sdkaws.Credentials{AccessKeyID: "AKIDSECOND", SecretAccessKey: "secret", CanExpire: true, Expires: start.Add(time.Hour)}, nil
+	})
+	tokens := NewEKSTokens(sdkaws.Config{Region: "eu-west-1", Credentials: provider}, "prod")
+	tokens.now = func() time.Time { return now }
+
+	first, err := tokens.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key := signingKey(t, first); key != "AKIDFIRST" {
+		t.Fatalf("first token signed with %s", key)
+	}
+	now = start.Add(5 * time.Minute)
+	if again, err := tokens.Token(context.Background()); err != nil || again != first {
+		t.Errorf("token with valid credentials was not reused: %v", err)
+	}
+	// Within the reuse window, but past the expiry of the credentials minus the margin.
+	now = start.Add(8*time.Minute - eksCredentialsMargin)
+	renewed, err := tokens.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key := signingKey(t, renewed); key != "AKIDSECOND" {
+		t.Errorf("token was reused or re-signed with %s after its credentials expired", key)
+	}
+}
+
+// fakeSTS answers AssumeRole and AssumeRoleWithWebIdentity with new credentials on every call,
+// each valid for validFor.
+func fakeSTS(t *testing.T, validFor time.Duration) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		calls++
+		action := r.PostForm.Get("Action")
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = fmt.Fprintf(w, `<%[1]sResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <%[1]sResult>
+    <Credentials>
+      <AccessKeyId>ASIA%[2]d</AccessKeyId>
+      <SecretAccessKey>secret</SecretAccessKey>
+      <SessionToken>session</SessionToken>
+      <Expiration>%[3]s</Expiration>
+    </Credentials>
+  </%[1]sResult>
+</%[1]sResponse>`, action, calls, time.Now().Add(validFor).UTC().Format(time.RFC3339))
+	}))
+	t.Cleanup(server.Close)
+	return server, &calls
+}
+
+func TestEKSTokenSignedWithCredentialsRefreshedBeforeExpiry(t *testing.T) {
+	iss, err := issuer.Open(context.Background(), "https://sonda.example.com", &memoryKeys{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, settings := range []*config.AWSSource{
+		{Region: "eu-west-1", Credentials: config.AWSIdentity, RoleARN: "arn:aws:iam::123456789012:role/sonda"},
+		{Region: "eu-west-1", Credentials: config.AWSDefaultChain, RoleARN: "arn:aws:iam::123456789012:role/sonda"},
+	} {
+		t.Run(string(settings.Credentials), func(t *testing.T) {
+			isolateAWSEnvironment(t)
+			t.Setenv("AWS_ACCESS_KEY_ID", "AKIDSOURCE")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+			// Credentials that expire within the EKS token lifetime are near expiry.
+			sts, calls := fakeSTS(t, 14*time.Minute)
+			t.Setenv("AWS_ENDPOINT_URL_STS", sts.URL)
+			cfg, err := Config(context.Background(), settings, iss)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tokens := NewEKSTokens(cfg, "prod")
+
+			first, err := tokens.Token(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := tokens.Token(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if signingKey(t, first) != "ASIA1" || signingKey(t, second) != "ASIA2" || *calls != 2 {
+				t.Errorf("tokens signed with %s, then %s after %d STS calls; want ASIA1, then refreshed ASIA2", signingKey(t, first), signingKey(t, second), *calls)
+			}
+		})
 	}
 }

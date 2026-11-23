@@ -615,7 +615,9 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   AWS account can trust the issuer directly, so no role chaining is needed.
 - `auth: eks` sends `k8s-aws-v1.` + a presigned STS `GetCallerIdentity` URL with the signed
   header `x-k8s-aws-id: <cluster>`, as `aws eks get-token` does. EKS accepts it for 15 minutes
-  after signing; Sonda reuses it for 10.
+  after signing, while the credentials that signed it are valid. Sonda reuses it for 10 minutes,
+  never past a minute before those credentials expire, and refreshes role credentials 15 minutes
+  before they expire.
 - A Loki, Prometheus or Tempo inside the cluster is reached through the API server's service
   proxy: `url` is `https://<endpoint>/api/v1/namespaces/<ns>/services/<scheme>:<service>:<port>/proxy`
   and `ca_file` is the cluster CA. The cluster needs an access entry for the role, mapped to a
