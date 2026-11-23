@@ -213,6 +213,7 @@ func shapeImage(image ecrtypes.ImageDetail) api.Image {
 		PushedAt:   image.ImagePushedAt,
 		SizeBytes:  sdkaws.ToInt64(image.ImageSizeInBytes),
 		LastPulled: image.LastRecordedPullTime,
+		Artifact:   aws.ArtifactKind(image),
 	}
 }
 
@@ -221,6 +222,9 @@ func shapeImage(image ecrtypes.ImageDetail) api.Image {
 // leaves out the scan status under registry-level scanning, so the scan is read on its own.
 func scannedImage(ctx context.Context, client *aws.Client, scope authz.ImageScope, image ecrtypes.ImageDetail) (api.Image, bool, error) {
 	result := shapeImage(image)
+	if result.Artifact != "" {
+		return result, false, nil
+	}
 	repository := sdkaws.ToString(image.RepositoryName)
 	if !aws.IsIndex(image) {
 		scan, err := client.Scan(ctx, scope, repository, result.Digest)
@@ -246,6 +250,9 @@ func scannedImage(ctx context.Context, client *aws.Client, scope authz.ImageScop
 // platform manifests for an index, most severe first, and reports whether any were left unread.
 func imageFindings(ctx context.Context, client *aws.Client, scope authz.ImageScope, image ecrtypes.ImageDetail) (api.ImageDetail, bool, error) {
 	detail := api.ImageDetail{Image: shapeImage(image), Findings: []api.ImageFinding{}}
+	if detail.Artifact != "" {
+		return detail, false, nil
+	}
 	repository := sdkaws.ToString(image.RepositoryName)
 	if !aws.IsIndex(image) {
 		scan, cut, err := client.ScanFindings(ctx, scope, repository, detail.Digest)

@@ -553,6 +553,13 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   `truncated`. An index that lists no image manifest has `platforms: []`. The image detail of an index merges the
   findings of its platforms, each marked with its platform. The platform manifests and
   attestation manifests also appear in the list as untagged images of their own.
+- **Manifests that are not images are labelled.** buildx pushes attestation manifests next to
+  an image and can export its build cache to the same repository; ECR fails their scans as
+  unsupported, which would read as broken scanning. By `artifactMediaType`
+  (`application/vnd.docker.attestation.manifest.v1+json`,
+  `application/vnd.buildkit.cacheconfig.v0`) Sonda marks them `artifact: attestation` or
+  `artifact: build-cache`, without a scan, and does not read their scans. They stay in the
+  list.
 - A bound repository that does not exist fails the request with `upstream_error`, also when
   another repository would answer: it is a configuration error, and a silent gap would read
   as "not in the registry".

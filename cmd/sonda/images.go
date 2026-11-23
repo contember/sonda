@@ -100,9 +100,12 @@ func renderImage(w io.Writer, resp api.Response[api.ImageDetail]) {
 	fmt.Fprintf(w, "# %s/%s now\n", resp.Meta.Service, resp.Meta.Environment)
 	renderMeta(w, resp.Meta)
 	fmt.Fprintf(w, "%s@%s  tags=%s  pushed=%s\n", image.Repository, image.Digest, valueOrDash(strings.Join(image.Tags, ",")), formatTime(image.PushedAt))
-	if image.Platforms == nil {
+	switch {
+	case image.Artifact != "":
+		fmt.Fprintf(w, "scan: none, %s\n", notImage(image.Artifact))
+	case image.Platforms == nil:
 		fmt.Fprintf(w, "scan: %s\n", scanDetail(image.Scan))
-	} else {
+	default:
 		fmt.Fprintf(w, "index of %d platform image(s), each scanned on its own:\n", len(image.Platforms))
 		for _, p := range image.Platforms {
 			fmt.Fprintf(w, "  %s %s  scan: %s\n", valueOrDash(p.Platform), p.Digest, scanDetail(p.Scan))
@@ -132,6 +135,9 @@ func renderImage(w io.Writer, resp api.Response[api.ImageDetail]) {
 
 // imageScanSummary summarizes the scan of an image, or the scans of the platforms of an index.
 func imageScanSummary(image api.Image) string {
+	if image.Artifact != "" {
+		return notImage(image.Artifact)
+	}
 	if image.Platforms == nil {
 		return scanSummary(image.Scan)
 	}
@@ -143,6 +149,11 @@ func imageScanSummary(image api.Image) string {
 		parts = append(parts, valueOrDash(p.Platform)+": "+scanSummary(p.Scan))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// notImage labels a manifest that is not a container image, which the registry does not scan.
+func notImage(artifact string) string {
+	return artifact + " (not an image)"
 }
 
 func scanDetail(scan *api.ImageScan) string {
