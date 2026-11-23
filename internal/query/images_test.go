@@ -88,20 +88,37 @@ func TestShapeImage(t *testing.T) {
 		ImageTags:        []string{"v2", "latest"},
 		ImagePushedAt:    &pushed,
 		ImageSizeInBytes: sdkaws.Int64(1024),
-		ImageScanStatus:  &ecrtypes.ImageScanStatus{Status: ecrtypes.ScanStatusComplete},
-		ImageScanFindingsSummary: &ecrtypes.ImageScanFindingsSummary{
-			ImageScanCompletedAt:  &pushed,
-			FindingSeverityCounts: map[string]int32{"HIGH": 2, "CRITICAL": 1},
-		},
 	})
 	if image.Repository != "shop" || image.Digest != digestA || strings.Join(image.Tags, ",") != "latest,v2" || image.SizeBytes != 1024 {
 		t.Errorf("image = %+v", image)
 	}
-	if image.Scan == nil || image.Scan.Status != "COMPLETE" || image.Scan.Counts["CRITICAL"] != 1 || image.Scan.Counts["HIGH"] != 2 || image.Scan.CompletedAt == nil {
-		t.Errorf("scan = %+v", image.Scan)
+	if untagged := shapeImage(ecrtypes.ImageDetail{RepositoryName: sdkaws.String("shop")}); untagged.Tags == nil {
+		t.Errorf("untagged image = %+v", untagged)
 	}
-	if never := shapeImage(ecrtypes.ImageDetail{RepositoryName: sdkaws.String("shop")}); never.Scan != nil || never.Tags == nil {
-		t.Errorf("unscanned untagged image = %+v", never)
+}
+
+func TestShapeScanTellsNoScanFromNoFindings(t *testing.T) {
+	completed := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	scan := func(status ecrtypes.ScanStatus, findings *ecrtypes.ImageScanFindings) *ecr.DescribeImageScanFindingsOutput {
+		return &ecr.DescribeImageScanFindingsOutput{ImageScanStatus: &ecrtypes.ImageScanStatus{Status: status}, ImageScanFindings: findings}
+	}
+	found := shapeScan(scan(ecrtypes.ScanStatusComplete, &ecrtypes.ImageScanFindings{
+		ImageScanCompletedAt:  &completed,
+		FindingSeverityCounts: map[string]int32{"HIGH": 2, "CRITICAL": 1},
+	}))
+	if found == nil || found.Status != "COMPLETE" || found.Counts["CRITICAL"] != 1 || found.Counts["HIGH"] != 2 || found.CompletedAt == nil {
+		t.Errorf("scan with findings = %+v", found)
+	}
+	// ECR answers a clean basic scan with "findingSeverityCounts": {}.
+	clean := shapeScan(scan(ecrtypes.ScanStatusComplete, &ecrtypes.ImageScanFindings{FindingSeverityCounts: map[string]int32{}}))
+	if clean == nil || clean.Counts == nil || len(clean.Counts) != 0 {
+		t.Errorf("clean scan = %+v", clean)
+	}
+	if running := shapeScan(scan(ecrtypes.ScanStatusInProgress, nil)); running == nil || running.Counts != nil {
+		t.Errorf("scan in progress = %+v", running)
+	}
+	if never := shapeScan(nil); never != nil {
+		t.Errorf("never scanned = %+v", never)
 	}
 }
 
@@ -125,7 +142,8 @@ func TestShapeFindingsMostSevereFirst(t *testing.T) {
 			},
 		}},
 	}}
-	got := shapeFindings(scan)
+	got := shapeFindings(scan, "")
+	sortFindings(got)
 	want := []api.ImageFinding{
 		{ID: "CVE-2024-1", Severity: "CRITICAL", Package: "openssl", Version: "3.1.0", URI: "https://example.com/CVE-2024-1"},
 		{ID: "GHSA-xxxx", Severity: "HIGH", Package: "undici", Version: "5.0.0", FixedIn: "5.28.4"},
@@ -140,7 +158,7 @@ func TestShapeFindingsMostSevereFirst(t *testing.T) {
 			t.Errorf("finding %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	if none := shapeFindings(nil); none == nil || len(none) != 0 {
+	if none := shapeFindings(nil, ""); none == nil || len(none) != 0 {
 		t.Errorf("no scan = %#v, want an empty list", none)
 	}
 }

@@ -90,7 +90,7 @@ func renderImages(w io.Writer, resp api.Response[[]api.Image]) {
 	}
 	t := table(w)
 	for _, image := range resp.Data {
-		fmt.Fprintf(t, "  %s\t%s\t%s\t%s\t%s\n", image.Repository, image.Digest, valueOrDash(strings.Join(image.Tags, ",")), formatTime(image.PushedAt), scanSummary(image.Scan))
+		fmt.Fprintf(t, "  %s\t%s\t%s\t%s\t%s\n", image.Repository, image.Digest, valueOrDash(strings.Join(image.Tags, ",")), formatTime(image.PushedAt), imageScanSummary(image))
 	}
 	t.Flush()
 }
@@ -100,13 +100,19 @@ func renderImage(w io.Writer, resp api.Response[api.ImageDetail]) {
 	fmt.Fprintf(w, "# %s/%s now\n", resp.Meta.Service, resp.Meta.Environment)
 	renderMeta(w, resp.Meta)
 	fmt.Fprintf(w, "%s@%s  tags=%s  pushed=%s\n", image.Repository, image.Digest, valueOrDash(strings.Join(image.Tags, ",")), formatTime(image.PushedAt))
-	fmt.Fprintf(w, "scan: %s", scanSummary(image.Scan))
-	if image.Scan != nil {
-		fmt.Fprintf(w, "  completed=%s  database=%s", formatTime(image.Scan.CompletedAt), formatTime(image.Scan.SourceUpdatedAt))
+	if image.Platforms == nil {
+		fmt.Fprintf(w, "scan: %s\n", scanDetail(image.Scan))
+	} else {
+		fmt.Fprintf(w, "index of %d platform image(s), each scanned on its own:\n", len(image.Platforms))
+		for _, p := range image.Platforms {
+			fmt.Fprintf(w, "  %s %s  scan: %s\n", valueOrDash(p.Platform), p.Digest, scanDetail(p.Scan))
+		}
 	}
-	fmt.Fprintln(w)
 	if len(image.Findings) == 0 {
-		fmt.Fprintln(w, "no findings")
+		// Without a scan, "no findings" would read as a clean scan.
+		if image.Scan != nil || slices.ContainsFunc(image.Platforms, func(p api.ImagePlatform) bool { return p.Scan != nil }) {
+			fmt.Fprintln(w, "no findings")
+		}
 		return
 	}
 	t := table(w)
@@ -115,17 +121,47 @@ func renderImage(w io.Writer, resp api.Response[api.ImageDetail]) {
 		if f.FixedIn != "" {
 			fixed = "fixed in " + f.FixedIn
 		}
-		fmt.Fprintf(t, "  %s\t%s\t%s\t%s\t%s\n", f.Severity, f.ID, valueOrDash(f.Package), valueOrDash(f.Version), fixed)
+		platform := ""
+		if len(image.Platforms) > 0 {
+			platform = valueOrDash(f.Platform) + "\t"
+		}
+		fmt.Fprintf(t, "  %s%s\t%s\t%s\t%s\t%s\n", platform, f.Severity, f.ID, valueOrDash(f.Package), valueOrDash(f.Version), fixed)
 	}
 	t.Flush()
 }
 
-// scanSummary prints the scan status and the counts, most severe first.
+// imageScanSummary summarizes the scan of an image, or the scans of the platforms of an index.
+func imageScanSummary(image api.Image) string {
+	if image.Platforms == nil {
+		return scanSummary(image.Scan)
+	}
+	if len(image.Platforms) == 0 {
+		return "index without image manifests"
+	}
+	parts := make([]string, 0, len(image.Platforms))
+	for _, p := range image.Platforms {
+		parts = append(parts, valueOrDash(p.Platform)+": "+scanSummary(p.Scan))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func scanDetail(scan *api.ImageScan) string {
+	if scan == nil {
+		return scanSummary(scan)
+	}
+	return fmt.Sprintf("%s  completed=%s  database=%s", scanSummary(scan), formatTime(scan.CompletedAt), formatTime(scan.SourceUpdatedAt))
+}
+
+// scanSummary prints the scan status and the counts, most severe first; "0 findings" for a scan
+// that found nothing, unlike "not scanned".
 func scanSummary(scan *api.ImageScan) string {
 	if scan == nil {
 		return "not scanned"
 	}
 	parts := []string{strings.ToLower(scan.Status)}
+	if scan.Counts != nil && len(scan.Counts) == 0 {
+		parts = append(parts, "0 findings")
+	}
 	for _, severity := range slices.SortedFunc(maps.Keys(scan.Counts), func(a, b string) int {
 		return api.SeverityRank(a) - api.SeverityRank(b)
 	}) {

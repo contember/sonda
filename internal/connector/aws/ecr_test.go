@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -55,6 +56,8 @@ type fakeECR struct {
 	noScan      bool
 	findings    [][]ecrtypes.ImageScanFinding
 	describes   []*ecr.DescribeImagesInput
+	index       string                    // the manifest BatchGetImage returns
+	failure     ecrtypes.ImageFailureCode // BatchGetImage reports this failure instead
 }
 
 func (f *fakeECR) repo() string {
@@ -112,6 +115,17 @@ func (f *fakeECR) DescribeImageScanFindings(_ context.Context, in *ecr.DescribeI
 		out.NextToken = sdkaws.String(strconv.Itoa(page + 1))
 	}
 	return out, nil
+}
+
+func (f *fakeECR) BatchGetImage(_ context.Context, in *ecr.BatchGetImageInput, _ ...func(*ecr.Options)) (*ecr.BatchGetImageOutput, error) {
+	if f.failure != "" {
+		return &ecr.BatchGetImageOutput{Failures: []ecrtypes.ImageFailure{{ImageId: &in.ImageIds[0], FailureCode: f.failure, FailureReason: sdkaws.String("reason")}}}, nil
+	}
+	return &ecr.BatchGetImageOutput{Images: []ecrtypes.Image{{
+		RepositoryName: sdkaws.String(f.repo()),
+		ImageId:        &ecrtypes.ImageIdentifier{ImageDigest: f.digest(in.ImageIds[0].ImageDigest)},
+		ImageManifest:  sdkaws.String(f.index),
+	}}}, nil
 }
 
 func ecrClient(cfg *config.Config, fake *fakeECR) *Client {
@@ -179,6 +193,10 @@ func TestScanFindingsMergePages(t *testing.T) {
 	if err != nil || scan != nil {
 		t.Errorf("never scanned: scan = %+v, err = %v", scan, err)
 	}
+	summary, err := ecrClient(cfg, &fakeECR{noScan: true}).Scan(context.Background(), scope, "shop", testDigest)
+	if err != nil || summary != nil {
+		t.Errorf("never scanned, summary: scan = %+v, err = %v", summary, err)
+	}
 }
 
 func TestECRPostChecks(t *testing.T) {
@@ -205,11 +223,76 @@ func TestECRPostChecks(t *testing.T) {
 			_, _, err := c.ScanFindings(context.Background(), scope, "shop", testDigest)
 			return err
 		}},
+		{"index of another digest", &fakeECR{otherDigest: true, index: `{"manifests":[]}`}, func(c *Client) error {
+			_, _, err := c.PlatformManifests(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
+		{"index of another repository", &fakeECR{repoName: "other", index: `{"manifests":[]}`}, func(c *Client) error {
+			_, _, err := c.PlatformManifests(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.call(ecrClient(cfg, tc.fake))
 			if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeInternal || !strings.Contains(err.Error(), "outside the scope") {
+				t.Errorf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestPlatformManifestsLeaveOutAttestations(t *testing.T) {
+	cfg, scope := imageScope(t)
+	digest := func(c string) string { return "sha256:" + strings.Repeat(c, 64) }
+	// The shape buildx pushes: image manifests per platform, an attestation manifest for each.
+	index := `{
+	  "schemaVersion": 2,
+	  "mediaType": "application/vnd.oci.image.index.v1+json",
+	  "manifests": [
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("a") + `", "size": 3703, "platform": {"architecture": "amd64", "os": "linux"}},
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("b") + `", "size": 3703, "platform": {"architecture": "arm", "os": "linux", "variant": "v7"}},
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("c") + `", "size": 838,
+	     "annotations": {"vnd.docker.reference.digest": "` + digest("a") + `", "vnd.docker.reference.type": "attestation-manifest"},
+	     "platform": {"architecture": "unknown", "os": "unknown"}},
+	    {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "` + digest("d") + `", "size": 500},
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("e") + `", "platform": {"architecture": "amd64\u001b[2J", "os": "linux"}},
+	    {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "` + digest("f") + `"}
+	  ]
+	}`
+	manifests, truncated, err := ecrClient(cfg, &fakeECR{index: index}).PlatformManifests(context.Background(), scope, "shop", testDigest)
+	// A platform that is not plain lowercase names, or none, is left empty.
+	want := []PlatformManifest{{Digest: digest("a"), Platform: "linux/amd64"}, {Digest: digest("b"), Platform: "linux/arm/v7"}, {Digest: digest("e")}, {Digest: digest("f")}}
+	if err != nil || truncated || !slices.Equal(manifests, want) {
+		t.Errorf("manifests = %+v, truncated = %v, err = %v", manifests, truncated, err)
+	}
+
+	many := make([]string, maxPlatformManifests+1)
+	for i := range many {
+		many[i] = fmt.Sprintf(`{"mediaType": "application/vnd.docker.distribution.manifest.v2+json", "digest": "sha256:%064x", "platform": {"os": "linux", "architecture": "amd64"}}`, i)
+	}
+	manifests, truncated, err = ecrClient(cfg, &fakeECR{index: `{"manifests": [` + strings.Join(many, ",") + `]}`}).PlatformManifests(context.Background(), scope, "shop", testDigest)
+	if err != nil || !truncated || len(manifests) != maxPlatformManifests {
+		t.Errorf("over the cap: manifests = %d, truncated = %v, err = %v", len(manifests), truncated, err)
+	}
+
+	manifests, _, err = ecrClient(cfg, &fakeECR{failure: ecrtypes.ImageFailureCodeImageNotFound}).PlatformManifests(context.Background(), scope, "shop", testDigest)
+	if err != nil || len(manifests) != 0 {
+		t.Errorf("deleted index: manifests = %+v, err = %v", manifests, err)
+	}
+}
+
+func TestPlatformManifestsRejectBadIndex(t *testing.T) {
+	cfg, scope := imageScope(t)
+	cases := map[string]*fakeECR{
+		"not JSON":       {index: "{"},
+		"invalid digest": {index: `{"manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:abc"}]}`},
+		"other failure":  {failure: ecrtypes.ImageFailureCodeKmsError},
+	}
+	for name, fake := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := ecrClient(cfg, fake).PlatformManifests(context.Background(), scope, "shop", testDigest)
+			if apiErr, ok := apierr.As(err); !ok || apiErr.Code != api.CodeUpstreamError || strings.Contains(err.Error(), "reason") {
 				t.Errorf("error = %v", err)
 			}
 		})

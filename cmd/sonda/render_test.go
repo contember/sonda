@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -229,5 +230,66 @@ func TestRenderNodes(t *testing.T) {
 	renderWorkloads(&out, resp)
 	if !strings.Contains(out.String(), "cpu 500m/1930m mem 2048Mi/7Gi") || strings.Contains(out.String(), "PODS") {
 		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+func TestRenderImagesTellsNoScanFromNoFindings(t *testing.T) {
+	// Decoded from JSON: a clean scan arrives as "counts": {}, which must stay non-nil.
+	var resp api.Response[[]api.Image]
+	if err := json.Unmarshal([]byte(`{"data": [
+		{"repository": "shop", "digest": "sha256:a1", "tags": ["v1"], "platforms": [
+			{"digest": "sha256:b2", "platform": "linux/arm64", "scan": {"status": "COMPLETE", "counts": {}}}]},
+		{"repository": "shop", "digest": "sha256:c3", "tags": []},
+		{"repository": "shop", "digest": "sha256:d4", "tags": ["v0"], "scan": {"status": "COMPLETE", "counts": {"HIGH": 2, "CRITICAL": 1}}},
+		{"repository": "shop", "digest": "sha256:e5", "tags": [], "scan": {"status": "FAILED"}},
+		{"repository": "shop", "digest": "sha256:f6", "tags": ["v2"], "platforms": []}
+	], "meta": {"service": "web", "environment": "production"}}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"# web/production now",
+		"  shop  sha256:a1  v1  -  linux/arm64: complete 0 findings",
+		"  shop  sha256:c3  -   -  not scanned",
+		"  shop  sha256:d4  v0  -  complete critical=1 high=2",
+		"  shop  sha256:e5  -   -  failed",
+		"  shop  sha256:f6  v2  -  index without image manifests",
+	}
+	var out bytes.Buffer
+	renderImages(&out, resp)
+	if got := trimLines(out.String()); !slices.Equal(got, want) {
+		t.Errorf("output:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestRenderImageOfIndex(t *testing.T) {
+	resp := api.Response[api.ImageDetail]{
+		Meta: api.Meta{Service: "web", Environment: "production"},
+		Data: api.ImageDetail{
+			Image: api.Image{Repository: "shop", Digest: "sha256:a1", Tags: []string{"v1"}, Platforms: []api.ImagePlatform{
+				{Digest: "sha256:b2", Platform: "linux/amd64", Scan: &api.ImageScan{Status: "COMPLETE", Counts: map[string]int{"HIGH": 1}}},
+				{Digest: "sha256:c3", Platform: "linux/arm64"},
+			}},
+			Findings: []api.ImageFinding{{ID: "CVE-1", Severity: "HIGH", Package: "openssl", Version: "3.1.0", Platform: "linux/amd64"}},
+		},
+	}
+	want := []string{
+		"# web/production now",
+		"shop@sha256:a1  tags=v1  pushed=-",
+		"index of 2 platform image(s), each scanned on its own:",
+		"  linux/amd64 sha256:b2  scan: complete high=1  completed=-  database=-",
+		"  linux/arm64 sha256:c3  scan: not scanned",
+		"  linux/amd64  HIGH  CVE-1  openssl  3.1.0",
+	}
+	var out bytes.Buffer
+	renderImage(&out, resp)
+	if got := trimLines(out.String()); !slices.Equal(got, want) {
+		t.Errorf("output:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// Without a scan there is no "no findings" line, which would read as a clean scan.
+	out.Reset()
+	renderImage(&out, api.Response[api.ImageDetail]{Data: api.ImageDetail{Image: api.Image{Repository: "shop", Digest: "sha256:c3"}, Findings: []api.ImageFinding{}}})
+	if strings.Contains(out.String(), "no findings") || !strings.Contains(out.String(), "scan: not scanned") {
+		t.Errorf("never scanned:\n%s", out.String())
 	}
 }
