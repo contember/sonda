@@ -36,7 +36,19 @@ type Server struct {
 
 // Admin enables the admin UI under /admin. Without it the UI is not served.
 type Admin struct {
+	// Token is the break-glass sign-in, empty when only OAuth is configured. Every use is audited.
 	Token string
+	// OAuth lets people sign in through an OAuth 2.1 authorization server; nil disables it.
+	OAuth *AdminOAuth
+}
+
+// AdminOAuth signs people in with the authorization code flow and PKCE. Sonda is a public
+// client identified by a client ID metadata document it serves under URL.
+type AdminOAuth struct {
+	// Issuer is the authorization server's issuer, which serves its RFC 8414 metadata.
+	Issuer string
+	// URL is the public URL of this Sonda, the base of its client ID, redirect URI and resource.
+	URL string
 }
 
 // Identity makes Sonda an OIDC issuer of its own workload identity at Issuer, the public

@@ -44,7 +44,13 @@ type rawServer struct {
 }
 
 type rawAdmin struct {
-	Token string `yaml:"token"`
+	Token string         `yaml:"token"`
+	OAuth *rawAdminOAuth `yaml:"oauth"`
+}
+
+type rawAdminOAuth struct {
+	Issuer string `yaml:"issuer"`
+	URL    string `yaml:"url"`
 }
 
 type rawIdentity struct {
@@ -285,11 +291,42 @@ func (v *validator) config(raw rawConfig) *Config {
 const minAdminTokenLength = 32
 
 func (v *validator) admin(raw rawAdmin) *Admin {
-	token := v.secret("admin.token", raw.Token)
-	if len(token) < minAdminTokenLength {
+	admin := &Admin{}
+	if raw.OAuth != nil {
+		admin.OAuth = &AdminOAuth{
+			Issuer: v.oauthURL("admin.oauth.issuer", raw.OAuth.Issuer),
+			URL:    v.oauthURL("admin.oauth.url", raw.OAuth.URL),
+		}
+	}
+	if raw.Token == "" && admin.OAuth != nil {
+		return admin
+	}
+	admin.Token = v.secret("admin.token", raw.Token)
+	if len(admin.Token) < minAdminTokenLength {
 		v.fail("admin.token must have at least %d characters (generate one with `openssl rand -hex 32`)", minAdminTokenLength)
 	}
-	return &Admin{Token: token}
+	return admin
+}
+
+// oauthURL checks an origin with an optional path, without a trailing slash. Plain http is
+// accepted only on loopback, for local development.
+func (v *validator) oauthURL(path, raw string) string {
+	value := strings.TrimSuffix(v.expand(path, raw), "/")
+	u, err := url.Parse(value)
+	valid := err == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" &&
+		(u.Scheme == "https" || (u.Scheme == "http" && isLoopback(u.Hostname())))
+	if !valid {
+		v.fail("%s must be an https URL (http only on localhost) without credentials, query or fragment, got %q", path, raw)
+	}
+	return value
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (v *validator) identity(raw rawIdentity) *Identity {

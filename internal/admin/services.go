@@ -111,7 +111,7 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 			UsedBy:  usedBy[name],
 		})
 	}
-	h.render(w, http.StatusOK, "services", view{Title: "Services", Lead: "What agents can be granted and where it is read from. Defined in the configuration file; read-only here.", Nav: "services", Data: page})
+	h.render(w, r, http.StatusOK, "services", view{Title: "Services", Lead: "What agents can be granted and where it is read from. Defined in the configuration file; read-only here.", Nav: "services", Data: page})
 }
 
 // bindings describes what each configured capability of an environment reads.

@@ -1,10 +1,23 @@
 {{define "content"}}
+{{if .Issuer}}
+<div class="form">
+  <a class="button" href="/admin/oauth/start" hx-boost="false">Sign in with {{.Issuer}}</a>
+  <span class="field-hint">Sonda lets you in when an administrator has linked your account to an identity.</span>
+</div>
+{{end}}
+{{if .BreakGlass}}
+{{if .Issuer}}
+<details class="break-glass">
+  <summary>Emergency access with the admin token</summary>
+{{end}}
 <form class="form" method="post" action="/admin/login">
   <label class="field">
     <span class="field-label">Admin token</span>
-    <input class="input" type="password" name="token" required autofocus autocomplete="current-password">
-    <span class="field-hint">The value of <code>admin.token</code> in the server configuration.</span>
+    <input class="input" type="password" name="token" required{{if not .Issuer}} autofocus{{end}} autocomplete="current-password">
+    <span class="field-hint">The value of <code>admin.token</code> in the server configuration. Every sign-in and every request made with it is audited as break-glass.</span>
   </label>
-  <button type="submit" class="button">Sign in</button>
+  <button type="submit" class="button{{if .Issuer}} button-secondary{{end}}">Sign in with the admin token</button>
 </form>
+{{if .Issuer}}</details>{{end}}
+{{end}}
 {{end}}

@@ -15,10 +15,13 @@ import (
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/identities"
+	"github.com/contember/sonda/internal/store"
 )
 
 type identityRow struct {
-	Name      string
+	Name string
+	// Person is set when a person signs in as the identity.
+	Person    *store.Person
 	CreatedAt time.Time
 	Grants    []grantSummary
 	Limits    []string
@@ -40,16 +43,22 @@ func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
+	people, err := h.people(r)
+	if err != nil {
+		h.serverError(w, err)
+		return
+	}
 	rows := make([]identityRow, 0, len(list))
 	for _, identity := range list {
 		rows = append(rows, identityRow{
 			Name:      identity.Name,
+			Person:    people[identity.Name],
 			CreatedAt: identity.CreatedAt,
 			Grants:    h.summarizeGrants(identity.Grants),
 			Limits:    summarizeLimits(identity.Limits),
 		})
 	}
-	h.render(w, http.StatusOK, "identities", view{Title: "Identities", Lead: "Agents and the services they may query. Changes apply to the next request.", Nav: "identities", Data: rows})
+	h.render(w, r, http.StatusOK, "identities", view{Title: "Identities", Lead: "Agents and the services they may query. Changes apply to the next request.", Nav: "identities", Data: rows})
 }
 
 // identityForm is the model of the create and edit page.
@@ -67,6 +76,10 @@ type identityForm struct {
 	Stale []string
 	// Coverage lists what each stored wildcard grant opens with the current configuration.
 	Coverage []wildcardCoverage
+	// SignIn is set when people sign in through admin.oauth and can be linked to an identity.
+	SignIn bool
+	// Person is the person linked to an existing identity, if any.
+	Person *store.Person
 }
 
 type matrixRow struct {
@@ -108,9 +121,9 @@ type limitField struct {
 	Default string
 }
 
-func (h *Handler) newIdentity(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) newIdentity(w http.ResponseWriter, r *http.Request) {
 	form := h.identityForm(true, "", nil, identities.LimitOverrides{})
-	h.render(w, http.StatusOK, "identity", view{Title: "New identity", Back: "/admin/identities", Nav: "identities", Data: form})
+	h.render(w, r, http.StatusOK, "identity", view{Title: "New identity", Back: "/admin/identities", Nav: "identities", Data: form})
 }
 
 func (h *Handler) createIdentity(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +133,7 @@ func (h *Handler) createIdentity(w http.ResponseWriter, r *http.Request) {
 		err = identities.ValidateName(name)
 	}
 	if err != nil {
-		h.renderFormError(w, h.identityForm(true, name, grants, limits), err)
+		h.renderFormError(w, r, h.identityForm(true, name, grants, limits), err)
 		return
 	}
 	token, hash := identities.NewToken()
@@ -132,7 +145,7 @@ func (h *Handler) createIdentity(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   h.now(),
 	})
 	if errors.Is(err, identities.ErrExists) {
-		h.renderFormError(w, h.identityForm(true, name, grants, limits), fmt.Errorf("identity %q already exists", name))
+		h.renderFormError(w, r, h.identityForm(true, name, grants, limits), fmt.Errorf("identity %q already exists", name))
 		return
 	}
 	if err != nil {
@@ -154,14 +167,18 @@ func (h *Handler) editIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	form := h.identityForm(false, identity.Name, identity.Grants, identity.Limits)
-	h.render(w, http.StatusOK, "identity", view{Title: identity.Name, Back: "/admin/identities", Nav: "identities", Data: form})
+	if err := h.addPerson(r, &form); err != nil {
+		h.serverError(w, err)
+		return
+	}
+	h.render(w, r, http.StatusOK, "identity", view{Title: identity.Name, Back: "/admin/identities", Nav: "identities", Data: form})
 }
 
 func (h *Handler) updateIdentity(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	grants, limits, err := h.parseIdentityForm(r)
 	if err != nil {
-		h.renderFormError(w, h.identityForm(false, name, grants, limits), err)
+		h.renderFormError(w, r, h.identityForm(false, name, grants, limits), err)
 		return
 	}
 	err = h.identities.Update(r.Context(), name, grants, limits)
@@ -219,19 +236,45 @@ func (h *Handler) renderToken(w http.ResponseWriter, r *http.Request, name, toke
 	page := tokenPage{Name: name, Token: token, URL: scheme + "://" + r.Host}
 	// Keep the form's URL; the POST-only action URL would fail on reload.
 	w.Header().Set("HX-Push-Url", "false")
-	h.render(w, http.StatusOK, "token", view{Title: "Token for " + name, Back: "/admin/identities", Nav: "identities", Data: page})
+	h.render(w, r, http.StatusOK, "token", view{Title: "Token for " + name, Back: "/admin/identities", Nav: "identities", Data: page})
 }
 
-func (h *Handler) renderFormError(w http.ResponseWriter, form identityForm, err error) {
+func (h *Handler) renderFormError(w http.ResponseWriter, r *http.Request, form identityForm, err error) {
 	title := form.Name
 	if form.IsNew {
 		title = "New identity"
+	} else if personErr := h.addPerson(r, &form); personErr != nil {
+		h.serverError(w, personErr)
+		return
 	}
-	h.render(w, http.StatusUnprocessableEntity, "identity", view{Title: title, Back: "/admin/identities", Nav: "identities", Error: err.Error(), Data: form})
+	h.render(w, r, http.StatusUnprocessableEntity, "identity", view{Title: title, Back: "/admin/identities", Nav: "identities", Error: err.Error(), Data: form})
+}
+
+// addPerson shows the identity's person link on its edit page.
+func (h *Handler) addPerson(r *http.Request, form *identityForm) error {
+	if h.signin == nil {
+		return nil
+	}
+	person, err := h.store.PersonByIdentity(r.Context(), form.Name)
+	if errors.Is(err, store.ErrPersonNotFound) {
+		return nil
+	}
+	form.Person = &person
+	return err
+}
+
+// people maps identity names to the people linked to them.
+func (h *Handler) people(r *http.Request) (map[string]*store.Person, error) {
+	list, err := h.store.People(r.Context())
+	people := map[string]*store.Person{}
+	for i := range list {
+		people[list[i].Identity] = &list[i]
+	}
+	return people, err
 }
 
 func (h *Handler) identityForm(isNew bool, name string, grants []identities.Grant, limits identities.LimitOverrides) identityForm {
-	form := identityForm{IsNew: isNew, Name: name, Limits: h.limitFields(limits)}
+	form := identityForm{IsNew: isNew, Name: name, Limits: h.limitFields(limits), SignIn: h.signin != nil}
 	for _, capability := range api.Capabilities {
 		if identities.PerService(capability) {
 			form.ServiceCapabilities = append(form.ServiceCapabilities, capability)
@@ -286,7 +329,7 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 		if !h.configured(g) {
 			form.Stale = append(form.Stale, grantName(g))
 		} else if g.HasWildcard() {
-			form.Coverage = append(form.Coverage, wildcardCoverage{Grant: grantName(g), Covers: h.coverage(g)})
+			form.Coverage = append(form.Coverage, wildcardCoverage{Grant: grantName(g), Covers: h.coverage([]identities.Grant{g})})
 		}
 	}
 	return form
@@ -315,28 +358,6 @@ func (h *Handler) matrixRow(project, env string, services []string, capabilities
 		row.Cells = append(row.Cells, cell)
 	}
 	return row
-}
-
-// coverage lists the capabilities a grant opens with the current configuration, by service
-// environment.
-func (h *Handler) coverage(g identities.Grant) []grantSummary {
-	byTarget := map[string][]string{}
-	for _, svcName := range sortedKeys(h.cfg.Services) {
-		svc := h.cfg.Services[svcName]
-		for _, envName := range sortedKeys(svc.Environments) {
-			for _, capability := range svc.Environments[envName].Capabilities() {
-				if g.Covers(svc.Project.Name, svcName, envName, capability) {
-					target := svcName + " / " + envName
-					byTarget[target] = append(byTarget[target], string(capability))
-				}
-			}
-		}
-	}
-	summary := make([]grantSummary, 0, len(byTarget))
-	for _, target := range sortedKeys(byTarget) {
-		summary = append(summary, grantSummary{Target: target, Capabilities: byTarget[target]})
-	}
-	return summary
 }
 
 // parseIdentityForm returns what it could parse also on error, so the form can be shown again.
@@ -518,7 +539,7 @@ func (h *Handler) summarizeGrants(grants []identities.Grant) []grantSummary {
 			group.Capabilities = append(group.Capabilities, string(g.Capability))
 			if g.HasWildcard() {
 				group.Wildcard = true
-				for _, c := range h.coverage(g) {
+				for _, c := range h.coverage([]identities.Grant{g}) {
 					covered[c.Target] = true
 				}
 			}
