@@ -620,8 +620,8 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   proxy: `url` is `https://<endpoint>/api/v1/namespaces/<ns>/services/<scheme>:<service>:<port>/proxy`
   and `ca_file` is the cluster CA. The cluster needs an access entry for the role, mapped to a
   Kubernetes group, and a Role that allows `get` on `services/proxy` with `resourceNames` set to
-  `<scheme>:<service>:<port>` (Prometheus also needs `create`: its client POSTs queries). The
-  same role and `auth: eks` serve a `kubernetes` source. The EKS control plane reaches pods only
+  `<scheme>:<service>:<port>` (for Prometheus too: its client retries a POST refused with 403 as
+  GET). The same role and `auth: eks` serve a `kubernetes` source. The EKS control plane reaches pods only
   on the ports the security groups on the nodes open to it (the recommended node rules of the
   `terraform-aws-eks` module open 443, 10250 and the webhook ports 4443, 6443, 8443, 9443,
   10251); a backend on another port times out.
@@ -1272,9 +1272,11 @@ Rules:
   only `services/proxy` with exact `resourceNames`. The proxy forwards every path and method the
   Role allows, so the backend's own write endpoints are reachable with `create`, and with `get`
   where the backend accepts GET for them: Loki flushes on `GET /flush` and stops its ingester on
-  `GET /ingester/shutdown`. Sonda sends only read calls; for a role that cannot do more, proxy
-  through a reverse proxy that passes GET on the query endpoints only (for Loki
-  `/loki/api/v1/query_range`, `query`, `series`, `detected_fields`).
+  `GET /ingester/shutdown`, and Prometheus with `--web.enable-lifecycle` stops on `POST /-/quit`,
+  so a Prometheus Role never gets `create`. Sonda sends only read calls; for a role that cannot do
+  more, proxy through a reverse proxy that passes GET on the query endpoints only (for Loki
+  `/loki/api/v1/query_range`, `query`, `series`, `detected_fields`; for Prometheus
+  `/api/v1/query_range`, `query`, `label/__name__/values`, `metadata`, `alerts`).
 - **AWS role.** Grant Sonda only the read-only actions of the capabilities it serves from the
   account: for logs `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`,
   `logs:ListLogGroupsForQuery`, `logs:GetLogGroupFields`, plus `kms:Decrypt` on the keys of

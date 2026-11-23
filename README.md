@@ -264,12 +264,15 @@ sources:
 - In AWS: an IAM OIDC identity provider for the issuer URL with audience `sts.amazonaws.com`, and
   a role that trusts it with conditions on `aud` (`sts.amazonaws.com`) and `sub` (`sonda`).
 - In the cluster: an access entry for the role in a Kubernetes group, and a Role in the
-  backend's namespace with `get` on `services/proxy` for `resourceNames: ["http:loki:3100"]`
-  (`get` and `create` for Prometheus).
+  backend's namespace with `get` on `services/proxy` for `resourceNames: ["http:loki:3100"]`.
+  `get` is enough for Prometheus too: its client retries a refused `POST` query as `GET`.
 - The proxy forwards every path, and Loki also answers `GET` on `/flush` and
   `/ingester/shutdown`. To keep the role read-only, put a reverse proxy in front that passes
   `GET` on `/loki/api/v1/query_range`, `query`, `series` and `detected_fields` only, and grant
-  `services/proxy` on that one instead.
+  `services/proxy` on that one instead. For Prometheus, never grant `create`: with
+  `--web.enable-lifecycle` (the Prometheus Operator sets it) it opens `POST /-/quit` and
+  `/-/reload`. A reverse proxy for it passes `GET` on `/api/v1/query_range`, `query`,
+  `label/__name__/values`, `metadata` and `alerts`.
 - On EKS the control plane reaches a pod only on the ports the node security group opens to
   it. The recommended node security group rules of the `terraform-aws-eks` module open 443,
   10250 and the webhook ports 4443, 6443, 8443, 9443 and 10251. A proxy call to a backend on
