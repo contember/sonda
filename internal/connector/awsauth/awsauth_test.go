@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -250,14 +251,31 @@ func TestEKSTokenSignedWithCredentialsRefreshedBeforeExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, settings := range []*config.AWSSource{
-		{Region: "eu-west-1", Credentials: config.AWSIdentity, RoleARN: "arn:aws:iam::123456789012:role/sonda"},
-		{Region: "eu-west-1", Credentials: config.AWSDefaultChain, RoleARN: "arn:aws:iam::123456789012:role/sonda"},
+	sourceKeys := func(t *testing.T) {
+		t.Setenv("AWS_ACCESS_KEY_ID", "AKIDSOURCE")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+	}
+	for _, tc := range []struct {
+		name     string
+		settings *config.AWSSource
+		env      func(t *testing.T)
+	}{
+		{"identity", &config.AWSSource{Region: "eu-west-1", Credentials: config.AWSIdentity, RoleARN: "arn:aws:iam::123456789012:role/sonda"}, sourceKeys},
+		{"default with role", &config.AWSSource{Region: "eu-west-1", Credentials: config.AWSDefaultChain, RoleARN: "arn:aws:iam::123456789012:role/sonda"}, sourceKeys},
+		// The default chain's own cache, here with web identity credentials from the environment.
+		{"default chain", &config.AWSSource{Region: "eu-west-1", Credentials: config.AWSDefaultChain}, func(t *testing.T) {
+			tokenFile := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenFile, []byte("web-identity-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+			t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/sonda")
+		}},
 	} {
-		t.Run(string(settings.Credentials), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			isolateAWSEnvironment(t)
-			t.Setenv("AWS_ACCESS_KEY_ID", "AKIDSOURCE")
-			t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+			tc.env(t)
+			settings := tc.settings
 			// Credentials that expire within the EKS token lifetime are near expiry.
 			sts, calls := fakeSTS(t, 14*time.Minute)
 			t.Setenv("AWS_ENDPOINT_URL_STS", sts.URL)

@@ -616,8 +616,10 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 - `auth: eks` sends `k8s-aws-v1.` + a presigned STS `GetCallerIdentity` URL with the signed
   header `x-k8s-aws-id: <cluster>`, as `aws eks get-token` does. EKS accepts it for 15 minutes
   after signing, while the credentials that signed it are valid. Sonda reuses it for 10 minutes,
-  never past a minute before those credentials expire, and refreshes role credentials 15 minutes
-  before they expire.
+  never past a minute before those credentials expire. Every aws source refreshes its cached
+  credentials 15 minutes before they expire, so credentials that last 15 minutes or less (a
+  `credential_process` or `duration_seconds` that short) are fetched again for every request,
+  and a refresh that fails in that window fails the request.
 - A Loki, Prometheus or Tempo inside the cluster is reached through the API server's service
   proxy: `url` is `https://<endpoint>/api/v1/namespaces/<ns>/services/<scheme>:<service>:<port>/proxy`
   and `ca_file` is the cluster CA. The cluster needs an access entry for the role, mapped to a

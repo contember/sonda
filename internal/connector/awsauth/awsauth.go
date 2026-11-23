@@ -22,8 +22,9 @@ import (
 const (
 	roleSessionName = "sonda"
 	stsAudience     = "sts.amazonaws.com"
-	// Credentials are refreshed this long before they expire, so an EKS token signed with
-	// them stays valid for its whole lifetime (15 minutes).
+	// Cached credentials are refreshed this long before they expire, so an EKS token signed
+	// with them stays valid for its whole lifetime (15 minutes). Credentials that last no
+	// longer than this are fetched again for every request.
 	credentialsExpiryWindow = 15 * time.Minute
 )
 
@@ -127,6 +128,7 @@ func (t *EKSTokens) Token(ctx context.Context) (string, error) {
 	}
 	t.token = eksTokenPrefix + base64.RawURLEncoding.EncodeToString([]byte(req.URL))
 	t.reuseUntil = now.Add(eksTokenReuse)
+	// Close to expiry, each call re-signs (locally) until the cache refreshes the credentials.
 	if expiry := creds.Expires.Add(-eksCredentialsMargin); creds.CanExpire && expiry.Before(t.reuseUntil) {
 		t.reuseUntil = expiry
 	}
