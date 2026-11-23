@@ -41,6 +41,12 @@ var (
 	// imageMediaTypes are the manifests of one image, which the registry scans.
 	imageMediaTypes = []string{"application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"}
 	digestFormat    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	// artifactKinds name the manifests buildx pushes next to images, by their artifact media
+	// type; they are not container images, and ECR fails their scans as unsupported.
+	artifactKinds = map[string]string{
+		"application/vnd.docker.attestation.manifest.v1+json": "attestation",
+		"application/vnd.buildkit.cacheconfig.v0":             "build-cache",
+	}
 	// platformPart bounds the os, architecture and variant the pusher wrote, e.g. linux, arm64, v8.
 	platformPart = regexp.MustCompile(`^[a-z0-9._-]{1,32}$`)
 )
@@ -119,6 +125,12 @@ func (c *Client) Images(ctx context.Context, scope authz.ImageScope, repository 
 		}
 		next = out.NextToken
 	}
+}
+
+// ArtifactKind returns "attestation" (buildx provenance and SBOM of an image) or "build-cache" (a
+// buildx cache export) for a manifest that is not a container image, and "" otherwise.
+func ArtifactKind(image ecrtypes.ImageDetail) string {
+	return artifactKinds[sdkaws.ToString(image.ArtifactMediaType)]
 }
 
 // PlatformManifests reads the index with digest and returns the image manifests it lists, up

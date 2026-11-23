@@ -1,1 +1,0 @@
-{"imageId":{"imageDigest":"sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"},"imageScanStatus":{"description":"UnsupportedImageError: The image media type application/vnd.docker.attestation.manifest.v1+json is not supported.","status":"FAILED"},"registryId":"123456789012","repositoryName":"shop"}

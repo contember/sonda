@@ -242,17 +242,21 @@ func TestRenderImagesTellsNoScanFromNoFindings(t *testing.T) {
 		{"repository": "shop", "digest": "sha256:c3", "tags": []},
 		{"repository": "shop", "digest": "sha256:d4", "tags": ["v0"], "scan": {"status": "COMPLETE", "counts": {"HIGH": 2, "CRITICAL": 1}}},
 		{"repository": "shop", "digest": "sha256:e5", "tags": [], "scan": {"status": "FAILED"}},
-		{"repository": "shop", "digest": "sha256:f6", "tags": ["v2"], "platforms": []}
+		{"repository": "shop", "digest": "sha256:f6", "tags": ["v2"], "platforms": []},
+		{"repository": "shop", "digest": "sha256:g7", "tags": [], "artifact": "attestation"},
+		{"repository": "shop", "digest": "sha256:h8", "tags": ["buildcache"], "artifact": "build-cache"}
 	], "meta": {"service": "web", "environment": "production"}}`), &resp); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"# web/production now",
-		"  shop  sha256:a1  v1  -  linux/arm64: complete 0 findings",
-		"  shop  sha256:c3  -   -  not scanned",
-		"  shop  sha256:d4  v0  -  complete critical=1 high=2",
-		"  shop  sha256:e5  -   -  failed",
-		"  shop  sha256:f6  v2  -  index without image manifests",
+		"  shop  sha256:a1  v1          -  linux/arm64: complete 0 findings",
+		"  shop  sha256:c3  -           -  not scanned",
+		"  shop  sha256:d4  v0          -  complete critical=1 high=2",
+		"  shop  sha256:e5  -           -  failed",
+		"  shop  sha256:f6  v2          -  index without image manifests",
+		"  shop  sha256:g7  -           -  attestation (not an image)",
+		"  shop  sha256:h8  buildcache  -  build-cache (not an image)",
 	}
 	var out bytes.Buffer
 	renderImages(&out, resp)
@@ -291,5 +295,11 @@ func TestRenderImageOfIndex(t *testing.T) {
 	renderImage(&out, api.Response[api.ImageDetail]{Data: api.ImageDetail{Image: api.Image{Repository: "shop", Digest: "sha256:c3"}, Findings: []api.ImageFinding{}}})
 	if strings.Contains(out.String(), "no findings") || !strings.Contains(out.String(), "scan: not scanned") {
 		t.Errorf("never scanned:\n%s", out.String())
+	}
+
+	out.Reset()
+	renderImage(&out, api.Response[api.ImageDetail]{Data: api.ImageDetail{Image: api.Image{Repository: "shop", Digest: "sha256:g7", Artifact: "attestation"}, Findings: []api.ImageFinding{}}})
+	if got := out.String(); !strings.Contains(got, "scan: none, attestation (not an image)") || strings.Contains(got, "no findings") {
+		t.Errorf("attestation:\n%s", got)
 	}
 }

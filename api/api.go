@@ -758,6 +758,9 @@ type Image struct {
 	// LastPulled is the registry's record of the last pull; it lags by up to a day. For an
 	// index it may record Sonda's own reads of the index manifest.
 	LastPulled *time.Time `json:"lastPulled,omitempty"`
+	// Artifact marks a manifest that is not a container image and so has no scan: "attestation"
+	// (buildx provenance or SBOM of an image) or "build-cache" (a buildx cache export).
+	Artifact string `json:"artifact,omitempty"`
 	// Scan is the latest scan of this manifest, absent when the registry has none. An index (a
 	// multi-platform image, or one pushed with attestations) is never scanned itself: Platforms
 	// carry the scans of the image manifests it lists.

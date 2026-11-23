@@ -191,11 +191,13 @@ const (
 	indexDigest       = "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
 	platformDigest    = "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
 	attestationDigest = "sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+	buildCacheDigest  = "sha256:d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
 )
 
 // recordedIndexRegistry replays responses recorded from ECR for an image buildx pushed with
 // attestations: an OCI index listing one linux/arm64 image manifest, scanned on push with no
-// findings, and an attestation manifest, whose scan failed as unsupported. The index has no scan.
+// findings, an attestation manifest, and the build cache buildx exported to the same repository.
+// The index has no scan; ECR fails the scans of the attestation and the cache as unsupported.
 func recordedIndexRegistry(t *testing.T) (*httptest.Server, *[]string) {
 	t.Helper()
 	fixture := func(name string) []byte {
@@ -261,9 +263,8 @@ func recordedIndexRegistry(t *testing.T) (*httptest.Server, *[]string) {
 			case platformDigest:
 				w.Write(fixture("scan-findings-platform.json"))
 				return
-			case attestationDigest:
-				w.Write(fixture("scan-failed-attestation.json"))
-				return
+			case attestationDigest, buildCacheDigest:
+				t.Errorf("scan of %s, which is not an image", in.ImageID.ImageDigest)
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write(fixture("scan-not-found.json"))
@@ -286,7 +287,7 @@ func TestImagesResolveIndexToPlatformScans(t *testing.T) {
 	for _, image := range resp.Data {
 		byDigest[image.Digest] = image
 	}
-	if len(byDigest) != 3 || resp.Data[0].Digest != indexDigest {
+	if len(byDigest) != 4 || resp.Data[0].Digest != indexDigest {
 		t.Fatalf("images = %+v", resp.Data)
 	}
 
@@ -305,16 +306,22 @@ func TestImagesResolveIndexToPlatformScans(t *testing.T) {
 	if scan := byDigest[platformDigest].Scan; scan == nil || scan.Status != "COMPLETE" || scan.Counts == nil {
 		t.Errorf("platform manifest listed on its own: scan = %+v", scan)
 	}
-	// A failed scan has no result, so no counts: neither "0 findings" nor "not scanned".
-	if attestation := byDigest[attestationDigest]; attestation.Scan == nil || attestation.Scan.Status != "FAILED" || attestation.Scan.Counts != nil || attestation.Platforms != nil {
+	// Manifests that are not images are labelled, not shown as failed scans.
+	if attestation := byDigest[attestationDigest]; attestation.Artifact != "attestation" || attestation.Scan != nil || attestation.Platforms != nil {
 		t.Errorf("attestation = %+v", attestation)
+	}
+	if cache := byDigest[buildCacheDigest]; cache.Artifact != "build-cache" || cache.Scan != nil || cache.Tags[0] != "buildcache" {
+		t.Errorf("build cache = %+v", cache)
+	}
+	if index.Artifact != "" || byDigest[platformDigest].Artifact != "" {
+		t.Errorf("images labelled as artifacts: %+v", resp.Data)
 	}
 	wire, err := json.Marshal(resp.Data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := string(wire); strings.Count(got, `"counts":{}`) != 2 || strings.Contains(got, `"counts":null`) {
-		t.Errorf("JSON = %s, want counts {} for the two clean scans and none for the failed one", got)
+		t.Errorf("JSON = %s, want counts {} for the two clean scans and no other counts", got)
 	}
 }
 
@@ -335,6 +342,21 @@ func TestImageDetailOfIndex(t *testing.T) {
 	// The index itself is never asked for a scan, and the attestation manifest is not read.
 	want := []string{"DescribeImages " + indexDigest, "BatchGetImage " + indexDigest, "DescribeImageScanFindings " + platformDigest}
 	if !slices.Equal(*calls, want) {
+		t.Errorf("calls = %v, want %v", *calls, want)
+	}
+}
+
+func TestImageDetailOfAttestation(t *testing.T) {
+	server, calls := recordedIndexRegistry(t)
+	s, identity := registryServiceFor(t, server)
+	resp, err := s.Image(context.Background(), identity, "web", attestationDigest, api.ImagesRequest{Repository: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail := resp.Data; detail.Artifact != "attestation" || detail.Scan != nil || detail.Findings == nil || len(detail.Findings) != 0 {
+		t.Errorf("detail = %+v", detail)
+	}
+	if want := []string{"DescribeImages " + attestationDigest}; !slices.Equal(*calls, want) {
 		t.Errorf("calls = %v, want %v", *calls, want)
 	}
 }
