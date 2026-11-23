@@ -1,0 +1,32 @@
+{{define "content"}}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Identity <code>{{.Identity}}</code></h2>
+    {{if .Admin}}<span class="pill pill-info">administrator</span>{{end}}
+  </div>
+  <div class="card-body">
+    <div class="stack">
+    {{range .Grants}}
+      <div><span class="muted nowrap">{{.Target}}</span> <span class="pills pills-inline">{{range .Capabilities}}<span class="pill pill-accent">{{.}}</span>{{end}}</span></div>
+    {{else}}<span class="subtle">No grants.</span>{{end}}
+    </div>
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title">What you may query today</h2></div>
+  {{if .Access}}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Service / environment</th><th>Capabilities</th></tr></thead>
+    <tbody>
+    {{range .Access}}
+      <tr><td class="nowrap">{{.Target}}</td><td><span class="pills">{{range .Capabilities}}<span class="pill pill-accent">{{.}}</span>{{end}}</span></td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}
+  <div class="card-body"><p class="muted">Your grants open nothing in the current configuration.</p></div>
+  {{end}}
+</section>
+{{end}}

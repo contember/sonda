@@ -76,6 +76,29 @@ CREATE TABLE IF NOT EXISTS identity_wildcard_grants (
 	PRIMARY KEY (identity, project, environment, capability)
 );
 
+-- People who sign in to the admin UI through admin.oauth, each as one identity. A person is
+-- matched by the issuer and the subject of their access token, never by a name or an address.
+CREATE TABLE IF NOT EXISTS identity_people (
+	identity   TEXT PRIMARY KEY REFERENCES identities (name) ON DELETE CASCADE,
+	issuer     TEXT NOT NULL,
+	subject    TEXT NOT NULL,
+	admin      INTEGER NOT NULL,
+	created_at INTEGER NOT NULL,
+	UNIQUE (issuer, subject)
+);
+
+-- Admin UI sessions, stored by the SHA-256 of the cookie value.
+CREATE TABLE IF NOT EXISTS admin_sessions (
+	id_sha256  BLOB PRIMARY KEY,
+	kind       TEXT NOT NULL,
+	issuer     TEXT NOT NULL,
+	subject    TEXT NOT NULL,
+	label      TEXT NOT NULL,
+	credential BLOB NOT NULL,
+	expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS admin_sessions_expires_at ON admin_sessions (expires_at);
+
 CREATE TABLE IF NOT EXISTS signing_keys (
 	id          TEXT PRIMARY KEY,
 	private_key BLOB NOT NULL,

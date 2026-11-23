@@ -208,7 +208,7 @@ func TestCreateRotateAndDeleteIdentity(t *testing.T) {
 		t.Error("token works after delete")
 	}
 
-	records, err := env.store.ListAudit(ctx, store.AuditFilter{Identity: auditIdentity, Limit: 10})
+	records, err := env.store.ListAudit(ctx, store.AuditFilter{Identity: breakGlassIdentity, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestRotateSigningKey(t *testing.T) {
 		t.Errorf("keys after removal = %v, want [%s]", ids, added)
 	}
 
-	records, err := env.store.ListAudit(context.Background(), store.AuditFilter{Identity: auditIdentity, Limit: 1})
+	records, err := env.store.ListAudit(context.Background(), store.AuditFilter{Identity: breakGlassIdentity, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

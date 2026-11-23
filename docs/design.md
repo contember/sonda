@@ -287,6 +287,7 @@ internal/audit     per-request record of service, environment and upstream queri
 internal/store     SQLite or Postgres: identities (implements identities.Store), audit log, result handles, signing keys
 internal/httpapi   routing, authentication, rate and concurrency limits, audit, JSON encoding
 internal/admin     admin UI: sign-in, identity management, audit log viewer, signing keys
+internal/signin    OAuth 2.1 client for people signing in to the admin UI: PKCE, token verification
 ```
 
 Boundaries:
@@ -1219,9 +1220,13 @@ sonda data query shop-api '{ listOrder(limit: 5, filter: {status: {eq: failed}})
 
 ## 11. Admin UI
 
-Served under `/admin` only when `admin.token` is set. Pages:
+Served under `/admin` only when `admin.token` or `admin.oauth` is set. Pages:
 
-- **Identities**: list, create, edit grants and limit overrides, rotate the token, delete.
+- **My access**: what a signed-in person's identity may query: its grants and the service
+  environments they open today. The only page for a person who is not an administrator.
+
+- **Identities**: list, create, edit grants and limit overrides, rotate the token, delete; with
+  `admin.oauth`, link a person's subject to the identity and mark them an administrator.
   Grants are a matrix of project environments × capabilities, with the services each row
   covers; a cell no service of the project configures cannot be selected. Wildcard rows
   (`project / *`, `* / environment`, `* / *`) and a `*` capability column can always be
@@ -1241,13 +1246,34 @@ tables, pills; light and dark by `prefers-color-scheme`. One stylesheet, no buil
 
 Rules:
 
-- Sign-in takes the admin token. The session cookie holds its expiry (12 h) signed with
-  HMAC-SHA256 keyed by the admin token. No server-side session state; changing the token ends
-  all sessions.
-- Cookie: `HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` behind HTTPS.
-  `http.CrossOriginProtection` rejects cross-origin form posts.
-- Every state-changing admin request, including failed sign-ins, is written to the audit log
-  under the identity `(admin)`. Identity names cannot contain parentheses.
+- People sign in with `admin.oauth` (`internal/signin`): the authorization code flow with PKCE
+  (S256) and an RFC 8707 resource `<url>/admin`, against the RFC 8414 metadata of the issuer.
+  Sonda is a public client; its client ID is the URL of the client ID metadata document it serves.
+  The callback checks the state against a `SameSite=Lax` cookie of the attempt (10 min), the
+  RFC 9207 `iss` parameter, and verifies the access token as an RFC 9068 JWT: ES256 with a key
+  from the issuer's JWKS (refetched hourly and on an unknown `kid`, at most every 30 s), `typ`
+  `at+jwt`, `iss`, `aud` containing the resource, `client_id`, `exp` with 30 s of skew, and
+  `ptype` `user`. Nothing from the token but `sub` and the display `label` is used.
+- A person is matched by (issuer, `sub`) in `identity_people`, linked by an administrator; no
+  name or email matching and no automatic grant. An unknown subject is refused and shown on the
+  refusal page. The link's `admin` flag, set only in Sonda, opens the pages that manage Sonda;
+  without it a person sees only My access. The authorization server's own permissions are not
+  read: grants stay in Sonda.
+- The admin token is the break-glass, read only from the config. Its sessions are full
+  administrators, bound to a hash of the token, so changing the token ends them.
+- Sessions are rows in `admin_sessions` keyed by the SHA-256 of a random cookie value, valid
+  1 hour. Every request re-reads a person's link, so unlinking ends their sessions; sign-out
+  deletes the row. A revocation at the authorization server takes effect at the next sign-in.
+- Cookie: `HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` behind HTTPS. The callback
+  answers with a page that navigates to `/admin/`, because a redirect that is still part of the
+  cross-site navigation would not carry a Strict cookie. `http.CrossOriginProtection` rejects
+  cross-origin form posts.
+- The audit log records every state-changing admin request under `person:<identity>`, every
+  sign-in (`person:<identity>`, `(refused) <subject>`, `(refused)` for a callback without its
+  attempt, with a server error, or with a token that fails verification), and every attempt and every request, reads included, of a break-glass session
+  under `(break-glass)`. Records written before people signed in carry `(admin)`. Identity names
+  cannot contain parentheses or `:`. Rows are written after the request; a failed write is
+  logged, as for agent requests.
 - Sources and services are read-only here. They change only in the YAML file, with a restart.
 
 ## 12. Security
@@ -1369,7 +1395,7 @@ Rules:
 - Correlation tools (`get_related_events`). The agent correlates using links, release versions,
   trace IDs and timestamps.
 - General query-result cache shared across identities.
-- Multi-workspace, SSO/OIDC for the admin UI, a token management API.
+- Multi-workspace, a token management API.
 - Editing sources, projects and services at runtime.
 - Identity stores other than SQLite and Postgres (the `identities.Store` interface allows adding them).
 - Automated rotation of the signing key of Sonda's identity (the admin UI rotates it by hand).

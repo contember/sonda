@@ -19,7 +19,7 @@ func (h *Handler) renderSigningKeys(w http.ResponseWriter, r *http.Request, stat
 		h.serverError(w, err)
 		return
 	}
-	h.render(w, status, "signing-keys", view{Title: "Signing keys", Lead: signingKeysLead, Nav: "signing-keys", Error: message, Data: keys})
+	h.render(w, r, status, "signing-keys", view{Title: "Signing keys", Lead: signingKeysLead, Nav: "signing-keys", Error: message, Data: keys})
 }
 
 func (h *Handler) addSigningKey(w http.ResponseWriter, r *http.Request) {

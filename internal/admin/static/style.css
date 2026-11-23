@@ -430,3 +430,8 @@ td.env-count { vertical-align: top; border-left: 1px solid var(--border); }
 tbody tr:hover > th.env { background: var(--surface); }
 tbody:last-of-type > tr > th.env,
 tbody:last-of-type > tr > td.env-count { border-bottom: 0; }
+
+.check-field { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); }
+.signed-in-as { margin: 0 0 8px; font-size: var(--text-sm); color: var(--text-subtle); overflow-wrap: anywhere; }
+.break-glass { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.break-glass summary { cursor: pointer; font-size: var(--text-sm); color: var(--text-subtle); margin-bottom: 12px; }

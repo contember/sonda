@@ -181,7 +181,7 @@ func serve(ctx context.Context, configPath string) error {
 		}
 		handler.Handle("/admin/", adminHandler)
 	} else {
-		log.Info("admin UI disabled: admin.token is not configured")
+		log.Info("admin UI disabled: admin is not configured")
 	}
 
 	server := &http.Server{

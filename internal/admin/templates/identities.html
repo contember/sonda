@@ -9,7 +9,7 @@
   <tbody>
   {{range .}}
     <tr>
-      <td class="nowrap"><a href="/admin/identities/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+      <td class="nowrap"><a href="/admin/identities/{{.Name}}"><strong>{{.Name}}</strong></a>{{with .Person}} <span class="pill {{if .Admin}}pill-info{{else}}pill-success{{end}}">{{if .Admin}}person, admin{{else}}person{{end}}</span>{{end}}</td>
       <td>
         <div class="stack">
         {{range .Grants}}

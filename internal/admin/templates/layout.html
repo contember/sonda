@@ -13,16 +13,23 @@
 {{if .Nav}}
 <div class="shell">
   <aside class="sidebar">
-    <a class="brand" href="/admin/identities"><span class="brand-mark" aria-hidden="true">S</span>Sonda</a>
+    <a class="brand" href="/admin/"><span class="brand-mark" aria-hidden="true">S</span>Sonda</a>
     <nav aria-label="Main">
       <ul class="nav">
+        {{if .Admin}}
         <li><a href="/admin/identities"{{if eq .Nav "identities"}} aria-current="page"{{end}}>Identities</a></li>
         <li><a href="/admin/services"{{if eq .Nav "services"}} aria-current="page"{{end}}>Services</a></li>
         <li><a href="/admin/audit"{{if eq .Nav "audit"}} aria-current="page"{{end}}>Audit log</a></li>
+        {{else}}
+        <li><a href="/admin/me"{{if eq .Nav "me"}} aria-current="page"{{end}}>My access</a></li>
+        {{end}}
         {{if .SigningKeys}}<li><a href="/admin/signing-keys"{{if eq .Nav "signing-keys"}} aria-current="page"{{end}}>Signing keys</a></li>{{end}}
       </ul>
     </nav>
-    <form class="sidebar-footer" method="post" action="/admin/logout"><button type="submit" class="button button-ghost button-sm">Sign out</button></form>
+    <form class="sidebar-footer" method="post" action="/admin/logout">
+      {{if .SignedInAs}}<p class="signed-in-as">Signed in as {{.SignedInAs}}</p>{{end}}
+      <button type="submit" class="button button-ghost button-sm">Sign out</button>
+    </form>
   </aside>
   <main class="main">
     <header class="page-header">

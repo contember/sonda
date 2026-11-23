@@ -167,7 +167,8 @@ parts that matter for security:
   roles; the Security section of `docs/design.md` lists the Cloudflare permission and the AWS
   IAM actions.
 - **Admin token** (`admin.token`) can create tokens for every project. Keep it secret and expose
-  `/admin` only on a trusted network.
+  `/admin` only on a trusted network. With `admin.oauth`, people sign in through an authorization
+  server instead, and the admin token is the break-glass: optional, and audited on every use.
 
 Sources and bindings for Cloudflare, AWS, Tempo, Kubernetes, Grafana alerting and Vercel:
 
@@ -334,7 +335,45 @@ every kind go with it.
 
 ## Admin UI
 
-Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served.
+Set `admin.token`, `admin.oauth` or both to enable the UI at `/admin`. Without them, the UI is not
+served.
+
+### Signing in
+
+- **People** sign in through an OAuth 2.1 authorization server (`admin.oauth`): authorization
+  code flow with PKCE, for the resource `<url>/admin` (RFC 8707). Sonda verifies the access token
+  as an RFC 9068 JWT (`typ: at+jwt`, ES256) against the server's JWKS: issuer, audience, its own
+  client ID, expiry, and a `ptype` of `user`. Sonda is a public client whose client ID is the URL
+  of a client ID metadata document it serves at `<url>/admin/oauth/client`, with the redirect URI
+  `<url>/admin/oauth/callback`. Register both, and the resource, at the authorization server.
+- **Matching.** A person is matched by the issuer and the `sub` of the token, never by a name or
+  an email address. An administrator links that subject to an identity on the identity's page;
+  signing in grants nothing. An unknown subject is refused, and the refusal page shows the
+  subject, so the person can hand it to an administrator.
+- **What a person sees.** A linked person sees *My access*: their identity's grants and the
+  service environments those open today. Only a person whose link is marked *Administrator*
+  manages identities, grants and signing keys and reads the audit log.
+- **Sessions** last 1 hour and are stored server-side. Sign-out deletes the session. Unlinking a
+  person or deleting their identity ends their sessions at once. Revoking the person at the
+  authorization server takes effect at their next sign-in.
+- **Break-glass.** `admin.token` still signs in, as a full administrator. Every attempt and every
+  request of such a session, reads included, is in the audit log as `(break-glass)`. Changing the
+  token ends those sessions. Bootstrap the first administrator with it: sign in with the token,
+  link your subject, then sign in through the authorization server. Without `admin.token`, nobody
+  can link the first administrator on an empty database.
+- `admin.oauth.url` is an origin without a path: the UI and its cookies live at `/admin`.
+- The audit log is written after each request, as for agent requests; a failed write is logged,
+  not retried.
+
+```yaml
+admin:
+  token: "${SONDA_ADMIN_TOKEN}"            # break-glass; optional with oauth
+  oauth:
+    issuer: https://iam.example.com        # serves /.well-known/oauth-authorization-server
+    url: https://sonda.example.com         # this Sonda's public URL
+```
+
+### Pages
 
 - **Identities**: create an identity, select its grants in a project environment × capability matrix,
   including wildcard rows (`project / *`, `* / environment`, `* / *`) and a `*` capability column,
@@ -343,7 +382,8 @@ Set `admin.token` to enable the UI at `/admin`. Without it, the UI is not served
   A token is shown once; Sonda stores only its SHA-256.
 - **Services**: a read-only view of the configuration: projects, their services and
   environments, what each capability reads, and the sources. It shows no credentials.
-- **Audit log**: every agent request and every admin action, filterable by identity.
+- **Audit log**: every agent request, every admin action and sign-in, filterable by identity.
+  A person's actions appear as `person:<identity>`, refused sign-ins as `(refused) <subject>`.
 - **Signing keys** (with `identity.issuer`): rotate the key of Sonda's own identity. Add a key,
   wait 5 minutes for cached copies of the JWKS, restart every replica so it signs with the new
   key, then remove the old one.

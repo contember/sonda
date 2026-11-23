@@ -13,7 +13,16 @@ server:
 # Enables the admin UI at /admin, where agent identities and their tokens are managed.
 # Generate the token with: openssl rand -hex 32
 admin:
+  # Break-glass sign-in, audited on every use. Optional when oauth is set, but needed to link
+  # the first administrator.
   token: "${SONDA_ADMIN_TOKEN}"
+  # Optional. People sign in through an OAuth 2.1 authorization server; an administrator links
+  # each person's subject to an identity. Register the client ID <url>/admin/oauth/client, the
+  # redirect URI <url>/admin/oauth/callback and the resource <url>/admin there. url is an
+  # origin without a path.
+  # oauth:
+  #   issuer: https://iam.example.com
+  #   url: https://sonda.example.com
 
 # Optional. Makes Sonda an OIDC issuer of its own identity, so AWS (credentials: identity
 # below) trusts it without access keys. The issuer must be Sonda's public https URL.

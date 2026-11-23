@@ -37,12 +37,20 @@ func (h *Handler) auditLog(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
-	page := auditPage{Identity: filter.Identity, Identities: []string{auditIdentity}, Records: records}
+	people, err := h.store.People(r.Context())
+	if err != nil {
+		h.serverError(w, err)
+		return
+	}
+	page := auditPage{Identity: filter.Identity, Identities: []string{breakGlassIdentity, legacyAdminIdentity}, Records: records}
+	for _, person := range people {
+		page.Identities = append(page.Identities, personIdentity+person.Identity)
+	}
 	for _, identity := range list {
 		page.Identities = append(page.Identities, identity.Name)
 	}
 	if len(records) == auditPageSize {
 		page.OlderID = records[len(records)-1].ID
 	}
-	h.render(w, http.StatusOK, "audit", view{Title: "Audit log", Lead: "Every agent request and admin action, newest first.", Nav: "audit", Data: page})
+	h.render(w, r, http.StatusOK, "audit", view{Title: "Audit log", Lead: "Every agent request, admin action and sign-in, and every request made with the break-glass admin token, newest first.", Nav: "audit", Data: page})
 }

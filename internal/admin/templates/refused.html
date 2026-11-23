@@ -1,0 +1,8 @@
+{{define "content"}}
+<div class="form">
+  <p>You signed in{{with .Label}} as <strong>{{.}}</strong>{{end}}, but your account is not linked to a Sonda identity.</p>
+  <p class="muted">Ask a Sonda administrator to link this subject to your identity:</p>
+  <p><code id="subject">{{.Subject}}</code></p>
+  <a class="button button-secondary" href="/admin/login">Back to sign in</a>
+</div>
+{{end}}

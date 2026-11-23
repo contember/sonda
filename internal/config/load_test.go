@@ -319,6 +319,41 @@ func TestWarnsAboutCredentialsInFile(t *testing.T) {
 	}
 }
 
+func TestParseAdminOAuth(t *testing.T) {
+	oauthOnly := strings.Replace(validConfig, `  token: "${ADMIN_TOKEN}"`, "  oauth:\n    issuer: https://iam.example.com/\n    url: https://sonda.example.com", 1)
+	cfg, err := Parse([]byte(oauthOnly), env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Admin.Token != "" || *cfg.Admin.OAuth != (AdminOAuth{Issuer: "https://iam.example.com", URL: "https://sonda.example.com"}) {
+		t.Errorf("admin = %+v, oauth %+v", cfg.Admin, cfg.Admin.OAuth)
+	}
+
+	both := strings.Replace(validConfig, `  token: "${ADMIN_TOKEN}"`, "  token: \"${ADMIN_TOKEN}\"\n  oauth: { issuer: \"http://localhost:8787\", url: \"http://127.0.0.1:8080\" }", 1)
+	if cfg, err := Parse([]byte(both), env(validEnv())); err != nil || cfg.Admin.Token == "" || cfg.Admin.OAuth == nil {
+		t.Errorf("token and loopback oauth: %v", err)
+	}
+
+	for name, oauth := range map[string]string{
+		"plain http":     "{ issuer: \"http://iam.example.com\", url: \"https://sonda.example.com\" }",
+		"no url":         "{ issuer: \"https://iam.example.com\" }",
+		"query":          "{ issuer: \"https://iam.example.com?tenant=a\", url: \"https://sonda.example.com\" }",
+		"credentials":    "{ issuer: \"https://iam.example.com\", url: \"https://user:pw@sonda.example.com\" }",
+		"url with path":  "{ issuer: \"https://iam.example.com\", url: \"https://example.com/sonda\" }",
+		"no token, none": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := strings.Replace(validConfig, `  token: "${ADMIN_TOKEN}"`, "  oauth: "+oauth, 1)
+			if oauth == "" {
+				input = strings.Replace(validConfig, `  token: "${ADMIN_TOKEN}"`, "  token: \"\"", 1)
+			}
+			if _, err := Parse([]byte(input), env(validEnv())); err == nil {
+				t.Error("accepted")
+			}
+		})
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name    string
