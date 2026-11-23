@@ -310,7 +310,7 @@ func TestImagesResolveIndexToPlatformScans(t *testing.T) {
 	if attestation := byDigest[attestationDigest]; attestation.Artifact != "attestation" || attestation.Scan != nil || attestation.Platforms != nil {
 		t.Errorf("attestation = %+v", attestation)
 	}
-	if cache := byDigest[buildCacheDigest]; cache.Artifact != "build-cache" || cache.Scan != nil || cache.Tags[0] != "buildcache" {
+	if cache := byDigest[buildCacheDigest]; cache.Artifact != "build-cache" || cache.Scan != nil || !slices.Equal(cache.Tags, []string{"buildcache"}) {
 		t.Errorf("build cache = %+v", cache)
 	}
 	if index.Artifact != "" || byDigest[platformDigest].Artifact != "" {
@@ -322,6 +322,9 @@ func TestImagesResolveIndexToPlatformScans(t *testing.T) {
 	}
 	if got := string(wire); strings.Count(got, `"counts":{}`) != 2 || strings.Contains(got, `"counts":null`) {
 		t.Errorf("JSON = %s, want counts {} for the two clean scans and no other counts", got)
+	}
+	if got := string(wire); !strings.Contains(got, `"artifact":"attestation"`) || !strings.Contains(got, `"artifact":"build-cache"`) {
+		t.Errorf("JSON = %s, want the artifact labels", got)
 	}
 }
 
