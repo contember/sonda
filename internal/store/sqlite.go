@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS identity_service_grants (
 	PRIMARY KEY (identity, service, environment, capability)
 );
 
+-- Project grants with a wildcard (*) in the project, environment or capability. A separate
+-- table, so an older Sonda ignores them instead of failing on the * capability.
+CREATE TABLE IF NOT EXISTS identity_wildcard_grants (
+	identity    TEXT NOT NULL REFERENCES identities (name) ON DELETE CASCADE,
+	project     TEXT NOT NULL,
+	environment TEXT NOT NULL,
+	capability  TEXT NOT NULL,
+	PRIMARY KEY (identity, project, environment, capability)
+);
+
 CREATE TABLE IF NOT EXISTS signing_keys (
 	id          TEXT PRIMARY KEY,
 	private_key BLOB NOT NULL,

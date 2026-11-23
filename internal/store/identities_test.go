@@ -22,6 +22,8 @@ func TestRefusesGrantsOfTheWrongKind(t *testing.T) {
 			{Project: "api", Environment: "production", Capability: api.CapabilityData},
 			{Service: "api", Environment: "production", Capability: api.CapabilityLogs},
 			{Project: "api", Service: "api", Environment: "production", Capability: api.CapabilityData},
+			{Service: "*", Environment: "production", Capability: api.CapabilityData},
+			{Service: "api", Environment: "*", Capability: api.CapabilityData},
 		} {
 			id := identities.Identity{Name: "agent", TokenSHA256: sha256.Sum256([]byte("one")), Grants: []identities.Grant{g}}
 			if err := st.Create(context.Background(), id); err == nil {
@@ -72,9 +74,11 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 		t.Errorf("duplicate token: %v", err)
 	}
 
-	// Update replaces the grants of both kinds.
+	// Update replaces the grants of every kind. A wildcard sorts before names.
 	newGrants := []identities.Grant{
 		{Service: "billing-db", Environment: "staging", Capability: api.CapabilityData},
+		{Project: identities.Wildcard, Environment: "production", Capability: api.CapabilityMetrics},
+		{Project: "billing", Environment: identities.Wildcard, Capability: identities.AnyCapability},
 		{Project: "billing", Environment: "staging", Capability: api.CapabilityMetrics},
 	}
 	if err := st.Update(ctx, "agent", newGrants, identities.LimitOverrides{}); err != nil {
@@ -86,6 +90,17 @@ func testIdentityLifecycle(t *testing.T, st *Store) {
 	}
 	if !reflect.DeepEqual(updated.Grants, newGrants) || updated.Limits != (identities.LimitOverrides{}) {
 		t.Errorf("after update: grants %+v, limits %+v", updated.Grants, updated.Limits)
+	}
+	// Wildcard grants live in their own table, which an older Sonda does not read.
+	var exact, wildcard int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identity_grants WHERE identity = 'agent'`).Scan(&exact); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identity_wildcard_grants WHERE identity = 'agent'`).Scan(&wildcard); err != nil {
+		t.Fatal(err)
+	}
+	if exact != 1 || wildcard != 2 {
+		t.Errorf("rows: %d exact, %d wildcard; want 1 and 2", exact, wildcard)
 	}
 
 	if err := st.SetTokenHash(ctx, "agent", sha256.Sum256([]byte("two"))); err != nil {

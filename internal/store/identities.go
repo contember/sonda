@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/identities"
 )
 
@@ -94,7 +93,7 @@ func (s *Store) Update(ctx context.Context, name string, grants []identities.Gra
 		if err := requireOneRow(result, err); err != nil {
 			return err
 		}
-		for _, table := range []string{"identity_grants", "identity_service_grants"} {
+		for _, table := range []string{"identity_grants", "identity_service_grants", "identity_wildcard_grants"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE identity = $1`, name); err != nil {
 				return err
 			}
@@ -117,12 +116,14 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	return requireOneRow(result, err)
 }
 
-// grants reads project and service grants; where filters both tables the same way.
+// grants reads project, service and wildcard grants; where filters every table the same way.
 func (s *Store) grants(ctx context.Context, where string, args ...any) (map[string][]identities.Grant, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT identity, project, '' AS service, environment, capability FROM identity_grants `+where+`
 		 UNION ALL
 		 SELECT identity, '' AS project, service, environment, capability FROM identity_service_grants `+where+`
+		 UNION ALL
+		 SELECT identity, project, '' AS service, environment, capability FROM identity_wildcard_grants `+where+`
 		 ORDER BY project, service, environment, capability`, args...)
 	if err != nil {
 		return nil, err
@@ -134,7 +135,7 @@ func (s *Store) grants(ctx context.Context, where string, args ...any) (map[stri
 		if err := rows.Scan(&identity, &project, &service, &environment, &capability); err != nil {
 			return nil, err
 		}
-		parsed, err := api.ParseCapability(capability)
+		parsed, err := identities.ParseCapability(capability)
 		if err != nil {
 			return nil, fmt.Errorf("stored grant of identity %q: %w", identity, err)
 		}
@@ -146,11 +147,15 @@ func (s *Store) grants(ctx context.Context, where string, args ...any) (map[stri
 func insertGrants(ctx context.Context, tx *sql.Tx, name string, grants []identities.Grant) error {
 	for _, g := range grants {
 		if !g.Valid() {
-			return fmt.Errorf("invalid grant %+v of identity %q: a %s grant names a project or a service, not both", g, name, g.Capability)
+			return fmt.Errorf("invalid grant %+v of identity %q: a %s grant names a project or a service, not both, and a service grant takes no wildcard", g, name, g.Capability)
 		}
 		query := `INSERT INTO identity_grants (identity, project, environment, capability) VALUES ($1, $2, $3, $4)
 			 ON CONFLICT DO NOTHING`
 		target := g.Project
+		if g.HasWildcard() {
+			query = `INSERT INTO identity_wildcard_grants (identity, project, environment, capability) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`
+		}
 		if identities.PerService(g.Capability) {
 			query = `INSERT INTO identity_service_grants (identity, service, environment, capability) VALUES ($1, $2, $3, $4)
 			 ON CONFLICT DO NOTHING`
