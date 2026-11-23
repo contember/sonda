@@ -12,10 +12,12 @@ import (
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
 	"github.com/contember/sonda/internal/authz"
+	"github.com/contember/sonda/internal/connector/aws"
 )
 
 const (
@@ -25,13 +27,19 @@ const (
 	maxFindings     = 1000
 	// maxImageLookups bounds the DescribeImages calls of one digest lookup (repositories × digests).
 	maxImageLookups = 50
+	// imageReads bounds the scans of the listed images read at once.
+	imageReads = 8
 )
 
 var (
 	imageDigestFormat = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
-	imagesUntrusted   = []string{"data[].tags", "data[].scan.description"}
+	// Platforms come from the index manifest the pusher wrote.
+	imagesUntrusted = []string{"data[].tags", "data[].scan.description", "data[].platforms[].platform", "data[].platforms[].scan.description"}
 	// Package names, versions and URIs come from metadata inside the pushed image.
-	imageUntrusted = []string{"data.tags", "data.scan.description", "data.findings[].package", "data.findings[].version", "data.findings[].uri"}
+	imageUntrusted = []string{
+		"data.tags", "data.scan.description", "data.platforms[].platform", "data.platforms[].scan.description",
+		"data.findings[].package", "data.findings[].version", "data.findings[].uri", "data.findings[].platform",
+	}
 )
 
 // Images returns the images of the service's repositories with their scan summaries: those with
@@ -94,10 +102,21 @@ func (s *Service) Images(ctx context.Context, identity *authz.Identity, service 
 	sort.SliceStable(images, func(i, j int) bool {
 		return sdkaws.ToTime(images[i].ImagePushedAt).After(sdkaws.ToTime(images[j].ImagePushedAt))
 	})
-	result := make([]api.Image, 0, min(len(images), limit))
-	for _, image := range images[:min(len(images), limit)] {
-		result = append(result, shapeImage(image))
+	shown := images[:min(len(images), limit)]
+	result := make([]api.Image, len(shown))
+	cuts := make([]bool, len(shown))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(imageReads)
+	for i, image := range shown {
+		g.Go(func() (err error) {
+			result[i], cuts[i], err = scannedImage(gctx, client, scope, image)
+			return err
+		})
 	}
+	if err := g.Wait(); err != nil {
+		return api.Response[[]api.Image]{}, err
+	}
+	truncated = truncated || slices.Contains(cuts, true)
 	return api.Response[[]api.Image]{
 		Data: result,
 		Meta: api.Meta{
@@ -140,12 +159,12 @@ func (s *Service) Image(ctx context.Context, identity *authz.Identity, service, 
 		if !found {
 			continue
 		}
-		scan, cut, err := client.ScanFindings(ctx, scope, repo, digest)
+		detail, cut, err := imageFindings(ctx, client, scope, image)
 		if err != nil {
 			return api.Response[api.ImageDetail]{}, err
 		}
-		findings := shapeFindings(scan)
-		detail := api.ImageDetail{Image: shapeImage(image), Findings: findings[:min(len(findings), limit)]}
+		findings := detail.Findings
+		detail.Findings = findings[:min(len(findings), limit)]
 		return api.Response[api.ImageDetail]{
 			Data: detail,
 			Meta: api.Meta{
@@ -187,7 +206,7 @@ func shapeImage(image ecrtypes.ImageDetail) api.Image {
 		tags = []string{}
 	}
 	slices.Sort(tags)
-	result := api.Image{
+	return api.Image{
 		Repository: sdkaws.ToString(image.RepositoryName),
 		Digest:     sdkaws.ToString(image.ImageDigest),
 		Tags:       tags,
@@ -195,31 +214,93 @@ func shapeImage(image ecrtypes.ImageDetail) api.Image {
 		SizeBytes:  sdkaws.ToInt64(image.ImageSizeInBytes),
 		LastPulled: image.LastRecordedPullTime,
 	}
-	if status := image.ImageScanStatus; status != nil {
-		result.Scan = &api.ImageScan{Status: string(status.Status), Description: sdkaws.ToString(status.Description)}
-		if summary := image.ImageScanFindingsSummary; summary != nil {
-			result.Scan.CompletedAt = summary.ImageScanCompletedAt
-			result.Scan.SourceUpdatedAt = summary.VulnerabilitySourceUpdatedAt
-			if len(summary.FindingSeverityCounts) > 0 {
-				result.Scan.Counts = map[string]int{}
-				for severity, count := range summary.FindingSeverityCounts {
-					result.Scan.Counts[severity] = int(count)
-				}
-			}
+}
+
+// scannedImage shapes the image with its latest scan, or an index with the scans of its platform
+// manifests, and reports whether the index lists more platforms than were read. DescribeImages
+// leaves out the scan status under registry-level scanning, so the scan is read on its own.
+func scannedImage(ctx context.Context, client *aws.Client, scope authz.ImageScope, image ecrtypes.ImageDetail) (api.Image, bool, error) {
+	result := shapeImage(image)
+	repository := sdkaws.ToString(image.RepositoryName)
+	if !aws.IsIndex(image) {
+		scan, err := client.Scan(ctx, scope, repository, result.Digest)
+		result.Scan = shapeScan(scan)
+		return result, false, err
+	}
+	manifests, cut, err := client.PlatformManifests(ctx, scope, repository, result.Digest)
+	if err != nil {
+		return api.Image{}, false, err
+	}
+	result.Platforms = make([]api.ImagePlatform, len(manifests))
+	for i, m := range manifests {
+		scan, err := client.Scan(ctx, scope, repository, m.Digest)
+		if err != nil {
+			return api.Image{}, false, err
+		}
+		result.Platforms[i] = api.ImagePlatform{Digest: m.Digest, Platform: m.Platform, Scan: shapeScan(scan)}
+	}
+	return result, cut, nil
+}
+
+// imageFindings shapes the image with all findings of its latest scan, or of the scans of its
+// platform manifests for an index, most severe first, and reports whether any were left unread.
+func imageFindings(ctx context.Context, client *aws.Client, scope authz.ImageScope, image ecrtypes.ImageDetail) (api.ImageDetail, bool, error) {
+	detail := api.ImageDetail{Image: shapeImage(image), Findings: []api.ImageFinding{}}
+	repository := sdkaws.ToString(image.RepositoryName)
+	if !aws.IsIndex(image) {
+		scan, cut, err := client.ScanFindings(ctx, scope, repository, detail.Digest)
+		if err != nil {
+			return api.ImageDetail{}, false, err
+		}
+		detail.Scan = shapeScan(scan)
+		detail.Findings = shapeFindings(scan, "")
+		sortFindings(detail.Findings)
+		return detail, cut, nil
+	}
+	manifests, truncated, err := client.PlatformManifests(ctx, scope, repository, detail.Digest)
+	if err != nil {
+		return api.ImageDetail{}, false, err
+	}
+	detail.Platforms = make([]api.ImagePlatform, len(manifests))
+	for i, m := range manifests {
+		scan, cut, err := client.ScanFindings(ctx, scope, repository, m.Digest)
+		if err != nil {
+			return api.ImageDetail{}, false, err
+		}
+		detail.Platforms[i] = api.ImagePlatform{Digest: m.Digest, Platform: m.Platform, Scan: shapeScan(scan)}
+		detail.Findings = append(detail.Findings, shapeFindings(scan, m.Platform)...)
+		truncated = truncated || cut
+	}
+	sortFindings(detail.Findings)
+	return detail, truncated, nil
+}
+
+// shapeScan returns the status and counts of a scan, or nil for an image never scanned.
+func shapeScan(scan *ecr.DescribeImageScanFindingsOutput) *api.ImageScan {
+	if scan == nil || scan.ImageScanStatus == nil {
+		return nil
+	}
+	result := &api.ImageScan{Status: string(scan.ImageScanStatus.Status), Description: sdkaws.ToString(scan.ImageScanStatus.Description)}
+	if findings := scan.ImageScanFindings; findings != nil {
+		result.CompletedAt = findings.ImageScanCompletedAt
+		result.SourceUpdatedAt = findings.VulnerabilitySourceUpdatedAt
+		result.Counts = make(map[string]int, len(findings.FindingSeverityCounts))
+		for severity, count := range findings.FindingSeverityCounts {
+			result.Counts[severity] = int(count)
 		}
 	}
 	return result
 }
 
-// shapeFindings flattens basic and enhanced findings, one per vulnerability and package, most
-// severe first.
-func shapeFindings(scan *ecr.DescribeImageScanFindingsOutput) []api.ImageFinding {
+// shapeFindings flattens basic and enhanced findings, one per vulnerability and package, each
+// marked with platform.
+func shapeFindings(scan *ecr.DescribeImageScanFindingsOutput, platform string) []api.ImageFinding {
 	findings := []api.ImageFinding{}
 	if scan == nil || scan.ImageScanFindings == nil {
 		return findings
 	}
 	for _, f := range scan.ImageScanFindings.Findings {
-		finding := api.ImageFinding{ID: sdkaws.ToString(f.Name), Severity: string(f.Severity), URI: sdkaws.ToString(f.Uri)}
+		finding := api.ImageFinding{ID: sdkaws.ToString(f.Name), Severity: string(f.Severity), URI: sdkaws.ToString(f.Uri), Platform: platform}
 		for _, attr := range f.Attributes {
 			switch sdkaws.ToString(attr.Key) {
 			case "package_name":
@@ -234,10 +315,10 @@ func shapeFindings(scan *ecr.DescribeImageScanFindingsOutput) []api.ImageFinding
 		details := f.PackageVulnerabilityDetails
 		if details == nil {
 			// Not a package vulnerability (e.g. a code finding): keep it, so the list matches the counts.
-			findings = append(findings, api.ImageFinding{ID: sdkaws.ToString(f.Title), Severity: sdkaws.ToString(f.Severity)})
+			findings = append(findings, api.ImageFinding{ID: sdkaws.ToString(f.Title), Severity: sdkaws.ToString(f.Severity), Platform: platform})
 			continue
 		}
-		base := api.ImageFinding{ID: sdkaws.ToString(details.VulnerabilityId), Severity: sdkaws.ToString(f.Severity), URI: sdkaws.ToString(details.SourceUrl)}
+		base := api.ImageFinding{ID: sdkaws.ToString(details.VulnerabilityId), Severity: sdkaws.ToString(f.Severity), URI: sdkaws.ToString(details.SourceUrl), Platform: platform}
 		if len(details.VulnerablePackages) == 0 {
 			findings = append(findings, base)
 		}
@@ -247,6 +328,11 @@ func shapeFindings(scan *ecr.DescribeImageScanFindingsOutput) []api.ImageFinding
 			findings = append(findings, finding)
 		}
 	}
+	return findings
+}
+
+// sortFindings orders findings most severe first.
+func sortFindings(findings []api.ImageFinding) {
 	sort.SliceStable(findings, func(i, j int) bool {
 		a, b := api.SeverityRank(findings[i].Severity), api.SeverityRank(findings[j].Severity)
 		if a != b {
@@ -255,9 +341,11 @@ func shapeFindings(scan *ecr.DescribeImageScanFindingsOutput) []api.ImageFinding
 		if findings[i].ID != findings[j].ID {
 			return findings[i].ID < findings[j].ID
 		}
-		return findings[i].Package < findings[j].Package
+		if findings[i].Package != findings[j].Package {
+			return findings[i].Package < findings[j].Package
+		}
+		return findings[i].Platform < findings[j].Platform
 	})
-	return findings
 }
 
 // ecrSourceRef links to the repository in the ECR console when an image names its registry.

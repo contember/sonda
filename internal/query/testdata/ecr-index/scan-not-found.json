@@ -1,0 +1,1 @@
+{"__type":"ScanNotFoundException","message":"Image scan does not exist for the image with '{imageDigest:'sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1', imageTag:'null'}' in the repository with name 'shop' in the registry with id '123456789012'"}

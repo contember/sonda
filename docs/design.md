@@ -50,7 +50,7 @@ authorization, and returns compact, evidence-carrying responses.
 | Kubernetes objects | `GET …/workloads/objects` under `workloads`: namespace lists related to the service. Controllers whose pod template carries every scope label, and the Services, Ingress rules, NetworkPolicies, PodDisruptionBudgets and autoscalers that select those pods or route to or scale them, ConfigMap keys they reference, and the Argo CD Applications that manage the controllers | Lists by the scope's label selector only; a capability per kind | Services, policies and budgets select pods without carrying their labels, and charts label each kind differently. "What runs this service and how is it configured" is one question, so one grant. |
 | Variable and ConfigMap values | Never returned. Kubernetes env values, exec probe commands, ConfigMap data and Argo CD `spec.source` are not decoded at all; ECS task definitions are cut to names in the connector | Redaction | RBAC and IAM cannot exclude them from the objects Sonda reads, and redaction is not complete. |
 | Cluster nodes | A service bound with `nodes: true` stands for a cluster's nodes; `workloads` returns the nodes, their usage and their events | Nodes in every service's workloads | Nodes are shared by all services; a service of its own lets a grant name them per project. |
-| Images capability | A new capability `images`: the images of the service's ECR repositories with the registry's own scan, read with `DescribeImages` and `DescribeImageScanFindings` | Pulling and scanning images in Sonda; listing every repository of an account | Sonda stays read-only and stateless and needs no pull rights. Repositories are bound per service like log groups, so a grant cannot reach an image the service does not own. |
+| Images capability | A new capability `images`: the images of the service's ECR repositories with the registry's own scan, read with `DescribeImages` and `DescribeImageScanFindings`, and the manifest of an index with `BatchGetImage` | Pulling and scanning images in Sonda; listing every repository of an account | Sonda stays read-only and stateless and never downloads a layer. Repositories are bound per service like log groups, so a grant cannot reach an image the service does not own. |
 | Resources capability | A new capability `resources`: the configuration state of the managed resources a service names (RDS and Aurora, ElastiCache, ACM certificates, Lambda functions, EKS clusters) from describe calls: versions, upgrades, support dates, pending maintenance, backups, expiry | A capability per resource kind; listing every resource of an account; reading it from Terraform state | One question (what needs upgrading, renewing or attention) across kinds, so one grant. Resources are bound per service by exact identifier like log groups, so a grant cannot reach a database the service does not own. Terraform state holds secrets and lags reality. |
 | Alerts source | The Prometheus-compatible alerts API of Prometheus/Mimir (`/api/v1/alerts`) or of Grafana-managed alerting (a `grafana` source) | Alertmanager; Grafana's own alerting API | One response shape for both. Alertmanager holds only firing alerts, after grouping and silencing. |
 | Alerts scope | A Prometheus `selector` over the alert labels, applied by Sonda | Upstream filtering | The alerts API has no label filter; it returns every alert the token can read, and Sonda drops those that do not match. |
@@ -367,7 +367,7 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
 | Client | Upstream calls | Input |
 |---|---|---|
 | `cloudflare` | `POST /accounts/{account}/workers/observability/telemetry/query` (events, calculations, invocations, traces), `…/telemetry/keys`, `POST /graphql` | `policy` Cloudflare query, `CloudflareScope`, `telemetry.CloudflareMetricQuery` |
-| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. ECS: `DescribeServices`, `ListTasks`, `DescribeTasks`, `DescribeTaskDefinition`. ECR: `DescribeImages`, `DescribeImageScanFindings`. RDS: `DescribeDBClusters`, `DescribeDBInstances`, `DescribeDBEngineVersions`, `DescribeDBMajorEngineVersions`, `DescribePendingMaintenanceActions`, `DescribeDBClusterSnapshots`, `DescribeDBSnapshots`, `DescribeEvents`. ElastiCache: `DescribeReplicationGroups`, `DescribeCacheClusters`, `DescribeCacheEngineVersions`, `DescribeUpdateActions`. ACM: `DescribeCertificate`. Lambda: `GetFunctionConfiguration`. EKS: `DescribeCluster`, `ListAddons`, `DescribeAddon`, `DescribeAddonVersions`, `DescribeClusterVersions`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope`, `ECSScope`, `ImageScope`, `ResourceScope` |
+| `aws` | Logs: `StartQuery`, `GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `GetLogGroupFields`. Metrics: `GetMetricData`, `ListMetrics`. ECS: `DescribeServices`, `ListTasks`, `DescribeTasks`, `DescribeTaskDefinition`. ECR: `DescribeImages`, `DescribeImageScanFindings`, `BatchGetImage` (index manifests only). RDS: `DescribeDBClusters`, `DescribeDBInstances`, `DescribeDBEngineVersions`, `DescribeDBMajorEngineVersions`, `DescribePendingMaintenanceActions`, `DescribeDBClusterSnapshots`, `DescribeDBSnapshots`, `DescribeEvents`. ElastiCache: `DescribeReplicationGroups`, `DescribeCacheClusters`, `DescribeCacheEngineVersions`, `DescribeUpdateActions`. ACM: `DescribeCertificate`. Lambda: `GetFunctionConfiguration`. EKS: `DescribeCluster`, `ListAddons`, `DescribeAddon`, `DescribeAddonVersions`, `DescribeClusterVersions`. STS: `GetCallerIdentity` | `policy` Insights query and CloudWatch metric, `LogGroupScope`, `CloudWatchMetricScope`, `ECSScope`, `ImageScope`, `ResourceScope` |
 | `tempo` | `GET /api/search`, `GET /api/v2/traces/{id}` | `policy` TraceQL, trace ID |
 | `vercel` | `POST /v1/observability/events` (event `vercel.log`) | `policy` Vercel query, `VercelScope` |
 | `contember` | `POST /content/{project}/{stage}`: introspection, and queries without variables | `ContemberScope`, `policy.ContemberGraphQL` |
@@ -541,17 +541,31 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   package name and version; enhanced scanning (Amazon Inspector) one per vulnerable package,
   with the fixed version; an enhanced finding that is not about a package keeps its title as
   the ID, so the list matches the counts. An image that was never scanned has no `scan` and
-  no findings.
+  no findings; a scan that found nothing has `counts: {}`.
+- **An index is not scanned.** An image pushed for several platforms, or by buildx with
+  attestations (provenance, SBOM), is an OCI index or a Docker manifest list; ECR scans the
+  image manifests it lists and answers `ScanNotFoundException` for the index. For an index
+  (`imageManifestMediaType`), Sonda reads its manifest with `BatchGetImage`, leaves out
+  attestation manifests (`vnd.docker.reference.type: attestation-manifest`) and nested indexes,
+  and returns up to 16 image manifests as `platforms`, each with its digest, `os/arch[/variant]`
+  and scan; more make the response `truncated`. The image detail of an index merges the
+  findings of its platforms, each marked with its platform. The platform manifests and
+  attestation manifests also appear in the list as untagged images of their own.
 - A bound repository that does not exist fails the request with `upstream_error`, also when
   another repository would answer: it is a configuration error, and a silent gap would read
   as "not in the registry".
 - Each image carries its tags, push time, size, last recorded pull and the scan summary: status,
   completion time, the update time of the vulnerability database and counts per severity.
+  Under registry-level scanning `DescribeImages` leaves the scan status out, so the summary of
+  each listed image is read with `DescribeImageScanFindings` (one finding per page, the counts
+  come with it), at most 8 images at once.
   **A basic scan runs once, at push** (unless the repository rescans), so its findings are as
   old as `sourceUpdatedAt` and newer vulnerabilities do not appear. Matching image contents
   against current advisories is outside Sonda.
 - Every returned image and scan must belong to the requested repository and digest; anything
-  else fails the request with `internal`. Tags and scan descriptions are marked untrusted.
+  else fails the request with `internal`. Tags, scan descriptions and platforms (from the
+  index manifest the pusher wrote) are marked untrusted; a listed digest that is not
+  `sha256:` + 64 hex characters fails the request with `upstream_error`.
 - The source link opens the repository in the ECR console.
 
 ### Resources specifics
@@ -1297,8 +1311,10 @@ Rules:
   `ecs:DescribeTaskDefinition` (task definitions return variable values, which IAM cannot
   exclude; Sonda drops them; the action supports no resource-level permissions, so it needs
   `Resource: "*"` and reads every task definition of the account); for images
-  `ecr:DescribeImages`, `ecr:DescribeImageScanFindings`. No pull rights
-  (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`): Sonda never reads image contents.
+  `ecr:DescribeImages`, `ecr:DescribeImageScanFindings`, `ecr:BatchGetImage`. `BatchGetImage`
+  returns manifests, not layers; Sonda reads only the manifest of an index, to find the image
+  manifests the registry scanned. No `ecr:GetDownloadUrlForLayer`: Sonda never reads image
+  contents.
   The ECR actions can be limited to the ARNs of the bound repositories, the ECS describe
   actions to the bound clusters, services and their tasks, and `ecs:ListTasks` with the
   `ecs:cluster` condition key. `sts:GetCallerIdentity` needs no

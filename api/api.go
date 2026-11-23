@@ -757,7 +757,20 @@ type Image struct {
 	SizeBytes  int64      `json:"sizeBytes,omitempty"`
 	// LastPulled is the registry's record of the last pull; it lags by up to a day.
 	LastPulled *time.Time `json:"lastPulled,omitempty"`
-	Scan       *ImageScan `json:"scan,omitempty"`
+	// Scan is the latest scan of this manifest, absent when the registry has none. An index (a
+	// multi-platform image, or one pushed with attestations) is never scanned itself: Platforms
+	// carry the scans of the image manifests it lists.
+	Scan      *ImageScan      `json:"scan,omitempty"`
+	Platforms []ImagePlatform `json:"platforms,omitempty"`
+}
+
+// ImagePlatform is an image manifest an index lists for one platform, attestations left out.
+type ImagePlatform struct {
+	Digest string `json:"digest"`
+	// Platform is os/architecture[/variant] as the index states it, e.g. linux/arm64.
+	Platform string `json:"platform"`
+	// Scan is absent when the registry has no scan of the manifest.
+	Scan *ImageScan `json:"scan,omitempty"`
 }
 
 // ImageScan is the registry's vulnerability scan of an image.
@@ -770,8 +783,9 @@ type ImageScan struct {
 	// SourceUpdatedAt is when the vulnerability database the scan used was last updated. A
 	// basic scan runs at push, so it is as old as the push unless the image was scanned again.
 	SourceUpdatedAt *time.Time `json:"sourceUpdatedAt,omitempty"`
-	// Counts are the findings per severity, e.g. {"CRITICAL": 1, "HIGH": 4}.
-	Counts map[string]int `json:"counts,omitempty"`
+	// Counts are the findings per severity of a finished scan, e.g. {"CRITICAL": 1, "HIGH": 4};
+	// {} when it found none, null while the scan has no result.
+	Counts map[string]int `json:"counts"`
 }
 
 // ScanSeverities lists the severities of registry scan findings, most severe first.
@@ -795,6 +809,8 @@ type ImageFinding struct {
 	// FixedIn is the first fixed version, when the scan reports it (enhanced scanning).
 	FixedIn string `json:"fixedIn,omitempty"`
 	URI     string `json:"uri,omitempty"`
+	// Platform is the platform the finding is in, set for an index; see ImagePlatform.
+	Platform string `json:"platform,omitempty"`
 }
 
 // ImageDetail is one image with its scan findings, most severe first.
