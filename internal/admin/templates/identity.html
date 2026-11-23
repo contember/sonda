@@ -16,7 +16,7 @@
   <section class="card">
     <div class="card-header">
       <h2 class="card-title">Grants</h2>
-      <span class="field-hint">A grant covers every listed service of the project. A dash means no service of the project configures the capability in that environment.</span>
+      <span class="field-hint">A grant covers every listed service of the project. A dash means no service of the project configures the capability in that environment. <code>*</code> matches every project, environment or capability, including ones added to the configuration later; it never covers <code>data</code>.</span>
     </div>
     {{if .Stale}}
     <div class="card-body">
@@ -30,17 +30,16 @@
     <div class="table-wrap">
     <table class="matrix">
       <thead>
-        <tr><th>Project</th><th>Environment</th><th>Services</th>{{range .Capabilities}}<th class="check">{{.}}</th>{{end}}</tr>
+        <tr><th>Project</th><th>Environment</th><th>Services</th>{{range .Capabilities}}<th class="check">{{if eq (print .) "*"}}<span title="Every capability except data, including ones added later">*</span>{{else}}{{.}}{{end}}</th>{{end}}</tr>
       </thead>
       <tbody>
       {{range .Matrix}}
-        <tr>
-          <td class="nowrap"><strong>{{.Project}}</strong></td>
-          <td class="nowrap">{{.Environment}}</td>
-          <td class="muted">{{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</td>
-          {{$row := .}}
-          {{range $i, $cell := .Cells}}
-          <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Project}} / {{$row.Environment}}: {{index $.Capabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="subtle" title="No service of the project configures this in this environment">–</span>{{end}}</td>
+        <tr{{if .Wildcard}} class="row-wildcard"{{end}}>
+          <td class="nowrap">{{if eq .Project "*"}}<code>*</code> <span class="muted">every project</span>{{else}}<strong>{{.Project}}</strong>{{end}}</td>
+          <td class="nowrap">{{if eq .Environment "*"}}<code>*</code> <span class="muted">every environment</span>{{else}}{{.Environment}}{{end}}</td>
+          <td class="muted">{{if .Wildcard}}today: {{end}}{{range $i, $s := .Services}}{{if $i}}, {{end}}{{$s}}{{end}}</td>
+          {{range .Cells}}
+          <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{.Label}}{{if .CoveredBy}} (covered by {{.CoveredBy}}){{end}}"{{if .Checked}} checked{{end}}>{{if .CoveredBy}}<span class="covered" title="Covered by {{.CoveredBy}}" aria-hidden="true">✓</span>{{end}}{{else}}<span class="subtle" title="No service of the project configures this in this environment">–</span>{{end}}</td>
           {{end}}
         </tr>
       {{end}}
@@ -50,13 +49,27 @@
     {{else}}
     <div class="card-body"><p class="muted">The configuration has no projects.</p></div>
     {{end}}
+    {{if .Coverage}}
+    <div class="card-body">
+      <h3 class="card-title">What the wildcard grants cover today</h3>
+      <p class="field-hint">Saved grants, resolved against the current configuration. A project, environment or capability added later is covered too.</p>
+      <div class="stack">
+      {{range .Coverage}}
+        <div><code>{{.Grant}}</code>
+          {{if .Covers}}<ul class="coverage">{{range .Covers}}<li><span class="muted nowrap">{{.Target}}</span> <span class="pills pills-inline">{{range .Capabilities}}<span class="pill pill-accent">{{.}}</span>{{end}}</span></li>{{end}}</ul>
+          {{else}}<span class="subtle">nothing configured yet</span>{{end}}
+        </div>
+      {{end}}
+      </div>
+    </div>
+    {{end}}
   </section>
 
   {{if .ServiceMatrix}}
   <section class="card">
     <div class="card-header">
       <h2 class="card-title">Data</h2>
-      <span class="field-hint">Granted per service: a grant opens the data of that service only.</span>
+      <span class="field-hint">Granted per service: a grant opens the data of that service only. No wildcard covers data.</span>
     </div>
     <div class="table-wrap">
     <table class="matrix">
@@ -69,9 +82,8 @@
           <td class="nowrap"><strong>{{.Project}}</strong></td>
           <td class="nowrap">{{.Service}}</td>
           <td class="nowrap">{{.Environment}}</td>
-          {{$row := .}}
-          {{range $i, $cell := .Cells}}
-          <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{$row.Service}} / {{$row.Environment}}: {{index $.ServiceCapabilities $i}}"{{if .Checked}} checked{{end}}>{{else}}<span class="subtle" title="Not configured for this service environment">–</span>{{end}}</td>
+          {{range .Cells}}
+          <td class="check">{{if .Available}}<input type="checkbox" name="grant" value="{{.Value}}" aria-label="{{.Label}}"{{if .Checked}} checked{{end}}>{{else}}<span class="subtle" title="Not configured for this service environment">–</span>{{end}}</td>
           {{end}}
         </tr>
       {{end}}

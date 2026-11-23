@@ -28,6 +28,10 @@ type identityRow struct {
 type grantSummary struct {
 	Target       string
 	Capabilities []string
+	// Wildcard is set when the target or a capability is a wildcard; Covers then counts the
+	// service environments its grants open with the current configuration.
+	Wildcard bool
+	Covers   int
 }
 
 func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +45,7 @@ func (h *Handler) listIdentities(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, identityRow{
 			Name:      identity.Name,
 			CreatedAt: identity.CreatedAt,
-			Grants:    summarizeGrants(identity.Grants),
+			Grants:    h.summarizeGrants(identity.Grants),
 			Limits:    summarizeLimits(identity.Limits),
 		})
 	}
@@ -61,14 +65,24 @@ type identityForm struct {
 	Limits              []limitField
 	// Stale lists stored grants for projects or capabilities that are no longer configured.
 	Stale []string
+	// Coverage lists what each stored wildcard grant opens with the current configuration.
+	Coverage []wildcardCoverage
 }
 
 type matrixRow struct {
 	Project     string
 	Environment string
-	// Services are the services of the project that have the environment, which a grant covers.
+	// Services are the services that have the environment, which a grant of the row covers.
 	Services []string
+	// Wildcard is set when the project or the environment is a wildcard.
+	Wildcard bool
 	Cells    []matrixCell
+}
+
+type wildcardCoverage struct {
+	Grant string
+	// Covers are the capabilities the grant opens, by service environment.
+	Covers []grantSummary
 }
 
 type serviceMatrixRow struct {
@@ -82,6 +96,9 @@ type matrixCell struct {
 	Available bool
 	Checked   bool
 	Value     string
+	Label     string
+	// CoveredBy names a selected wildcard grant that already covers this unselected cell.
+	CoveredBy string
 }
 
 type limitField struct {
@@ -222,26 +239,23 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 			form.Capabilities = append(form.Capabilities, capability)
 		}
 	}
+	form.Capabilities = append(form.Capabilities, identities.AnyCapability)
+	servicesByEnv := map[string][]string{}
+	var allServices []string
 	for _, projectName := range sortedKeys(h.cfg.Projects) {
 		project := h.cfg.Projects[projectName]
-		servicesByEnv := map[string][]string{}
+		projectServicesByEnv := map[string][]string{}
 		for _, svcName := range sortedKeys(project.Services) {
+			allServices = append(allServices, svcName)
 			for envName := range project.Services[svcName].Environments {
+				projectServicesByEnv[envName] = append(projectServicesByEnv[envName], svcName)
 				servicesByEnv[envName] = append(servicesByEnv[envName], svcName)
 			}
 		}
-		for _, envName := range sortedKeys(servicesByEnv) {
-			row := matrixRow{Project: projectName, Environment: envName, Services: servicesByEnv[envName]}
-			for _, capability := range form.Capabilities {
-				grant := identities.Grant{Project: projectName, Environment: envName, Capability: capability}
-				row.Cells = append(row.Cells, matrixCell{
-					Available: project.Offers(envName, capability),
-					Checked:   slices.Contains(grants, grant),
-					Value:     grantValue(grant),
-				})
-			}
-			form.Matrix = append(form.Matrix, row)
+		for _, envName := range sortedKeys(projectServicesByEnv) {
+			form.Matrix = append(form.Matrix, h.matrixRow(projectName, envName, projectServicesByEnv[envName], form.Capabilities, grants))
 		}
+		form.Matrix = append(form.Matrix, h.matrixRow(projectName, identities.Wildcard, sortedKeys(project.Services), form.Capabilities, grants))
 		for _, svcName := range sortedKeys(project.Services) {
 			svc := project.Services[svcName]
 			for _, envName := range sortedKeys(svc.Environments) {
@@ -251,7 +265,7 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 					grant := identities.Grant{Service: svcName, Environment: envName, Capability: capability}
 					available := slices.Contains(svc.Environments[envName].Capabilities(), capability)
 					offered = offered || available
-					row.Cells = append(row.Cells, matrixCell{Available: available, Checked: slices.Contains(grants, grant), Value: grantValue(grant)})
+					row.Cells = append(row.Cells, matrixCell{Available: available, Checked: slices.Contains(grants, grant), Value: grantValue(grant), Label: grantName(grant)})
 				}
 				if offered {
 					form.ServiceMatrix = append(form.ServiceMatrix, row)
@@ -259,12 +273,70 @@ func (h *Handler) identityForm(isNew bool, name string, grants []identities.Gran
 			}
 		}
 	}
+	if len(h.cfg.Projects) > 0 {
+		for _, envName := range sortedKeys(servicesByEnv) {
+			services := servicesByEnv[envName]
+			sort.Strings(services)
+			form.Matrix = append(form.Matrix, h.matrixRow(identities.Wildcard, envName, services, form.Capabilities, grants))
+		}
+		sort.Strings(allServices)
+		form.Matrix = append(form.Matrix, h.matrixRow(identities.Wildcard, identities.Wildcard, allServices, form.Capabilities, grants))
+	}
 	for _, g := range grants {
 		if !h.configured(g) {
-			form.Stale = append(form.Stale, fmt.Sprintf("%s / %s: %s", grantTarget(g), g.Environment, g.Capability))
+			form.Stale = append(form.Stale, grantName(g))
+		} else if g.HasWildcard() {
+			form.Coverage = append(form.Coverage, wildcardCoverage{Grant: grantName(g), Covers: h.coverage(g)})
 		}
 	}
 	return form
+}
+
+// matrixRow builds the project grant cells of one project (or *) and environment (or *). A cell
+// with a wildcard can always be selected: it also covers what the configuration adds later.
+func (h *Handler) matrixRow(project, env string, services []string, capabilities []api.Capability, grants []identities.Grant) matrixRow {
+	row := matrixRow{Project: project, Environment: env, Services: services, Wildcard: project == identities.Wildcard || env == identities.Wildcard}
+	for _, capability := range capabilities {
+		grant := identities.Grant{Project: project, Environment: env, Capability: capability}
+		cell := matrixCell{
+			Available: grant.HasWildcard() || h.cfg.Projects[project].Offers(env, capability),
+			Checked:   slices.Contains(grants, grant),
+			Value:     grantValue(grant),
+			Label:     grantName(grant),
+		}
+		if !cell.Checked {
+			for _, g := range grants {
+				if g.HasWildcard() && g.Covers(project, "", env, capability) {
+					cell.CoveredBy = grantName(g)
+					break
+				}
+			}
+		}
+		row.Cells = append(row.Cells, cell)
+	}
+	return row
+}
+
+// coverage lists the capabilities a grant opens with the current configuration, by service
+// environment.
+func (h *Handler) coverage(g identities.Grant) []grantSummary {
+	byTarget := map[string][]string{}
+	for _, svcName := range sortedKeys(h.cfg.Services) {
+		svc := h.cfg.Services[svcName]
+		for _, envName := range sortedKeys(svc.Environments) {
+			for _, capability := range svc.Environments[envName].Capabilities() {
+				if g.Covers(svc.Project.Name, svcName, envName, capability) {
+					target := svcName + " / " + envName
+					byTarget[target] = append(byTarget[target], string(capability))
+				}
+			}
+		}
+	}
+	summary := make([]grantSummary, 0, len(byTarget))
+	for _, target := range sortedKeys(byTarget) {
+		summary = append(summary, grantSummary{Target: target, Capabilities: byTarget[target]})
+	}
+	return summary
 }
 
 // parseIdentityForm returns what it could parse also on error, so the form can be shown again.
@@ -297,7 +369,8 @@ func (h *Handler) parseIdentityForm(r *http.Request) ([]identities.Grant, identi
 }
 
 // configured reports whether the grant points at a configured capability. Grants for
-// anything else would have no effect.
+// anything else would have no effect. A wildcard grant must name configured values in its
+// other positions; what it matches may be configured later.
 func (h *Handler) configured(g identities.Grant) bool {
 	if !g.Valid() {
 		return false
@@ -310,8 +383,22 @@ func (h *Handler) configured(g identities.Grant) bool {
 		env, ok := svc.Environments[g.Environment]
 		return ok && slices.Contains(env.Capabilities(), g.Capability)
 	}
-	project, ok := h.cfg.Projects[g.Project]
-	return ok && project.Offers(g.Environment, g.Capability)
+	if !g.HasWildcard() {
+		project, ok := h.cfg.Projects[g.Project]
+		return ok && project.Offers(g.Environment, g.Capability)
+	}
+	if _, ok := h.cfg.Projects[g.Project]; !ok && g.Project != identities.Wildcard {
+		return false
+	}
+	if g.Environment == identities.Wildcard {
+		return true
+	}
+	for _, svc := range h.cfg.Services {
+		if _, ok := svc.Environments[g.Environment]; ok && (g.Project == identities.Wildcard || svc.Project.Name == g.Project) {
+			return true
+		}
+	}
+	return false
 }
 
 // grantTarget names what a grant covers: its project, or its service for a per-service grant.
@@ -320,6 +407,11 @@ func grantTarget(g identities.Grant) string {
 		return "service " + g.Service
 	}
 	return g.Project
+}
+
+// grantName shows a grant as target / environment / capability, e.g. "shop / * / metrics".
+func grantName(g identities.Grant) string {
+	return grantTarget(g) + " / " + g.Environment + " / " + string(g.Capability)
 }
 
 // grantValue encodes a grant as a checkbox value. Names come from the config and may contain
@@ -339,7 +431,7 @@ func parseGrantValue(value string) (identities.Grant, error) {
 	if err != nil {
 		return identities.Grant{}, err
 	}
-	capability, err := api.ParseCapability(q.Get("c"))
+	capability, err := identities.ParseCapability(q.Get("c"))
 	if err != nil {
 		return identities.Grant{}, err
 	}
@@ -400,16 +492,28 @@ func formatInt(n *int) string {
 }
 
 // summarizeGrants groups grants by project environment, e.g. "shop / production" with
-// errors and logs.
-func summarizeGrants(grants []identities.Grant) []grantSummary {
-	byTarget := map[string][]string{}
+// errors and logs. A group with a wildcard counts the service environments it covers today.
+func (h *Handler) summarizeGrants(grants []identities.Grant) []grantSummary {
+	byTarget := map[string][]identities.Grant{}
 	for _, g := range grants {
 		target := grantTarget(g) + " / " + g.Environment
-		byTarget[target] = append(byTarget[target], string(g.Capability))
+		byTarget[target] = append(byTarget[target], g)
 	}
 	summary := make([]grantSummary, 0, len(byTarget))
 	for _, target := range sortedKeys(byTarget) {
-		summary = append(summary, grantSummary{Target: target, Capabilities: byTarget[target]})
+		group := grantSummary{Target: target}
+		covered := map[string]bool{}
+		for _, g := range byTarget[target] {
+			group.Capabilities = append(group.Capabilities, string(g.Capability))
+			if g.HasWildcard() {
+				group.Wildcard = true
+				for _, c := range h.coverage(g) {
+					covered[c.Target] = true
+				}
+			}
+		}
+		group.Covers = len(covered)
+		summary = append(summary, group)
 	}
 	return summary
 }

@@ -254,6 +254,10 @@ tbody:last-child > tr:last-child > th { border-bottom: 0; }
 tbody tr { transition: background var(--transition); }
 tbody tr:hover > td { background: var(--surface-muted); }
 th.check, td.check { text-align: center; width: 1%; }
+tr.row-wildcard > td { background: var(--surface-muted); }
+td.check:has(.covered) { white-space: nowrap; }
+td.check .covered { margin-left: 2px; color: var(--accent); font-size: var(--text-xs); }
+.coverage { margin: 2px 0 6px; padding-left: 18px; }
 td.end, th.end { text-align: right; font-variant-numeric: tabular-nums; }
 td.wrap { overflow-wrap: break-word; word-break: normal; min-width: 20ch; }
 td pre { margin: 6px 0 0; white-space: pre-wrap; }

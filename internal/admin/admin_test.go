@@ -437,3 +437,86 @@ func TestSigningKeysPageNeedsIssuer(t *testing.T) {
 		t.Error("navigation links the signing keys page without identity.issuer")
 	}
 }
+
+func TestWildcardGrant(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	env.login(t)
+	production := identities.Grant{Project: identities.Wildcard, Environment: "production", Capability: identities.AnyCapability}
+
+	_, form := env.get(t, "/admin/identities/new")
+	for _, g := range []identities.Grant{
+		production,
+		{Project: identities.Wildcard, Environment: identities.Wildcard, Capability: identities.AnyCapability},
+		{Project: identities.Wildcard, Environment: identities.Wildcard, Capability: api.CapabilityMetrics},
+		{Project: "api", Environment: identities.Wildcard, Capability: api.CapabilityLogs},
+		{Project: "api", Environment: "production", Capability: identities.AnyCapability},
+	} {
+		if !strings.Contains(form, `value="`+template.HTMLEscapeString(grantValue(g))+`"`) {
+			t.Errorf("form lacks the wildcard grant %s", grantName(g))
+		}
+	}
+
+	status, body := env.post(t, "/admin/identities", url.Values{"name": {"agent"}, "grant": {grantValue(production)}})
+	if status != http.StatusOK {
+		t.Fatalf("create: status %d\n%s", status, body)
+	}
+	identity, err := env.authz.Authenticate(ctx, shownToken(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.authz.LogScope(identity, "api", "production"); err != nil {
+		t.Errorf("logs of api: %v", err)
+	}
+	if _, err := env.authz.AlertScope(identity, "worker", "production"); err != nil {
+		t.Errorf("alerts of worker: %v", err)
+	}
+	if _, err := env.authz.DataScope(identity, "api", "production"); err == nil {
+		t.Error("a wildcard grant opened data")
+	}
+
+	_, edit := env.get(t, "/admin/identities/agent")
+	for _, want := range []string{
+		"What the wildcard grants cover today",
+		`<code>* / production / *</code>`,
+		`api / production</span> <span class="pills pills-inline"><span class="pill pill-accent">logs</span></span>`,
+		`worker / production</span> <span class="pills pills-inline"><span class="pill pill-accent">alerts</span></span>`,
+		`aria-label="api / production / logs (covered by * / production / *)"`,
+	} {
+		if !strings.Contains(edit, want) {
+			t.Errorf("edit page lacks %q", want)
+		}
+	}
+	if strings.Contains(edit, "pill-accent\">data") {
+		t.Error("edit page shows data as covered")
+	}
+	_, list := env.get(t, "/admin/identities")
+	if !strings.Contains(list, "covers 2 service environments today") {
+		t.Errorf("list lacks the coverage count:\n%s", list)
+	}
+	_, services := env.get(t, "/admin/services")
+	if _, worker, _ := strings.Cut(services, ">worker</h3>"); !strings.Contains(worker, `rowspan="1">1</td>`) {
+		t.Errorf("want 1 identity for worker:\n%s", worker)
+	}
+}
+
+func TestRejectsInvalidWildcardGrants(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	for _, value := range []string{
+		grantValue(identities.Grant{Project: "nope", Environment: identities.Wildcard, Capability: identities.AnyCapability}),
+		grantValue(identities.Grant{Project: identities.Wildcard, Environment: "staging", Capability: identities.AnyCapability}),
+		grantValue(identities.Grant{Project: "api", Environment: identities.Wildcard, Capability: api.CapabilityData}),
+		grantValue(identities.Grant{Service: identities.Wildcard, Environment: "production", Capability: api.CapabilityData}),
+		grantValue(identities.Grant{Service: "api", Environment: identities.Wildcard, Capability: api.CapabilityData}),
+		grantValue(identities.Grant{Project: "a*", Environment: "production", Capability: api.CapabilityLogs}),
+	} {
+		status, body := env.post(t, "/admin/identities", url.Values{"name": {"agent"}, "grant": {value}})
+		if status != http.StatusUnprocessableEntity || !strings.Contains(body, "invalid grant") {
+			t.Errorf("%s: status %d", value, status)
+		}
+	}
+	if list, _ := env.store.List(context.Background()); len(list) != 0 {
+		t.Errorf("identities created from invalid grants: %+v", list)
+	}
+}
