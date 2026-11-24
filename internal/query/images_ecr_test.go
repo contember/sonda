@@ -328,6 +328,46 @@ func TestImagesResolveIndexToPlatformScans(t *testing.T) {
 	}
 }
 
+func TestImagesListedTwiceReadEachScanOnce(t *testing.T) {
+	server, calls := recordedIndexRegistry(t)
+	s, identity := registryServiceFor(t, server)
+	scans := func() []string {
+		var got []string
+		for _, call := range *calls {
+			if strings.HasPrefix(call, "DescribeImageScanFindings ") {
+				got = append(got, call)
+			}
+		}
+		return got
+	}
+	first, err := s.Images(context.Background(), identity, "web", api.ImagesRequest{Repository: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The platform manifest is listed on its own and under its index; one call serves both.
+	if got := scans(); !slices.Equal(got, []string{"DescribeImageScanFindings " + platformDigest}) {
+		t.Fatalf("first listing: scan calls = %v", got)
+	}
+	second, err := s.Images(context.Background(), identity, "web", api.ImagesRequest{Repository: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := scans(); len(got) != 1 {
+		t.Errorf("second listing: scan calls = %v, want none beyond the first listing's", got)
+	}
+	a, err := json.Marshal(first.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(second.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Errorf("second listing differs:\n%s\n%s", a, b)
+	}
+}
+
 func TestImageDetailOfIndex(t *testing.T) {
 	server, calls := recordedIndexRegistry(t)
 	s, identity := registryServiceFor(t, server)

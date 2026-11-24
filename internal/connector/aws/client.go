@@ -61,6 +61,8 @@ type Client struct {
 	acm      acmAPI
 	lambda   lambdaAPI
 	eks      eksAPI
+	// scans keeps the scan summaries of listed images.
+	scans *scanCache
 	// accountMu guards accountID, the account of Sonda's credentials once resolved.
 	accountMu sync.Mutex
 	accountID string
@@ -88,6 +90,7 @@ func newClient(src *config.Source, logs logsAPI, metrics metricsAPI, identity id
 		logs:      logs,
 		metrics:   metrics,
 		identity:  identity,
+		scans:     newScanCache(time.Now),
 		firstPoll: 250 * time.Millisecond,
 		maxPoll:   2 * time.Second,
 	}

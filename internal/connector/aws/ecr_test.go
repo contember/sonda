@@ -1,16 +1,19 @@
 package aws
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/contember/sonda/api"
 	"github.com/contember/sonda/internal/apierr"
@@ -61,6 +64,10 @@ type fakeECR struct {
 	tags        []string                  // BatchGetImage returns the image once per tag, as ECR does
 	lastOther   bool                      // the last of those entries names another digest
 	noImages    bool                      // BatchGetImage returns neither images nor failures
+	status      ecrtypes.ScanStatus       // the scan status; COMPLETE by default
+	completedAt *time.Time                // the completion time of the scan
+	throttled   int                       // DescribeImageScanFindings throttles this many calls first
+	scanned     []string                  // the digests DescribeImageScanFindings was called with
 }
 
 func (f *fakeECR) repo() string {
@@ -101,6 +108,11 @@ func (f *fakeECR) DescribeImages(_ context.Context, in *ecr.DescribeImagesInput,
 }
 
 func (f *fakeECR) DescribeImageScanFindings(_ context.Context, in *ecr.DescribeImageScanFindingsInput, _ ...func(*ecr.Options)) (*ecr.DescribeImageScanFindingsOutput, error) {
+	f.scanned = append(f.scanned, sdkaws.ToString(in.ImageId.ImageDigest))
+	if f.throttled > 0 {
+		f.throttled--
+		return nil, &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Rate exceeded"}
+	}
 	if f.noScan {
 		return nil, &ecrtypes.ScanNotFoundException{Message: sdkaws.String("no scan")}
 	}
@@ -111,8 +123,8 @@ func (f *fakeECR) DescribeImageScanFindings(_ context.Context, in *ecr.DescribeI
 	out := &ecr.DescribeImageScanFindingsOutput{
 		RepositoryName:    sdkaws.String(f.repo()),
 		ImageId:           &ecrtypes.ImageIdentifier{ImageDigest: f.digest(in.ImageId.ImageDigest)},
-		ImageScanStatus:   &ecrtypes.ImageScanStatus{Status: ecrtypes.ScanStatusComplete},
-		ImageScanFindings: &ecrtypes.ImageScanFindings{Findings: f.findings[page]},
+		ImageScanStatus:   &ecrtypes.ImageScanStatus{Status: cmp.Or(f.status, ecrtypes.ScanStatusComplete)},
+		ImageScanFindings: &ecrtypes.ImageScanFindings{Findings: f.findings[page], ImageScanCompletedAt: f.completedAt},
 	}
 	if page+1 < len(f.findings) {
 		out.NextToken = sdkaws.String(strconv.Itoa(page + 1))
@@ -211,7 +223,7 @@ func TestScanFindingsMergePages(t *testing.T) {
 	if err != nil || scan != nil {
 		t.Errorf("never scanned: scan = %+v, err = %v", scan, err)
 	}
-	summary, err := ecrClient(cfg, &fakeECR{noScan: true}).Scan(context.Background(), scope, "shop", testDigest)
+	summary, err := ecrClient(cfg, &fakeECR{noScan: true}).Scan(context.Background(), scope, "shop", testDigest, nil)
 	if err != nil || summary != nil {
 		t.Errorf("never scanned, summary: scan = %+v, err = %v", summary, err)
 	}
