@@ -103,13 +103,17 @@ func (s *Service) Images(ctx context.Context, identity *authz.Identity, service 
 		return sdkaws.ToTime(images[i].ImagePushedAt).After(sdkaws.ToTime(images[j].ImagePushedAt))
 	})
 	shown := images[:min(len(images), limit)]
+	listed := make(map[imageRef]ecrtypes.ImageDetail, len(images))
+	for _, image := range images {
+		listed[imageRef{sdkaws.ToString(image.RepositoryName), sdkaws.ToString(image.ImageDigest)}] = image
+	}
 	result := make([]api.Image, len(shown))
 	cuts := make([]bool, len(shown))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(imageReads)
 	for i, image := range shown {
 		g.Go(func() (err error) {
-			result[i], cuts[i], err = scannedImage(gctx, client, scope, image)
+			result[i], cuts[i], err = scannedImage(gctx, client, scope, image, listed)
 			return err
 		})
 	}
@@ -217,17 +221,24 @@ func shapeImage(image ecrtypes.ImageDetail) api.Image {
 	}
 }
 
+// imageRef names an image by repository and digest.
+type imageRef struct {
+	repository string
+	digest     string
+}
+
 // scannedImage shapes the image with its latest scan, or an index with the scans of its platform
 // manifests, and reports whether the index lists more platforms than were read. DescribeImages
-// leaves out the scan status under registry-level scanning, so the scan is read on its own.
-func scannedImage(ctx context.Context, client *aws.Client, scope authz.ImageScope, image ecrtypes.ImageDetail) (api.Image, bool, error) {
+// leaves out the scan status under registry-level scanning, so the scan is read on its own;
+// listed holds the images DescribeImages returned, whose scan fields refresh a cached scan.
+func scannedImage(ctx context.Context, client *aws.Client, scope authz.ImageScope, image ecrtypes.ImageDetail, listed map[imageRef]ecrtypes.ImageDetail) (api.Image, bool, error) {
 	result := shapeImage(image)
 	if result.Artifact != "" {
 		return result, false, nil
 	}
 	repository := sdkaws.ToString(image.RepositoryName)
 	if !aws.IsIndex(image) {
-		scan, err := client.Scan(ctx, scope, repository, result.Digest)
+		scan, err := client.Scan(ctx, scope, repository, result.Digest, &image)
 		result.Scan = shapeScan(scan)
 		return result, false, err
 	}
@@ -237,7 +248,11 @@ func scannedImage(ctx context.Context, client *aws.Client, scope authz.ImageScop
 	}
 	result.Platforms = make([]api.ImagePlatform, len(manifests))
 	for i, m := range manifests {
-		scan, err := client.Scan(ctx, scope, repository, m.Digest)
+		var platformImage *ecrtypes.ImageDetail
+		if detail, ok := listed[imageRef{repository, m.Digest}]; ok {
+			platformImage = &detail
+		}
+		scan, err := client.Scan(ctx, scope, repository, m.Digest, platformImage)
 		if err != nil {
 			return api.Image{}, false, err
 		}

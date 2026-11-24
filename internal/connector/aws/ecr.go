@@ -216,12 +216,15 @@ func platformName(os, architecture, variant string) string {
 }
 
 // Scan reads the status and the counts per severity of the latest scan of the image, without its
-// findings. An image that was never scanned returns nil.
-func (c *Client) Scan(ctx context.Context, scope authz.ImageScope, repository, digest string) (*ecr.DescribeImageScanFindingsOutput, error) {
+// findings, from a cache of recent reads (see scanCache). listed is the image as DescribeImages
+// returned it, or nil. An image that was never scanned returns nil.
+func (c *Client) Scan(ctx context.Context, scope authz.ImageScope, repository, digest string, listed *ecrtypes.ImageDetail) (*ecr.DescribeImageScanFindingsOutput, error) {
 	if !scope.Has(repository) {
 		return nil, c.outsideScope()
 	}
-	return c.scanPage(ctx, repository, digest, 1, nil)
+	return c.scans.get(ctx, scanKey{repository: repository, digest: digest}, listed, func(ctx context.Context) (*ecr.DescribeImageScanFindingsOutput, error) {
+		return c.scanPage(ctx, repository, digest, 1, nil)
+	})
 }
 
 // ScanFindings reads the findings of the latest scan of the image, up to maxScanFindings, and

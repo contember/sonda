@@ -574,6 +574,20 @@ Metadata(ctx) (map[string][]v1.Metadata, error)
   **A basic scan runs once, at push** (unless the repository rescans), so its findings are as
   old as `sourceUpdatedAt` and newer vulnerabilities do not appear. Matching image contents
   against current advisories is outside Sonda.
+- **Scan summaries of listed images are cached.** ECR throttled `DescribeImageScanFindings`
+  when listings of 100 images ran back to back, so each aws source keeps the summaries it read in
+  memory, per repository and digest (a source reads one registry): a state that stays until a
+  push or a rescan (`COMPLETE`, `ACTIVE`, `UNSUPPORTED_IMAGE`, `SCAN_ELIGIBILITY_EXPIRED`,
+  `IMAGE_ARCHIVED`, `IMAGE_SIZE_EXCEEDED`) for 10 minutes, any other state (in progress,
+  pending, failed, …) and an image never scanned for 30 seconds, at most 4096
+  per source, the oldest stored dropped first. Concurrent reads of one digest share a call, so
+  a platform manifest listed on its own and under its index is read once. Under
+  repository-level scanning `DescribeImages` states the scan status and completion time; for an
+  image the listing read, one that differs from the cached summary means a new scan and
+  refreshes it (a platform manifest the listing did not read relies on the TTL). Under
+  registry-level scanning it states neither, so a rescan shows in the list within 10 minutes. Failed calls are
+  not cached, and the image detail always reads ECR. Each replica keeps its own cache; a
+  restart empties it.
 - Every returned image and scan must belong to the requested repository and digest; anything
   else fails the request with `internal`. Tags, scan descriptions and platforms (from the
   index manifest the pusher wrote) are marked untrusted; a listed digest that is not
