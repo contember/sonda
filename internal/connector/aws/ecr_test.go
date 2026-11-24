@@ -58,6 +58,8 @@ type fakeECR struct {
 	describes   []*ecr.DescribeImagesInput
 	index       string                    // the manifest BatchGetImage returns
 	failure     ecrtypes.ImageFailureCode // BatchGetImage reports this failure instead
+	tags        []string                  // BatchGetImage returns the image once per tag, as ECR does
+	lastOther   bool                      // the last of those entries names another digest
 }
 
 func (f *fakeECR) repo() string {
@@ -121,11 +123,23 @@ func (f *fakeECR) BatchGetImage(_ context.Context, in *ecr.BatchGetImageInput, _
 	if f.failure != "" {
 		return &ecr.BatchGetImageOutput{Failures: []ecrtypes.ImageFailure{{ImageId: &in.ImageIds[0], FailureCode: f.failure, FailureReason: sdkaws.String("reason")}}}, nil
 	}
-	return &ecr.BatchGetImageOutput{Images: []ecrtypes.Image{{
-		RepositoryName: sdkaws.String(f.repo()),
-		ImageId:        &ecrtypes.ImageIdentifier{ImageDigest: f.digest(in.ImageIds[0].ImageDigest)},
-		ImageManifest:  sdkaws.String(f.index),
-	}}}, nil
+	tags := f.tags
+	if len(tags) == 0 {
+		tags = []string{""}
+	}
+	out := &ecr.BatchGetImageOutput{}
+	for i, tag := range tags {
+		digest := f.digest(in.ImageIds[0].ImageDigest)
+		if f.lastOther && i == len(tags)-1 {
+			digest = sdkaws.String("sha256:" + strings.Repeat("0", 64))
+		}
+		id := &ecrtypes.ImageIdentifier{ImageDigest: digest}
+		if tag != "" {
+			id.ImageTag = sdkaws.String(tag)
+		}
+		out.Images = append(out.Images, ecrtypes.Image{RepositoryName: sdkaws.String(f.repo()), ImageId: id, ImageManifest: sdkaws.String(f.index)})
+	}
+	return out, nil
 }
 
 func ecrClient(cfg *config.Config, fake *fakeECR) *Client {
@@ -231,6 +245,10 @@ func TestECRPostChecks(t *testing.T) {
 			_, _, err := c.PlatformManifests(context.Background(), scope, "shop", testDigest)
 			return err
 		}},
+		{"index whose last tag entry names another digest", &fakeECR{tags: []string{"v1", "latest"}, lastOther: true, index: `{"manifests":[]}`}, func(c *Client) error {
+			_, _, err := c.PlatformManifests(context.Background(), scope, "shop", testDigest)
+			return err
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,6 +292,12 @@ func TestPlatformManifestsLeaveOutAttestations(t *testing.T) {
 	manifests, truncated, err = ecrClient(cfg, &fakeECR{index: `{"manifests": [` + strings.Join(many, ",") + `]}`}).PlatformManifests(context.Background(), scope, "shop", testDigest)
 	if err != nil || !truncated || len(manifests) != maxPlatformManifests {
 		t.Errorf("over the cap: manifests = %d, truncated = %v, err = %v", len(manifests), truncated, err)
+	}
+
+	// Asked by digest, ECR returns a tagged index once per tag.
+	manifests, _, err = ecrClient(cfg, &fakeECR{index: index, tags: []string{"v1", "latest"}}).PlatformManifests(context.Background(), scope, "shop", testDigest)
+	if err != nil || !slices.Equal(manifests, want) {
+		t.Errorf("index with two tags: manifests = %+v, err = %v", manifests, err)
 	}
 
 	manifests, _, err = ecrClient(cfg, &fakeECR{failure: ecrtypes.ImageFailureCodeImageNotFound}).PlatformManifests(context.Background(), scope, "shop", testDigest)

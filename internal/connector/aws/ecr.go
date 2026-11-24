@@ -155,14 +155,16 @@ func (c *Client) PlatformManifests(ctx context.Context, scope authz.ImageScope, 
 		}
 		return nil, false, apierr.Upstream("source %s: BatchGetImage failed: %s", c.source.Name, failure.FailureCode)
 	}
-	if len(out.Images) != 1 {
-		return nil, false, apierr.Upstream("source %s: BatchGetImage returned %d manifests for one digest", c.source.Name, len(out.Images))
+	// Asked by digest, ECR returns the image once per tag; the digest pins one manifest.
+	if len(out.Images) == 0 {
+		return nil, false, apierr.Upstream("source %s: BatchGetImage returned no manifest", c.source.Name)
 	}
-	image := out.Images[0]
-	if sdkaws.ToString(image.RepositoryName) != repository || image.ImageId == nil || sdkaws.ToString(image.ImageId.ImageDigest) != digest {
-		return nil, false, c.outsideScope()
+	for _, image := range out.Images {
+		if sdkaws.ToString(image.RepositoryName) != repository || image.ImageId == nil || sdkaws.ToString(image.ImageId.ImageDigest) != digest {
+			return nil, false, c.outsideScope()
+		}
 	}
-	return c.parseIndex(sdkaws.ToString(image.ImageManifest))
+	return c.parseIndex(sdkaws.ToString(out.Images[0].ImageManifest))
 }
 
 // parseIndex reads the image manifests of an index manifest, which the image's pusher wrote.
