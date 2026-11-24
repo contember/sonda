@@ -62,7 +62,7 @@ func TestAdminSessions(t *testing.T) {
 		now := time.Unix(1_700_000_000, 0)
 		st.now = func() time.Time { return now }
 		id := sha256.Sum256([]byte("cookie"))
-		session := AdminSession{Kind: SessionPerson, Issuer: "https://iam.example.com", Subject: "p1", Label: "alice", Credential: []byte{}, ExpiresAt: now.Add(time.Hour)}
+		session := AdminSession{Kind: SessionPersonLink, Issuer: "https://iam.example.com", Subject: "p1", Label: "alice", Credential: []byte{}, ExpiresAt: now.Add(time.Hour)}
 		if err := st.CreateAdminSession(ctx, id, session); err != nil {
 			t.Fatal(err)
 		}

@@ -347,20 +347,36 @@ served.
   of a client ID metadata document it serves at `<url>/admin/oauth/client`, with the redirect URI
   `<url>/admin/oauth/callback`. Register both, and the resource, at the authorization server.
 - **Matching.** A person is matched by the issuer and the `sub` of the token, never by a name or
-  an email address. An administrator links that subject to an identity on the identity's page;
-  signing in grants nothing. An unknown subject is refused, and the refusal page shows the
-  subject, so the person can hand it to an administrator.
-- **What a person sees.** A linked person sees *My access*: their identity's grants and the
-  service environments those open today. Only a person whose link is marked *Administrator*
-  manages identities, grants and signing keys and reads the audit log.
-- **Sessions** last 1 hour and are stored server-side. Sign-out deletes the session. Unlinking a
-  person or deleting their identity ends their sessions at once. Revoking the person at the
-  authorization server takes effect at their next sign-in.
+  an email address. An administrator links that subject to an identity on the identity's page.
+  The identity's grants decide what data the person may query; the token never grants data.
+  An unlinked subject is refused (unless it holds `sonda-admin`, below), and the refusal page
+  shows the subject, so the person can hand it to an administrator.
+- **Roles.** When the token has a `roles` claim (fabrika IAM sends it for an application that
+  declares roles), the roles decide what the person is in Sonda, and the link's *Administrator*
+  mark is ignored:
+
+  | Token roles | Linked to an identity | Not linked |
+  |---|---|---|
+  | `sonda-admin` (with or without `sonda-viewer`) | administrator, and *My access* of the identity | administrator, audited as `(unlinked) <subject>` |
+  | `sonda-viewer` | *My access* of the identity | refused |
+  | neither | refused | refused |
+
+  Without a `roles` claim, a linked person sees *My access*, and only a link marked
+  *Administrator* makes them an administrator; an unlinked person is refused.
+- **What a person sees.** *My access* shows the identity's grants and the service environments
+  those open today. An administrator manages identities, grants and signing keys and reads the
+  audit log.
+- **Sessions** last 1 hour and are stored server-side, with the role the token named at sign-in.
+  Sign-out deletes the session, and so does starting a new sign-in in the same browser. Unlinking
+  a person or deleting their identity ends their sessions at once, except an administrator's by
+  role. Revoking the person or a role at the authorization server takes effect when the session
+  ends: at most 1 hour, or sooner when they sign in again. Sessions opened by a Sonda older than
+  the roles support end at the upgrade; those people sign in again.
 - **Break-glass.** `admin.token` still signs in, as a full administrator. Every attempt and every
   request of such a session, reads included, is in the audit log as `(break-glass)`. Changing the
   token ends those sessions. Bootstrap the first administrator with it: sign in with the token,
-  link your subject, then sign in through the authorization server. Without `admin.token`, nobody
-  can link the first administrator on an empty database.
+  link your subject, then sign in through the authorization server. With an authorization server
+  that sends roles, a person holding `sonda-admin` needs no bootstrap.
 - `admin.oauth.url` is an origin without a path: the UI and its cookies live at `/admin`.
 - The audit log is written after each request, as for agent requests; a failed write is logged,
   not retried.

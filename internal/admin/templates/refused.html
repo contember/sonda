@@ -1,8 +1,13 @@
 {{define "content"}}
 <div class="form">
-  <p>You signed in{{with .Label}} as <strong>{{.}}</strong>{{end}}, but your account is not linked to a Sonda identity.</p>
+  {{if .NoRole}}
+  <p>You signed in{{with .Person.Label}} as <strong>{{.}}</strong>{{end}}, but your account holds no Sonda role.</p>
+  <p class="muted">Ask an administrator of the sign-in service for the sonda-viewer or sonda-admin role.</p>
+  {{else}}
+  <p>You signed in{{with .Person.Label}} as <strong>{{.}}</strong>{{end}}, but your account is not linked to a Sonda identity.</p>
   <p class="muted">Ask a Sonda administrator to link this subject to your identity:</p>
-  <p><code id="subject">{{.Subject}}</code></p>
+  <p><code id="subject">{{.Person.Subject}}</code></p>
+  {{end}}
   <a class="button button-secondary" href="/admin/login">Back to sign in</a>
 </div>
 {{end}}

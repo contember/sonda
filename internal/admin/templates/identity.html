@@ -122,7 +122,7 @@
 <section class="card">
   <div class="card-header">
     <h3 class="card-title">Person</h3>
-    <span class="field-hint">A linked person signs in to this admin UI as {{.Name}} and sees what its grants open. Only an administrator may manage Sonda.</span>
+    <span class="field-hint">A linked person signs in to this admin UI as {{.Name}} and sees what its grants open. Only an administrator may manage Sonda. When the sign-in service sends Sonda roles (sonda-admin, sonda-viewer), they decide who is an administrator, not this checkbox.</span>
   </div>
   <form class="card-body" method="post" action="/admin/identities/{{.Name}}/person">
     <label class="field narrow">
@@ -130,7 +130,7 @@
       <input class="input" name="subject" value="{{with .Person}}{{.Subject}}{{end}}" required maxlength="200" autocomplete="off">
       <span class="field-hint">The person's subject at the sign-in service. Sonda shows it to a person it refuses.</span>
     </label>
-    <label class="check-field"><input type="checkbox" name="admin"{{with .Person}}{{if .Admin}} checked{{end}}{{end}}> Administrator: may manage identities, grants and signing keys, and read the audit log</label>
+    <label class="check-field"><input type="checkbox" name="admin"{{with .Person}}{{if .Admin}} checked{{end}}{{end}}> Administrator: may manage identities, grants and signing keys, and read the audit log. Ignored when the sign-in service sends roles.</label>
     <div class="actions">
       <button type="submit" class="button button-secondary">{{if .Person}}Save person{{else}}Link person{{end}}</button>
     </div>

@@ -3,8 +3,9 @@
 // token verified as an RFC 9068 JWT against the server's published keys. Sonda is a public
 // client identified by a client ID metadata document that it serves itself.
 //
-// The authorization server only authenticates the person. What they may do is decided by
-// Sonda: the token's subject must be linked to an identity, and that identity's grants apply.
+// The authorization server authenticates the person and may name their role in Sonda (the roles
+// claim). What data they may query is decided by Sonda: the grants of the identity their subject
+// is linked to.
 package signin
 
 import (
@@ -138,11 +139,59 @@ func (c *Client) AuthorizationURL(ctx context.Context, attempt Attempt) (string,
 	return meta.AuthorizationEndpoint + "?" + query.Encode(), nil
 }
 
+// Role keys of the roles claim (fabrika IAM: the roles an external application declares).
+const (
+	AdminRoleKey  = "sonda-admin"
+	ViewerRoleKey = "sonda-viewer"
+)
+
+// Role is what the token's roles claim makes the person in Sonda.
+type Role string
+
+const (
+	// RoleUnset: the token has no roles claim, so the person's link in Sonda decides.
+	RoleUnset Role = ""
+	// RoleNone: the token names roles, none of them Sonda's; the person is refused.
+	RoleNone Role = "none"
+	// RoleAdmin manages Sonda, with or without a link to an identity.
+	RoleAdmin Role = "admin"
+	// RoleViewer sees My access of the identity their subject is linked to.
+	RoleViewer Role = "viewer"
+)
+
+// parseRole reads the roles claim: absent, or an array of strings. Anything else, null and null
+// elements included, refuses the token rather than falling back to the link.
+func parseRole(raw json.RawMessage) (Role, error) {
+	if raw == nil {
+		return RoleUnset, nil
+	}
+	var items []any
+	if err := json.Unmarshal(raw, &items); err != nil || items == nil {
+		return "", errors.New("token roles claim is not an array")
+	}
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		key, ok := item.(string)
+		if !ok {
+			return "", errors.New("token roles claim has an element that is not a string")
+		}
+		keys = append(keys, key)
+	}
+	switch {
+	case slices.Contains(keys, AdminRoleKey):
+		return RoleAdmin, nil
+	case slices.Contains(keys, ViewerRoleKey):
+		return RoleViewer, nil
+	}
+	return RoleNone, nil
+}
+
 // Person is who the server signed in.
 type Person struct {
 	Subject string
 	// Label is the server's display name for the person, possibly empty. It identifies nobody.
 	Label string
+	Role  Role
 }
 
 // Callback is what the server sent back to the redirect URI.
@@ -234,6 +283,8 @@ func (c *Client) Verify(ctx context.Context, token string) (Person, error) {
 		// it, or for anything but a user, signs in nobody.
 		PrincipalType string `json:"ptype"`
 		Label         string `json:"label"`
+		// Roles is nil only when the claim is absent; parseRole checks the rest.
+		Roles json.RawMessage `json:"roles"`
 	}
 	if err := decodeSegment(encodedPayload, &claims); err != nil {
 		return Person{}, fmt.Errorf("token payload: %w", err)
@@ -253,7 +304,11 @@ func (c *Client) Verify(ctx context.Context, token string) (Person, error) {
 	case claims.PrincipalType != "user":
 		return Person{}, fmt.Errorf("token principal type %q, want user", claims.PrincipalType)
 	}
-	return Person{Subject: claims.Subject, Label: claims.Label}, nil
+	role, err := parseRole(claims.Roles)
+	if err != nil {
+		return Person{}, err
+	}
+	return Person{Subject: claims.Subject, Label: claims.Label, Role: role}, nil
 }
 
 func isAccessTokenType(typ string) bool {

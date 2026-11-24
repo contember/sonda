@@ -16,7 +16,8 @@ var (
 )
 
 // Person links a person at an OAuth issuer to the identity whose grants they get. Admin lets
-// them manage Sonda; it is set only by an administrator, never derived from the issuer.
+// them manage Sonda when the issuer's token names no roles; a token's roles claim decides
+// instead (see AdminSessionKind).
 type Person struct {
 	Identity  string
 	Issuer    string
@@ -99,12 +100,19 @@ func (s *Store) UnlinkPerson(ctx context.Context, identity string) error {
 	return err
 }
 
-// AdminSessionKind tells a person's session from a break-glass one.
+// AdminSessionKind tells a break-glass session from a person's, and for a person, what decides
+// their role. A kind an older Sonda does not know ends the session there, and this Sonda ends
+// the sessions of kind "person" that an older one wrote without reading the token's roles.
 type AdminSessionKind string
 
 const (
-	SessionPerson     AdminSessionKind = "person"
-	SessionBreakGlass AdminSessionKind = "break-glass"
+	// SessionPersonLink: the token named no roles; the link's Admin flag decides.
+	SessionPersonLink AdminSessionKind = "person-link"
+	// SessionPersonAdmin: the token's roles made the person an administrator, linked or not.
+	SessionPersonAdmin AdminSessionKind = "person-admin"
+	// SessionPersonViewer: the token's roles made the person a viewer of their linked identity.
+	SessionPersonViewer AdminSessionKind = "person-viewer"
+	SessionBreakGlass   AdminSessionKind = "break-glass"
 )
 
 var ErrSessionNotFound = errors.New("admin session not found")

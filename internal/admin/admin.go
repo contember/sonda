@@ -40,6 +40,10 @@ const (
 	legacyAdminIdentity = "(admin)"
 	refusedIdentity     = "(refused) "
 	personIdentity      = "person:"
+	// signInIdentity marks the start of a sign-in in a browser without a session.
+	signInIdentity = "(sign-in)"
+	// unlinkedIdentity marks an administrator by role whose subject is linked to no identity.
+	unlinkedIdentity = "(unlinked) "
 )
 
 type Handler struct {
@@ -109,7 +113,8 @@ func newHandler(cfg *config.Config, ids identities.Store, st *store.Store, iss *
 	}
 	if client != nil {
 		mux.HandleFunc("GET "+signin.ClientPath, h.clientMetadata)
-		mux.HandleFunc("GET /admin/oauth/start", h.startSignIn)
+		// POST, so cross-origin protection keeps other sites from ending a session through it.
+		mux.HandleFunc("POST /admin/oauth/start", h.startSignIn)
 		mux.HandleFunc("GET "+signin.CallbackPath, h.signInCallback)
 	}
 	mux.Handle("/admin/", h.requireSession(authed))
@@ -121,16 +126,22 @@ func newHandler(cfg *config.Config, ids identities.Store, st *store.Store, iss *
 // actor is who makes a request of a signed-in session.
 type actor struct {
 	breakGlass bool
-	// person is set for a person's session.
+	// person is set for a person's session; its Identity is empty for an administrator by role
+	// whose subject is linked to no identity.
 	person store.Person
 	label  string
+	// administrator is the person's role, from the token's roles or else from the link.
+	administrator bool
 }
 
-func (a actor) admin() bool { return a.breakGlass || a.person.Admin }
+func (a actor) admin() bool { return a.breakGlass || a.administrator }
 
 func (a actor) auditIdentity() string {
-	if a.breakGlass {
+	switch {
+	case a.breakGlass:
 		return breakGlassIdentity
+	case a.person.Identity == "":
+		return unlinkedIdentity + a.person.Subject
 	}
 	return personIdentity + a.person.Identity
 }
@@ -235,14 +246,22 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, session s
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if err := h.endSession(w, r); err != nil {
+		h.serverError(w, err)
+		return
+	}
+	redirect(w, r, "/admin/login")
+}
+
+// endSession deletes the browser's session, if any, and its cookie.
+func (h *Handler) endSession(w http.ResponseWriter, r *http.Request) error {
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		if err := h.store.DeleteAdminSession(r.Context(), sha256.Sum256([]byte(cookie.Value))); err != nil {
-			h.serverError(w, err)
-			return
+			return err
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/admin", MaxAge: -1, HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode})
-	redirect(w, r, "/admin/login")
+	return nil
 }
 
 func (h *Handler) requireSession(next http.Handler) http.Handler {
@@ -268,7 +287,8 @@ func (h *Handler) requireAdmin(next http.Handler) http.Handler {
 }
 
 // session resolves the request's session. A person's link is looked up on every request, so
-// unlinking them or deleting their identity ends their sessions.
+// unlinking them or deleting their identity ends their sessions, except an administrator's by
+// role, which needs no link.
 func (h *Handler) session(r *http.Request) (actor, bool) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err != nil {
@@ -285,18 +305,29 @@ func (h *Handler) session(r *http.Request) (actor, bool) {
 	case store.SessionBreakGlass:
 		valid := h.cfg.Admin.Token != "" && subtle.ConstantTimeCompare(session.Credential, h.breakGlassCredential()) == 1
 		return actor{breakGlass: true}, valid
-	case store.SessionPerson:
+	case store.SessionPersonLink, store.SessionPersonAdmin, store.SessionPersonViewer:
 		if h.signin == nil || session.Issuer != h.signin.Issuer() {
 			return actor{}, false
 		}
 		person, err := h.store.PersonBySubject(r.Context(), session.Issuer, session.Subject)
-		if err != nil {
+		switch {
+		case err == nil:
+		case errors.Is(err, store.ErrPersonNotFound) && session.Kind == store.SessionPersonAdmin:
+			person = store.Person{Issuer: session.Issuer, Subject: session.Subject}
+		default:
 			if !errors.Is(err, store.ErrPersonNotFound) {
 				h.log.Error("read admin person", "error", err)
 			}
 			return actor{}, false
 		}
-		return actor{person: person, label: session.Label}, true
+		a := actor{person: person, label: session.Label}
+		switch session.Kind {
+		case store.SessionPersonLink:
+			a.administrator = person.Admin
+		case store.SessionPersonAdmin:
+			a.administrator = true
+		}
+		return a, true
 	}
 	return actor{}, false
 }
@@ -384,6 +415,11 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, pag
 		v.SignedInAs = a.person.Identity
 		if a.label != "" {
 			v.SignedInAs = a.label + " (" + a.person.Identity + ")"
+		}
+	case a.person.Subject != "":
+		v.SignedInAs = a.person.Subject
+		if a.label != "" {
+			v.SignedInAs = a.label
 		}
 	}
 	if err := h.pages[page].ExecuteTemplate(w, "layout", v); err != nil {

@@ -50,20 +50,55 @@ func TestVerifyAcceptsAnAccessTokenForThisClientAndResource(t *testing.T) {
 	}
 }
 
+func TestVerifyReadsTheRolesClaim(t *testing.T) {
+	client, server := newClient(t)
+	cases := []struct {
+		name  string
+		roles any
+		want  signin.Role
+	}{
+		{"no claim", nil, signin.RoleUnset},
+		{"admin", []string{"sonda-admin"}, signin.RoleAdmin},
+		{"viewer", []string{"sonda-viewer"}, signin.RoleViewer},
+		{"admin wins over viewer", []string{"sonda-viewer", "sonda-admin"}, signin.RoleAdmin},
+		{"only foreign roles", []string{"billing-admin"}, signin.RoleNone},
+		{"an empty list", []string{}, signin.RoleNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			person, err := client.Verify(context.Background(), validToken(server, func(_, c map[string]any) {
+				if tc.roles != nil {
+					c["roles"] = tc.roles
+				}
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if person.Role != tc.want {
+				t.Errorf("role %q, want %q", person.Role, tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyRefuses(t *testing.T) {
 	client, server := newClient(t)
 	cases := map[string]func(h, c map[string]any){
-		"an ID token or other JWT": func(h, _ map[string]any) { h["typ"] = "JWT" },
-		"another algorithm":        func(h, _ map[string]any) { h["alg"] = "HS256" },
-		"an unknown key":           func(h, _ map[string]any) { h["kid"] = "other" },
-		"another issuer":           func(_, c map[string]any) { c["iss"] = "https://evil.example.com" },
-		"another resource":         func(_, c map[string]any) { c["aud"] = "https://other.example.com/mcp" },
-		"another client":           func(_, c map[string]any) { c["client_id"] = "https://claude.ai/oauth/client" },
-		"an expired token":         func(_, c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() },
-		"no expiry":                func(_, c map[string]any) { delete(c, "exp") },
-		"no subject":               func(_, c map[string]any) { c["sub"] = "" },
-		"a workload":               func(_, c map[string]any) { c["ptype"] = "job" },
-		"no principal type":        func(_, c map[string]any) { delete(c, "ptype") },
+		"an ID token or other JWT":  func(h, _ map[string]any) { h["typ"] = "JWT" },
+		"another algorithm":         func(h, _ map[string]any) { h["alg"] = "HS256" },
+		"an unknown key":            func(h, _ map[string]any) { h["kid"] = "other" },
+		"another issuer":            func(_, c map[string]any) { c["iss"] = "https://evil.example.com" },
+		"another resource":          func(_, c map[string]any) { c["aud"] = "https://other.example.com/mcp" },
+		"another client":            func(_, c map[string]any) { c["client_id"] = "https://claude.ai/oauth/client" },
+		"an expired token":          func(_, c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() },
+		"no expiry":                 func(_, c map[string]any) { delete(c, "exp") },
+		"no subject":                func(_, c map[string]any) { c["sub"] = "" },
+		"a workload":                func(_, c map[string]any) { c["ptype"] = "job" },
+		"no principal type":         func(_, c map[string]any) { delete(c, "ptype") },
+		"null roles":                func(_, c map[string]any) { c["roles"] = nil },
+		"a null role":               func(_, c map[string]any) { c["roles"] = []any{nil, "sonda-admin"} },
+		"roles that are no list":    func(_, c map[string]any) { c["roles"] = "sonda-admin" },
+		"roles that are no strings": func(_, c map[string]any) { c["roles"] = []any{1} },
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
