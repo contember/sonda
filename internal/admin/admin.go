@@ -40,6 +40,8 @@ const (
 	legacyAdminIdentity = "(admin)"
 	refusedIdentity     = "(refused) "
 	personIdentity      = "person:"
+	// signInIdentity marks the start of a sign-in in a browser without a session.
+	signInIdentity = "(sign-in)"
 	// unlinkedIdentity marks an administrator by role whose subject is linked to no identity.
 	unlinkedIdentity = "(unlinked) "
 )
@@ -111,7 +113,8 @@ func newHandler(cfg *config.Config, ids identities.Store, st *store.Store, iss *
 	}
 	if client != nil {
 		mux.HandleFunc("GET "+signin.ClientPath, h.clientMetadata)
-		mux.HandleFunc("GET /admin/oauth/start", h.startSignIn)
+		// POST, so cross-origin protection keeps other sites from ending a session through it.
+		mux.HandleFunc("POST /admin/oauth/start", h.startSignIn)
 		mux.HandleFunc("GET "+signin.CallbackPath, h.signInCallback)
 	}
 	mux.Handle("/admin/", h.requireSession(authed))

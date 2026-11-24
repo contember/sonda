@@ -1286,15 +1286,18 @@ Rules:
   administrators, bound to a hash of the token, so changing the token ends them.
 - Sessions are rows in `admin_sessions` keyed by the SHA-256 of a random cookie value, valid
   1 hour. Every request re-reads a person's link, so unlinking ends their sessions, except an
-  administrator's by role; sign-out deletes the row, and so does `/admin/oauth/start` (the Strict
-  cookie is present there, not on the cross-site callback). A revocation of the person or a role
+  administrator's by role; sign-out deletes the row, and so does starting a sign-in (`POST
+  /admin/oauth/start` from the login page: the Strict cookie is present there, not on the
+  cross-site callback, and cross-origin protection keeps other sites from ending a session
+  through it). A revocation of the person or a role
   at the authorization server takes effect when the session ends: Sonda keeps no refresh token.
 - Cookie: `HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` behind HTTPS. The callback
   answers with a page that navigates to `/admin/`, because a redirect that is still part of the
   cross-site navigation would not carry a Strict cookie. `http.CrossOriginProtection` rejects
   cross-origin form posts.
 - The audit log records every state-changing admin request under `person:<identity>` (or
-  `(unlinked) <subject>`), every sign-in (`person:<identity>`, `(unlinked) <subject>`,
+  `(unlinked) <subject>`), the start of every sign-in (under the session it ends, or
+  `(sign-in)`), every sign-in (`person:<identity>`, `(unlinked) <subject>`,
   `(refused) <subject>`, `(refused)` for a callback without its
   attempt, with a server error, or with a token that fails verification), and every attempt and every request, reads included, of a break-glass session
   under `(break-glass)`. Records written before people signed in carry `(admin)`. Identity names

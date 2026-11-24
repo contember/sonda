@@ -1,8 +1,10 @@
 {{define "content"}}
 {{if .Issuer}}
 <div class="form">
-  <a class="button" href="/admin/oauth/start" hx-boost="false">Sign in with {{.Issuer}}</a>
-  <span class="field-hint">Sonda lets you in when an administrator has linked your account to an identity.</span>
+  <form method="post" action="/admin/oauth/start" hx-boost="false">
+    <button type="submit" class="button">Sign in with {{.Issuer}}</button>
+  </form>
+  <span class="field-hint">Sonda lets you in with the sonda-admin role, or when an administrator has linked your account to an identity.</span>
 </div>
 {{end}}
 {{if .BreakGlass}}

@@ -44,7 +44,7 @@ func newSignInEnv(t *testing.T) (*testEnv, *signintest.Server) {
 // signIn walks the browser through the sign-in and returns the callback's status and page.
 func (e *testEnv) signIn(t *testing.T) (int, string) {
 	t.Helper()
-	location := e.redirect(t, e.server.URL+"/admin/oauth/start", http.StatusSeeOther)
+	location := e.startSignIn(t)
 	callback := e.redirect(t, location, http.StatusFound)
 	resp, err := e.client.Get(callback)
 	if err != nil {
@@ -53,6 +53,20 @@ func (e *testEnv) signIn(t *testing.T) (int, string) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
+}
+
+// startSignIn posts the login page's sign-in form and returns the authorization server's URL.
+func (e *testEnv) startSignIn(t *testing.T) string {
+	t.Helper()
+	resp, err := e.client.PostForm(e.server.URL+"/admin/oauth/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("start sign-in: status %d", resp.StatusCode)
+	}
+	return resp.Header.Get("Location")
 }
 
 func (e *testEnv) redirect(t *testing.T, from string, status int) string {
@@ -156,7 +170,7 @@ func TestRefusesAnUnknownSubject(t *testing.T) {
 	if location := env.redirect(t, env.server.URL+"/admin/me", http.StatusSeeOther); location != "/admin/login" {
 		t.Errorf("refused person got a session: redirect to %q", location)
 	}
-	if got := env.auditIdentities(t); len(got) != 1 || got[0] != "(refused) principal-mallory GET /admin/oauth/callback" {
+	if got := env.auditIdentities(t); len(got) != 2 || got[0] != "(refused) principal-mallory GET /admin/oauth/callback" || got[1] != "(sign-in) POST /admin/oauth/start" {
 		t.Errorf("audit: %q", got)
 	}
 }
@@ -266,7 +280,7 @@ func TestRefusesATokenWithoutASondaRole(t *testing.T) {
 	if location := env.redirect(t, env.server.URL+"/admin/me", http.StatusSeeOther); location != "/admin/login" {
 		t.Errorf("person without a Sonda role got a session: redirect to %q", location)
 	}
-	if got := env.auditIdentities(t); len(got) != 1 || got[0] != "(refused) principal-alice GET /admin/oauth/callback" {
+	if got := env.auditIdentities(t); len(got) != 2 || got[0] != "(refused) principal-alice GET /admin/oauth/callback" || got[1] != "(sign-in) POST /admin/oauth/start" {
 		t.Errorf("audit: %q", got)
 	}
 }
@@ -321,6 +335,30 @@ func TestNewSignInRetiresTheCurrentSession(t *testing.T) {
 	}
 }
 
+func TestAnotherSiteCannotStartASignIn(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	signInWithRoles(idp, "principal-carol", "", signin.AdminRoleKey)
+	if status, _ := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("callback: status %d", status)
+	}
+	// A cross-site navigation must not reach the handler, which ends the current session.
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		req, _ := http.NewRequest(method, env.server.URL+"/admin/oauth/start", nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		resp, err := env.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusSeeOther || len(resp.Header.Values("Set-Cookie")) != 0 {
+			t.Errorf("%s from another site: status %d, cookies %q", method, resp.StatusCode, resp.Header.Values("Set-Cookie"))
+		}
+	}
+	if status, _ := env.get(t, "/admin/identities"); status != http.StatusOK {
+		t.Errorf("session after cross-site starts: status %d", status)
+	}
+}
+
 func TestEndsSessionsWrittenWithoutReadingRoles(t *testing.T) {
 	env, _ := newSignInEnv(t)
 	env.addPerson(t, "alice", "principal-alice", true)
@@ -341,7 +379,7 @@ func TestCallbackNeedsTheAttemptOfThisBrowser(t *testing.T) {
 	env, idp := newSignInEnv(t)
 	env.addPerson(t, "alice", "principal-alice", true)
 	idp.SignIn("principal-alice", "")
-	location := env.redirect(t, env.server.URL+"/admin/oauth/start", http.StatusSeeOther)
+	location := env.startSignIn(t)
 	callback := env.redirect(t, location, http.StatusFound)
 
 	// Another browser, e.g. a victim lured to the attacker's callback URL, has no attempt.
@@ -355,7 +393,7 @@ func TestCallbackNeedsTheAttemptOfThisBrowser(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("callback without the attempt cookie: status %d", resp.StatusCode)
 	}
-	if got := env.auditIdentities(t); len(got) != 1 || got[0] != "(refused) GET /admin/oauth/callback" {
+	if got := env.auditIdentities(t); len(got) != 2 || got[0] != "(refused) GET /admin/oauth/callback" || got[1] != "(sign-in) POST /admin/oauth/start" {
 		t.Errorf("audit: %q", got)
 	}
 }

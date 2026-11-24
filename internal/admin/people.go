@@ -31,6 +31,11 @@ func (h *Handler) startSignIn(w http.ResponseWriter, r *http.Request) {
 	// A new sign-in retires the browser's current session, so a role removed since then does not
 	// survive in it. Here, not in the callback: the Strict cookie is absent on the cross-site
 	// redirect back.
+	if a, ok := h.session(r); ok {
+		noteAudit(r, a.auditIdentity(), true)
+	} else {
+		noteAudit(r, signInIdentity, true)
+	}
 	if err := h.endSession(w, r); err != nil {
 		h.serverError(w, err)
 		return
