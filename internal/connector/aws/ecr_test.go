@@ -60,6 +60,7 @@ type fakeECR struct {
 	failure     ecrtypes.ImageFailureCode // BatchGetImage reports this failure instead
 	tags        []string                  // BatchGetImage returns the image once per tag, as ECR does
 	lastOther   bool                      // the last of those entries names another digest
+	noImages    bool                      // BatchGetImage returns neither images nor failures
 }
 
 func (f *fakeECR) repo() string {
@@ -122,6 +123,9 @@ func (f *fakeECR) DescribeImageScanFindings(_ context.Context, in *ecr.DescribeI
 func (f *fakeECR) BatchGetImage(_ context.Context, in *ecr.BatchGetImageInput, _ ...func(*ecr.Options)) (*ecr.BatchGetImageOutput, error) {
 	if f.failure != "" {
 		return &ecr.BatchGetImageOutput{Failures: []ecrtypes.ImageFailure{{ImageId: &in.ImageIds[0], FailureCode: f.failure, FailureReason: sdkaws.String("reason")}}}, nil
+	}
+	if f.noImages {
+		return &ecr.BatchGetImageOutput{}, nil
 	}
 	tags := f.tags
 	if len(tags) == 0 {
@@ -312,6 +316,7 @@ func TestPlatformManifestsRejectBadIndex(t *testing.T) {
 		"not JSON":       {index: "{"},
 		"invalid digest": {index: `{"manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:abc"}]}`},
 		"other failure":  {failure: ecrtypes.ImageFailureCodeKmsError},
+		"no manifest":    {noImages: true},
 	}
 	for name, fake := range cases {
 		t.Run(name, func(t *testing.T) {
