@@ -1267,23 +1267,32 @@ Rules:
   RFC 9207 `iss` parameter, and verifies the access token as an RFC 9068 JWT: ES256 with a key
   from the issuer's JWKS (refetched hourly and on an unknown `kid`, at most every 30 s), `typ`
   `at+jwt`, `iss`, `aud` containing the resource, `client_id`, `exp` with 30 s of skew, and
-  `ptype` `user`. Nothing from the token but `sub` and the display `label` is used.
+  `ptype` `user`. Nothing from the token but `sub`, the display `label` and `roles` is used; a
+  `roles` claim that is not an array of strings refuses the token.
 - A person is matched by (issuer, `sub`) in `identity_people`, linked by an administrator; no
-  name or email matching and no automatic grant. An unknown subject is refused and shown on the
-  refusal page. The link's `admin` flag, set only in Sonda, opens the pages that manage Sonda;
-  without it a person sees only My access. The authorization server's own permissions are not
-  read: grants stay in Sonda.
+  name or email matching and no automatic grant. Data grants come only from the linked identity.
+  The authorization server's permissions (`perms`) are not read.
+- The role: with a `roles` claim (fabrika IAM, ADR 0084 there), `sonda-admin` makes the person
+  an administrator, linked or not, and `sonda-viewer` a viewer of their linked identity's My
+  access; a token naming neither is refused, and the link's `admin` flag is ignored. An
+  administrator by role without a link has no identity, so no My access, and is audited as
+  `(unlinked) <subject>`. Without a `roles` claim, the link's `admin` flag decides. An unlinked
+  subject that is not an administrator by role is refused and shown on the refusal page. The
+  role is kept in the session's `kind` (`person-admin`, `person-viewer`, or `person` for the
+  link), so an older Sonda ends role sessions instead of reading them as link sessions.
 - The admin token is the break-glass, read only from the config. Its sessions are full
   administrators, bound to a hash of the token, so changing the token ends them.
 - Sessions are rows in `admin_sessions` keyed by the SHA-256 of a random cookie value, valid
-  1 hour. Every request re-reads a person's link, so unlinking ends their sessions; sign-out
-  deletes the row. A revocation at the authorization server takes effect at the next sign-in.
+  1 hour. Every request re-reads a person's link, so unlinking ends their sessions, except an
+  administrator's by role; sign-out deletes the row. A revocation of the person or a role at the
+  authorization server takes effect at the next sign-in: Sonda keeps no refresh token.
 - Cookie: `HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` behind HTTPS. The callback
   answers with a page that navigates to `/admin/`, because a redirect that is still part of the
   cross-site navigation would not carry a Strict cookie. `http.CrossOriginProtection` rejects
   cross-origin form posts.
-- The audit log records every state-changing admin request under `person:<identity>`, every
-  sign-in (`person:<identity>`, `(refused) <subject>`, `(refused)` for a callback without its
+- The audit log records every state-changing admin request under `person:<identity>` (or
+  `(unlinked) <subject>`), every sign-in (`person:<identity>`, `(unlinked) <subject>`,
+  `(refused) <subject>`, `(refused)` for a callback without its
   attempt, with a server error, or with a token that fails verification), and every attempt and every request, reads included, of a break-glass session
   under `(break-glass)`. Records written before people signed in carry `(admin)`. Identity names
   cannot contain parentheses or `:`. Rows are written after the request; a failed write is

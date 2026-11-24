@@ -47,8 +47,10 @@ func (h *Handler) startSignIn(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-// signInCallback finishes a sign-in. The person is let in only when their subject is linked
-// to an identity; nobody is granted anything by signing in.
+// signInCallback finishes a sign-in. When the token names roles, they decide the person's role:
+// sonda-admin manages Sonda, linked or not, and sonda-viewer needs a link; a token without a
+// Sonda role is refused. Without a roles claim, the link decides as before. Data grants always
+// come from the linked identity, never from the token.
 func (h *Handler) signInCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: signInCookie, Path: "/admin/oauth", MaxAge: -1, HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteLaxMode})
 	query := r.URL.Query()
@@ -73,29 +75,51 @@ func (h *Handler) signInCallback(w http.ResponseWriter, r *http.Request) {
 		h.renderLogin(w, r, http.StatusUnauthorized, "The sign-in could not be verified. Sign in again.")
 		return
 	}
-	link, err := h.store.PersonBySubject(r.Context(), h.signin.Issuer(), person.Subject)
-	if errors.Is(err, store.ErrPersonNotFound) {
+	if person.Role == signin.RoleNone {
 		noteAudit(r, refusedIdentity+person.Subject, true)
-		h.log.Warn("admin sign-in refused: subject is not linked to an identity", "subject", person.Subject)
-		h.render(w, r, http.StatusForbidden, "refused", view{Title: "No access to Sonda", Data: person})
+		h.log.Warn("admin sign-in refused: the token names no Sonda role", "subject", person.Subject)
+		h.render(w, r, http.StatusForbidden, "refused", view{Title: "No access to Sonda", Data: refusedPage{Person: person, NoRole: true}})
 		return
 	}
-	if err != nil {
+	link, err := h.store.PersonBySubject(r.Context(), h.signin.Issuer(), person.Subject)
+	linked := err == nil
+	if err != nil && !errors.Is(err, store.ErrPersonNotFound) {
 		h.serverError(w, err)
 		return
 	}
-	session := store.AdminSession{Kind: store.SessionPerson, Issuer: h.signin.Issuer(), Subject: person.Subject, Label: person.Label}
+	if !linked && person.Role != signin.RoleAdmin {
+		noteAudit(r, refusedIdentity+person.Subject, true)
+		h.log.Warn("admin sign-in refused: subject is not linked to an identity", "subject", person.Subject)
+		h.render(w, r, http.StatusForbidden, "refused", view{Title: "No access to Sonda", Data: refusedPage{Person: person}})
+		return
+	}
+	kind := map[signin.Role]store.AdminSessionKind{
+		signin.RoleUnset:  store.SessionPerson,
+		signin.RoleAdmin:  store.SessionPersonAdmin,
+		signin.RoleViewer: store.SessionPersonViewer,
+	}[person.Role]
+	session := store.AdminSession{Kind: kind, Issuer: h.signin.Issuer(), Subject: person.Subject, Label: person.Label}
 	if err := h.startSession(w, r, session); err != nil {
 		h.serverError(w, err)
 		return
 	}
-	noteAudit(r, personIdentity+link.Identity, true)
-	h.log.Info("admin signed in", "identity", link.Identity)
+	if linked {
+		noteAudit(r, personIdentity+link.Identity, true)
+	} else {
+		noteAudit(r, unlinkedIdentity+person.Subject, true)
+	}
+	h.log.Info("admin signed in", "identity", link.Identity, "role", string(person.Role))
 	// The session cookie is SameSite=Strict, so a redirect that is still part of the server's
 	// cross-site navigation would not carry it. A page of this origin that navigates does.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/admin/"><title>Signed in · Sonda admin</title></head><body><p><a href="/admin/">Continue to Sonda admin</a></p></body></html>`))
+}
+
+// refusedPage tells a refused person why: no Sonda role at the sign-in service, or no link.
+type refusedPage struct {
+	Person signin.Person
+	NoRole bool
 }
 
 // linkPerson lets the person with the subject sign in as the identity.
@@ -162,7 +186,8 @@ type accessPage struct {
 
 func (h *Handler) myAccess(w http.ResponseWriter, r *http.Request) {
 	a := actorFrom(r.Context())
-	if a.breakGlass {
+	// Only an administrator has no identity: break-glass, or by role without a link.
+	if a.breakGlass || a.person.Identity == "" {
 		http.Redirect(w, r, "/admin/identities", http.StatusSeeOther)
 		return
 	}
@@ -171,7 +196,7 @@ func (h *Handler) myAccess(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, err)
 		return
 	}
-	page := accessPage{Identity: identity.Name, Admin: a.person.Admin, Grants: h.summarizeGrants(identity.Grants), Access: h.coverage(identity.Grants)}
+	page := accessPage{Identity: identity.Name, Admin: a.admin(), Grants: h.summarizeGrants(identity.Grants), Access: h.coverage(identity.Grants)}
 	h.render(w, r, http.StatusOK, "me", view{Title: "My access", Lead: "What your Sonda identity may query. An administrator changes it.", Nav: "me", Data: page})
 }
 

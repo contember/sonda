@@ -173,6 +173,130 @@ func TestRefusesATokenThatDoesNotVerify(t *testing.T) {
 	}
 }
 
+// signInWithRoles makes the test server put the roles claim into its tokens, as fabrika IAM does
+// for an external application that declares roles.
+func signInWithRoles(idp *signintest.Server, subject, label string, roles ...string) {
+	idp.SignIn(subject, label)
+	idp.Tamper(func(_, claims map[string]any) { claims["roles"] = roles })
+}
+
+func TestAdminRoleManagesSondaWithoutALink(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	signInWithRoles(idp, "principal-carol", "carol@example.com", signin.AdminRoleKey)
+	if status, body := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("callback: status %d\n%s", status, body)
+	}
+	if location := env.redirect(t, env.server.URL+"/admin/", http.StatusSeeOther); location != "/admin/identities" {
+		t.Errorf("home of an administrator by role redirects to %q", location)
+	}
+	status, body := env.get(t, "/admin/identities")
+	if status != http.StatusOK || !strings.Contains(body, "Signed in as carol@example.com") {
+		t.Errorf("identities: status %d\n%s", status, body)
+	}
+	if status, _ := env.post(t, "/admin/identities", url.Values{"name": {"agent"}, "grant": {logsGrant()}}); status != http.StatusOK {
+		t.Errorf("create identity: status %d", status)
+	}
+	if location := env.redirect(t, env.server.URL+"/admin/me", http.StatusSeeOther); location != "/admin/identities" {
+		t.Errorf("my access of an administrator without an identity redirects to %q", location)
+	}
+	got := strings.Join(env.auditIdentities(t), "\n")
+	if !strings.Contains(got, "(unlinked) principal-carol GET /admin/oauth/callback") || !strings.Contains(got, "(unlinked) principal-carol POST /admin/identities") {
+		t.Errorf("audit:\n%s", got)
+	}
+}
+
+func TestRolesDecideOverTheLinkAdminFlag(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	env.addPerson(t, "alice", "principal-alice", true, identities.Grant{Project: "api", Environment: "production", Capability: api.CapabilityLogs})
+	env.addPerson(t, "bob", "principal-bob", false)
+
+	// A viewer by role does not manage Sonda, even with a link marked Administrator.
+	signInWithRoles(idp, "principal-alice", "alice@example.com", signin.ViewerRoleKey)
+	if status, _ := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("viewer callback: status %d", status)
+	}
+	if location := env.redirect(t, env.server.URL+"/admin/", http.StatusSeeOther); location != "/admin/me" {
+		t.Errorf("home of a viewer redirects to %q", location)
+	}
+	if status, body := env.get(t, "/admin/me"); status != http.StatusOK || !strings.Contains(body, "api / production") || strings.Contains(body, "administrator</span>") {
+		t.Errorf("my access of a viewer: status %d\n%s", status, body)
+	}
+	if status, _ := env.get(t, "/admin/identities"); status != http.StatusForbidden {
+		t.Errorf("identities by a viewer: status %d", status)
+	}
+
+	// An administrator by role manages Sonda, even with a link that is not marked.
+	signInWithRoles(idp, "principal-bob", "bob@example.com", signin.AdminRoleKey)
+	if status, _ := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("admin callback: status %d", status)
+	}
+	if status, _ := env.get(t, "/admin/identities"); status != http.StatusOK {
+		t.Errorf("identities by an administrator by role: status %d", status)
+	}
+	if status, body := env.get(t, "/admin/me"); status != http.StatusOK || !strings.Contains(body, "<code>bob</code>") || !strings.Contains(body, "administrator</span>") {
+		t.Errorf("my access of a linked administrator: status %d\n%s", status, body)
+	}
+	got := strings.Join(env.auditIdentities(t), "\n")
+	if !strings.Contains(got, "person:alice GET /admin/oauth/callback") || !strings.Contains(got, "person:bob GET /admin/oauth/callback") {
+		t.Errorf("audit:\n%s", got)
+	}
+}
+
+func TestViewerRoleNeedsALink(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	signInWithRoles(idp, "principal-dave", "", signin.ViewerRoleKey)
+	status, body := env.signIn(t)
+	if status != http.StatusForbidden || !strings.Contains(body, `<code id="subject">principal-dave</code>`) {
+		t.Fatalf("callback: status %d\n%s", status, body)
+	}
+	if location := env.redirect(t, env.server.URL+"/admin/me", http.StatusSeeOther); location != "/admin/login" {
+		t.Errorf("refused viewer got a session: redirect to %q", location)
+	}
+}
+
+func TestRefusesATokenWithoutASondaRole(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	env.addPerson(t, "alice", "principal-alice", true)
+	signInWithRoles(idp, "principal-alice", "", "billing-admin")
+	status, body := env.signIn(t)
+	if status != http.StatusForbidden || !strings.Contains(body, "holds no Sonda role") {
+		t.Fatalf("callback: status %d\n%s", status, body)
+	}
+	if location := env.redirect(t, env.server.URL+"/admin/me", http.StatusSeeOther); location != "/admin/login" {
+		t.Errorf("person without a Sonda role got a session: redirect to %q", location)
+	}
+	if got := env.auditIdentities(t); len(got) != 1 || got[0] != "(refused) principal-alice GET /admin/oauth/callback" {
+		t.Errorf("audit: %q", got)
+	}
+}
+
+func TestUnlinkingEndsAViewerSessionButNotAnAdministrators(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	env.addPerson(t, "alice", "principal-alice", false)
+	signInWithRoles(idp, "principal-alice", "", signin.ViewerRoleKey)
+	if status, _ := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("callback: status %d", status)
+	}
+	if err := env.store.UnlinkPerson(context.Background(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if location := env.redirect(t, env.server.URL+"/admin/me", http.StatusSeeOther); location != "/admin/login" {
+		t.Errorf("viewer after unlinking: redirect to %q", location)
+	}
+
+	env.addPerson(t, "bob", "principal-bob", false)
+	signInWithRoles(idp, "principal-bob", "", signin.AdminRoleKey)
+	if status, _ := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("callback: status %d", status)
+	}
+	if err := env.store.UnlinkPerson(context.Background(), "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := env.get(t, "/admin/identities"); status != http.StatusOK {
+		t.Errorf("administrator by role after unlinking: status %d", status)
+	}
+}
+
 func TestCallbackNeedsTheAttemptOfThisBrowser(t *testing.T) {
 	env, idp := newSignInEnv(t)
 	env.addPerson(t, "alice", "principal-alice", true)
