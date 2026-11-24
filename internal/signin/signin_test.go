@@ -95,6 +95,8 @@ func TestVerifyRefuses(t *testing.T) {
 		"no subject":                func(_, c map[string]any) { c["sub"] = "" },
 		"a workload":                func(_, c map[string]any) { c["ptype"] = "job" },
 		"no principal type":         func(_, c map[string]any) { delete(c, "ptype") },
+		"null roles":                func(_, c map[string]any) { c["roles"] = nil },
+		"a null role":               func(_, c map[string]any) { c["roles"] = []any{nil, "sonda-admin"} },
 		"roles that are no list":    func(_, c map[string]any) { c["roles"] = "sonda-admin" },
 		"roles that are no strings": func(_, c map[string]any) { c["roles"] = []any{1} },
 	}

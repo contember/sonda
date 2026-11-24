@@ -367,9 +367,11 @@ served.
   those open today. An administrator manages identities, grants and signing keys and reads the
   audit log.
 - **Sessions** last 1 hour and are stored server-side, with the role the token named at sign-in.
-  Sign-out deletes the session. Unlinking a person or deleting their identity ends their sessions
-  at once, except an administrator's by role. Revoking the person or a role at the authorization
-  server takes effect at their next sign-in, within the hour.
+  Sign-out deletes the session, and so does starting a new sign-in in the same browser. Unlinking
+  a person or deleting their identity ends their sessions at once, except an administrator's by
+  role. Revoking the person or a role at the authorization server takes effect when the session
+  ends: at most 1 hour, or sooner when they sign in again. Sessions opened by a Sonda older than
+  the roles support end at the upgrade; those people sign in again.
 - **Break-glass.** `admin.token` still signs in, as a full administrator. Every attempt and every
   request of such a session, reads included, is in the audit log as `(break-glass)`. Changing the
   token ends those sessions. Bootstrap the first administrator with it: sign in with the token,

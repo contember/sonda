@@ -1274,18 +1274,21 @@ Rules:
   The authorization server's permissions (`perms`) are not read.
 - The role: with a `roles` claim (fabrika IAM, ADR 0084 there), `sonda-admin` makes the person
   an administrator, linked or not, and `sonda-viewer` a viewer of their linked identity's My
-  access; a token naming neither is refused, and the link's `admin` flag is ignored. An
+  access; a token naming neither is refused, and the link's `admin` flag is ignored. A `roles`
+  claim that is `null` or holds a non-string refuses the token. An
   administrator by role without a link has no identity, so no My access, and is audited as
   `(unlinked) <subject>`. Without a `roles` claim, the link's `admin` flag decides. An unlinked
   subject that is not an administrator by role is refused and shown on the refusal page. The
-  role is kept in the session's `kind` (`person-admin`, `person-viewer`, or `person` for the
-  link), so an older Sonda ends role sessions instead of reading them as link sessions.
+  role is kept in the session's `kind` (`person-admin`, `person-viewer`, or `person-link`), so an
+  older Sonda ends these sessions instead of misreading them. Sessions of kind `person`, written
+  by an older Sonda that never read `roles`, are ended rather than trusted.
 - The admin token is the break-glass, read only from the config. Its sessions are full
   administrators, bound to a hash of the token, so changing the token ends them.
 - Sessions are rows in `admin_sessions` keyed by the SHA-256 of a random cookie value, valid
   1 hour. Every request re-reads a person's link, so unlinking ends their sessions, except an
-  administrator's by role; sign-out deletes the row. A revocation of the person or a role at the
-  authorization server takes effect at the next sign-in: Sonda keeps no refresh token.
+  administrator's by role; sign-out deletes the row, and so does `/admin/oauth/start` (the Strict
+  cookie is present there, not on the cross-site callback). A revocation of the person or a role
+  at the authorization server takes effect when the session ends: Sonda keeps no refresh token.
 - Cookie: `HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` behind HTTPS. The callback
   answers with a page that navigates to `/admin/`, because a redirect that is still part of the
   cross-site navigation would not carry a Strict cookie. `http.CrossOriginProtection` rejects

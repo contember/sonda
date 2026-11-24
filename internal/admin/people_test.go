@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
 	"io"
 	"log/slog"
 	"net/http"
@@ -294,6 +295,45 @@ func TestUnlinkingEndsAViewerSessionButNotAnAdministrators(t *testing.T) {
 	}
 	if status, _ := env.get(t, "/admin/identities"); status != http.StatusOK {
 		t.Errorf("administrator by role after unlinking: status %d", status)
+	}
+}
+
+func TestNewSignInRetiresTheCurrentSession(t *testing.T) {
+	env, idp := newSignInEnv(t)
+	signInWithRoles(idp, "principal-carol", "", signin.AdminRoleKey)
+	if status, _ := env.signIn(t); status != http.StatusOK {
+		t.Fatalf("callback: status %d", status)
+	}
+	serverURL, _ := url.Parse(env.server.URL)
+	adminURL := &url.URL{Scheme: "http", Host: serverURL.Host, Path: "/admin/"}
+	adminCookies := env.client.Jar.Cookies(adminURL)
+
+	// The role was removed at the authorization server; the next sign-in is refused.
+	signInWithRoles(idp, "principal-carol", "", "billing-admin")
+	if status, _ := env.signIn(t); status != http.StatusForbidden {
+		t.Fatalf("callback without a Sonda role: status %d", status)
+	}
+	jar, _ := cookiejar.New(nil)
+	jar.SetCookies(adminURL, adminCookies)
+	env.client.Jar = jar
+	if location := env.redirect(t, env.server.URL+"/admin/identities", http.StatusSeeOther); location != "/admin/login" {
+		t.Errorf("the session from before the new sign-in still works: redirect to %q", location)
+	}
+}
+
+func TestEndsSessionsWrittenWithoutReadingRoles(t *testing.T) {
+	env, _ := newSignInEnv(t)
+	env.addPerson(t, "alice", "principal-alice", true)
+	// An older Sonda wrote kind "person" for any token, a viewer's included.
+	cookieValue := "legacy-session-cookie"
+	session := store.AdminSession{Kind: "person", Issuer: env.cfg.Admin.OAuth.Issuer, Subject: "principal-alice", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := env.store.CreateAdminSession(context.Background(), sha256.Sum256([]byte(cookieValue)), session); err != nil {
+		t.Fatal(err)
+	}
+	serverURL, _ := url.Parse(env.server.URL)
+	env.client.Jar.SetCookies(&url.URL{Scheme: "http", Host: serverURL.Host, Path: "/admin/"}, []*http.Cookie{{Name: "sonda_admin", Value: cookieValue, Path: "/admin"}})
+	if location := env.redirect(t, env.server.URL+"/admin/identities", http.StatusSeeOther); location != "/admin/login" {
+		t.Errorf("legacy person session: redirect to %q", location)
 	}
 }
 

@@ -101,12 +101,13 @@ func (s *Store) UnlinkPerson(ctx context.Context, identity string) error {
 }
 
 // AdminSessionKind tells a break-glass session from a person's, and for a person, what decides
-// their role. A kind an older Sonda does not know ends the session there.
+// their role. A kind an older Sonda does not know ends the session there, and this Sonda ends
+// the sessions of kind "person" that an older one wrote without reading the token's roles.
 type AdminSessionKind string
 
 const (
-	// SessionPerson: the token named no roles; the link's Admin flag decides.
-	SessionPerson AdminSessionKind = "person"
+	// SessionPersonLink: the token named no roles; the link's Admin flag decides.
+	SessionPersonLink AdminSessionKind = "person-link"
 	// SessionPersonAdmin: the token's roles made the person an administrator, linked or not.
 	SessionPersonAdmin AdminSessionKind = "person-admin"
 	// SessionPersonViewer: the token's roles made the person a viewer of their linked identity.

@@ -243,14 +243,22 @@ func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, session s
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if err := h.endSession(w, r); err != nil {
+		h.serverError(w, err)
+		return
+	}
+	redirect(w, r, "/admin/login")
+}
+
+// endSession deletes the browser's session, if any, and its cookie.
+func (h *Handler) endSession(w http.ResponseWriter, r *http.Request) error {
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		if err := h.store.DeleteAdminSession(r.Context(), sha256.Sum256([]byte(cookie.Value))); err != nil {
-			h.serverError(w, err)
-			return
+			return err
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/admin", MaxAge: -1, HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode})
-	redirect(w, r, "/admin/login")
+	return nil
 }
 
 func (h *Handler) requireSession(next http.Handler) http.Handler {
@@ -294,7 +302,7 @@ func (h *Handler) session(r *http.Request) (actor, bool) {
 	case store.SessionBreakGlass:
 		valid := h.cfg.Admin.Token != "" && subtle.ConstantTimeCompare(session.Credential, h.breakGlassCredential()) == 1
 		return actor{breakGlass: true}, valid
-	case store.SessionPerson, store.SessionPersonAdmin, store.SessionPersonViewer:
+	case store.SessionPersonLink, store.SessionPersonAdmin, store.SessionPersonViewer:
 		if h.signin == nil || session.Issuer != h.signin.Issuer() {
 			return actor{}, false
 		}
@@ -311,7 +319,7 @@ func (h *Handler) session(r *http.Request) (actor, bool) {
 		}
 		a := actor{person: person, label: session.Label}
 		switch session.Kind {
-		case store.SessionPerson:
+		case store.SessionPersonLink:
 			a.administrator = person.Admin
 		case store.SessionPersonAdmin:
 			a.administrator = true

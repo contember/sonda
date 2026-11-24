@@ -159,16 +159,31 @@ const (
 	RoleViewer Role = "viewer"
 )
 
-func roleOf(roles *[]string) Role {
-	switch {
-	case roles == nil:
-		return RoleUnset
-	case slices.Contains(*roles, AdminRoleKey):
-		return RoleAdmin
-	case slices.Contains(*roles, ViewerRoleKey):
-		return RoleViewer
+// parseRole reads the roles claim: absent, or an array of strings. Anything else, null and null
+// elements included, refuses the token rather than falling back to the link.
+func parseRole(raw json.RawMessage) (Role, error) {
+	if raw == nil {
+		return RoleUnset, nil
 	}
-	return RoleNone
+	var items []any
+	if err := json.Unmarshal(raw, &items); err != nil || items == nil {
+		return "", errors.New("token roles claim is not an array")
+	}
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		key, ok := item.(string)
+		if !ok {
+			return "", errors.New("token roles claim has an element that is not a string")
+		}
+		keys = append(keys, key)
+	}
+	switch {
+	case slices.Contains(keys, AdminRoleKey):
+		return RoleAdmin, nil
+	case slices.Contains(keys, ViewerRoleKey):
+		return RoleViewer, nil
+	}
+	return RoleNone, nil
 }
 
 // Person is who the server signed in.
@@ -268,9 +283,8 @@ func (c *Client) Verify(ctx context.Context, token string) (Person, error) {
 		// it, or for anything but a user, signs in nobody.
 		PrincipalType string `json:"ptype"`
 		Label         string `json:"label"`
-		// Roles is nil when the claim is absent; a claim that is not an array of strings fails
-		// the decode and refuses the token.
-		Roles *[]string `json:"roles"`
+		// Roles is nil only when the claim is absent; parseRole checks the rest.
+		Roles json.RawMessage `json:"roles"`
 	}
 	if err := decodeSegment(encodedPayload, &claims); err != nil {
 		return Person{}, fmt.Errorf("token payload: %w", err)
@@ -290,7 +304,11 @@ func (c *Client) Verify(ctx context.Context, token string) (Person, error) {
 	case claims.PrincipalType != "user":
 		return Person{}, fmt.Errorf("token principal type %q, want user", claims.PrincipalType)
 	}
-	return Person{Subject: claims.Subject, Label: claims.Label, Role: roleOf(claims.Roles)}, nil
+	role, err := parseRole(claims.Roles)
+	if err != nil {
+		return Person{}, err
+	}
+	return Person{Subject: claims.Subject, Label: claims.Label, Role: role}, nil
 }
 
 func isAccessTokenType(typ string) bool {

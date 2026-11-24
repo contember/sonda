@@ -28,6 +28,13 @@ func (h *Handler) clientMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) startSignIn(w http.ResponseWriter, r *http.Request) {
+	// A new sign-in retires the browser's current session, so a role removed since then does not
+	// survive in it. Here, not in the callback: the Strict cookie is absent on the cross-site
+	// redirect back.
+	if err := h.endSession(w, r); err != nil {
+		h.serverError(w, err)
+		return
+	}
 	attempt := signin.NewAttempt()
 	target, err := h.signin.AuthorizationURL(r.Context(), attempt)
 	if err != nil {
@@ -75,8 +82,9 @@ func (h *Handler) signInCallback(w http.ResponseWriter, r *http.Request) {
 		h.renderLogin(w, r, http.StatusUnauthorized, "The sign-in could not be verified. Sign in again.")
 		return
 	}
+	// Until the session exists, the sign-in counts as refused, server errors included.
+	noteAudit(r, refusedIdentity+person.Subject, true)
 	if person.Role == signin.RoleNone {
-		noteAudit(r, refusedIdentity+person.Subject, true)
 		h.log.Warn("admin sign-in refused: the token names no Sonda role", "subject", person.Subject)
 		h.render(w, r, http.StatusForbidden, "refused", view{Title: "No access to Sonda", Data: refusedPage{Person: person, NoRole: true}})
 		return
@@ -88,13 +96,12 @@ func (h *Handler) signInCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !linked && person.Role != signin.RoleAdmin {
-		noteAudit(r, refusedIdentity+person.Subject, true)
 		h.log.Warn("admin sign-in refused: subject is not linked to an identity", "subject", person.Subject)
 		h.render(w, r, http.StatusForbidden, "refused", view{Title: "No access to Sonda", Data: refusedPage{Person: person}})
 		return
 	}
 	kind := map[signin.Role]store.AdminSessionKind{
-		signin.RoleUnset:  store.SessionPerson,
+		signin.RoleUnset:  store.SessionPersonLink,
 		signin.RoleAdmin:  store.SessionPersonAdmin,
 		signin.RoleViewer: store.SessionPersonViewer,
 	}[person.Role]
