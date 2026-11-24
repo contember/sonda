@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	sdkaws "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	ecrtypes "github.com/aws/aws-sdk-go-v2/service/ecr/types"
 )
 
@@ -55,8 +57,21 @@ func TestScanCachedPerDigest(t *testing.T) {
 	}
 }
 
+func TestScanCacheKeepsFinalStates(t *testing.T) {
+	for _, status := range []ecrtypes.ScanStatus{ecrtypes.ScanStatusActive, ecrtypes.ScanStatusUnsupportedImage, ecrtypes.ScanStatusScanEligibilityExpired} {
+		fake := &fakeECR{status: status}
+		_, now, scan := cachingClient(t, fake)
+		scan(nil)
+		*now = now.Add(settledScanTTL - time.Second)
+		scan(nil)
+		if len(fake.scanned) != 1 {
+			t.Errorf("status %q: DescribeImageScanFindings calls = %d, want 1", status, len(fake.scanned))
+		}
+	}
+}
+
 func TestScanCacheBriefForUnsettledScans(t *testing.T) {
-	for _, fake := range []*fakeECR{{status: ecrtypes.ScanStatusInProgress}, {status: ecrtypes.ScanStatusFailed}, {noScan: true}} {
+	for _, fake := range []*fakeECR{{status: ecrtypes.ScanStatusInProgress}, {status: ecrtypes.ScanStatusPending}, {status: ecrtypes.ScanStatusFailed}, {noScan: true}} {
 		_, now, scan := cachingClient(t, fake)
 		scan(nil)
 		*now = now.Add(pendingScanTTL - time.Second)
@@ -162,5 +177,88 @@ func TestScanCacheReturnsCopies(t *testing.T) {
 	second, err := c.Scan(context.Background(), scope, "shop", testDigest, nil)
 	if err != nil || second.ImageScanStatus.Status != ecrtypes.ScanStatusComplete || len(fake.scanned) != 1 {
 		t.Errorf("second read: scan = %+v, err = %v, calls = %d", second, err, len(fake.scanned))
+	}
+}
+
+func completeScan() *ecr.DescribeImageScanFindingsOutput {
+	return &ecr.DescribeImageScanFindingsOutput{ImageScanStatus: &ecrtypes.ImageScanStatus{Status: ecrtypes.ScanStatusComplete}}
+}
+
+// joinDelay gives a second reader time to join a load in flight. With shared loads the tests
+// pass however the reader is scheduled; the delay makes a regression to unshared loads show.
+const joinDelay = 20 * time.Millisecond
+
+func TestScanCacheSharesConcurrentLoads(t *testing.T) {
+	c := newScanCache(time.Now)
+	key := scanKey{repository: "shop", digest: testDigest}
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	load := func(context.Context) (*ecr.DescribeImageScanFindingsOutput, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return completeScan(), nil
+	}
+	errs := make(chan error, 2)
+	read := func() {
+		_, err := c.get(context.Background(), key, nil, load)
+		errs <- err
+	}
+	go read()
+	<-started
+	go read()
+	time.Sleep(joinDelay)
+	close(release)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("loads = %d, want 1 for two concurrent reads", n)
+	}
+}
+
+func TestScanCacheWaiterSurvivesCancelledLoad(t *testing.T) {
+	c := newScanCache(time.Now)
+	key := scanKey{repository: "shop", digest: testDigest}
+	started := make(chan struct{})
+	var calls atomic.Int32
+	load := func(ctx context.Context) (*ecr.DescribeImageScanFindingsOutput, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return completeScan(), nil
+	}
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	leader := make(chan error, 1)
+	go func() {
+		_, err := c.get(leaderCtx, key, nil, load)
+		leader <- err
+	}()
+	<-started
+	type result struct {
+		scan *ecr.DescribeImageScanFindingsOutput
+		err  error
+	}
+	waiter := make(chan result, 1)
+	go func() {
+		scan, err := c.get(context.Background(), key, nil, load)
+		waiter <- result{scan, err}
+	}()
+	time.Sleep(joinDelay)
+	cancel()
+	if err := <-leader; err == nil {
+		t.Error("cancelled leader: want an error")
+	}
+	got := <-waiter
+	if got.err != nil || got.scan == nil || got.scan.ImageScanStatus.Status != ecrtypes.ScanStatusComplete {
+		t.Errorf("waiter: scan = %+v, err = %v, want the scan of its own load", got.scan, got.err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("loads = %d, want the cancelled one and one retry", n)
 	}
 }

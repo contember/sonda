@@ -15,8 +15,9 @@ import (
 const (
 	// scanCacheEntries bounds the scan summaries one source keeps; the oldest stored goes first.
 	scanCacheEntries = 4096
-	// settledScanTTL serves a completed or active scan without asking ECR. A basic scan changes
-	// only when it is rerun; an enhanced scan when Inspector rescans, which the TTL bounds.
+	// settledScanTTL serves a completed, active or final scan state without asking ECR. A basic
+	// scan changes only when it is rerun; an enhanced scan when Inspector rescans, which the TTL
+	// bounds.
 	settledScanTTL = 10 * time.Minute
 	// pendingScanTTL serves any other state, or no scan, only long enough to absorb a burst.
 	pendingScanTTL = 30 * time.Second
@@ -73,13 +74,10 @@ func (c *scanCache) get(ctx context.Context, key scanKey, listed *ecrtypes.Image
 		return nil, ctx.Err()
 	case res := <-loads:
 		if res.Err != nil {
-			// The shared load ran under the context of another request, which ended first.
+			// The shared load ran under the context of another request, which ended first; the
+			// waiters share a new load rather than each calling ECR.
 			if ctx.Err() == nil && (errors.Is(res.Err, context.Canceled) || errors.Is(res.Err, context.DeadlineExceeded)) {
-				scan, err := load(ctx)
-				if err != nil {
-					return nil, err
-				}
-				return c.store(key, scan), nil
+				return c.get(ctx, key, listed, load)
 			}
 			return nil, res.Err
 		}
@@ -122,14 +120,16 @@ func (c *scanCache) store(key scanKey, scan *ecr.DescribeImageScanFindingsOutput
 	return scanSummary(entry.scan)
 }
 
-// scanTTL is settledScanTTL for a completed or active scan, pendingScanTTL for any other state
-// (in progress, pending, failed, unsupported) and for an image never scanned.
+// scanTTL is settledScanTTL for a scan state that stays until a push or a rescan, and
+// pendingScanTTL for any other (in progress, pending, failed, findings unavailable, limit
+// exceeded, unknown) and for an image never scanned.
 func scanTTL(scan *ecr.DescribeImageScanFindingsOutput) time.Duration {
 	if scan == nil || scan.ImageScanStatus == nil {
 		return pendingScanTTL
 	}
 	switch scan.ImageScanStatus.Status {
-	case ecrtypes.ScanStatusComplete, ecrtypes.ScanStatusActive:
+	case ecrtypes.ScanStatusComplete, ecrtypes.ScanStatusActive, ecrtypes.ScanStatusUnsupportedImage,
+		ecrtypes.ScanStatusScanEligibilityExpired, ecrtypes.ScanStatusImageArchived, ecrtypes.ScanStatusImageSizeExceeded:
 		return settledScanTTL
 	}
 	return pendingScanTTL
