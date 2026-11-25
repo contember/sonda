@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +29,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	var configPath string
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "sonda.yaml", "path to the configuration file")
 
@@ -39,13 +39,13 @@ func main() {
 			Short: "Start the HTTP server",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return serve(cmd.Context(), configPath)
+				return serve(cmd.Context(), configPath, log)
 			},
 		},
 		checkCmd(&configPath),
 	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := cancelOnSignal(context.Background(), log, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -134,8 +134,7 @@ func checkData(ctx context.Context, q *query.Service, log *slog.Logger) error {
 	return nil
 }
 
-func serve(ctx context.Context, configPath string) error {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+func serve(ctx context.Context, configPath string, log *slog.Logger) error {
 	cfg, err := config.LoadFile(configPath)
 	if err != nil {
 		return err
